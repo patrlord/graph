@@ -149,6 +149,13 @@ def _find_person_by_name(name: str):
     return rows or []
 
 
+def _merge_fields(existing: dict, new_fields: dict) -> dict:
+    """New values win, but a blank/null incoming value keeps whatever was already
+    stored rather than clobbering it - so saving from a source with thinner data
+    (e.g. a bulk import with no titles) never erases richer data saved earlier."""
+    return {k: (v if v not in (None, "") else existing.get(k)) for k, v in new_fields.items()}
+
+
 def _save_organization(payload: dict) -> dict:
     org_in = payload.get("organization") or {}
     people_in = payload.get("people") or []
@@ -169,7 +176,7 @@ def _save_organization(payload: dict) -> dict:
     if existing:
         org = _supabase_request(
             "PATCH", "organizations", params={"id": f"eq.{existing['id']}"},
-            body=org_fields, prefer="return=representation",
+            body=_merge_fields(existing, org_fields), prefer="return=representation",
         )[0]
     else:
         org = _supabase_request(
@@ -207,7 +214,7 @@ def _save_organization(payload: dict) -> dict:
         if person:
             person = _supabase_request(
                 "PATCH", "people", params={"id": f"eq.{person['id']}"},
-                body=person_fields, prefer="return=representation",
+                body=_merge_fields(person, person_fields), prefer="return=representation",
             )[0]
         else:
             person = _supabase_request(
@@ -225,6 +232,7 @@ def _save_organization(payload: dict) -> dict:
             (m for m in existing_memberships if m["person_id"] == person["id"]), None
         )
         if existing_membership:
+            membership_fields = _merge_fields(existing_membership, membership_fields)
             _supabase_request(
                 "PATCH", "memberships", params={"id": f"eq.{existing_membership['id']}"},
                 body=membership_fields,
@@ -232,7 +240,7 @@ def _save_organization(payload: dict) -> dict:
         else:
             _supabase_request("POST", "memberships", body=membership_fields)
 
-        saved_people.append({**person, "title": p.get("title"), "focus": p.get("focus")})
+        saved_people.append({**person, "title": membership_fields.get("title"), "focus": membership_fields.get("focus")})
 
     return {"organization": org, "people": saved_people}
 
