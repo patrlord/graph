@@ -18,10 +18,14 @@
   header p { margin: 2px 0 0; font-size: 12px; color: #6b6862; }
   #configWarning { font-size: 12px; color: #8a5a2b; font-weight: 500; }
 
-  #main { display: flex; flex-wrap: wrap; gap: 24px; padding: 24px; max-width: 1200px; margin: 0 auto; align-items: flex-start; }
-  #left { flex: 1 1 480px; min-width: 0; }
-  #rightPane { flex: 1 1 320px; min-width: 0; }
-  @media (max-width: 640px) { #main { padding: 16px; gap: 16px; } }
+  #main {
+    display: grid; grid-template-columns: minmax(260px, 1fr) minmax(240px, 0.9fr) minmax(320px, 1.2fr);
+    gap: 20px; padding: 24px; max-width: 1500px; margin: 0 auto; align-items: start;
+  }
+  #main > div { min-width: 0; }
+  @media (max-width: 900px) { #main { grid-template-columns: 1fr; padding: 16px; gap: 16px; } }
+
+  .scroll-box { max-height: 640px; overflow-y: auto; }
 
   .card {
     background: #fff; border: 1px solid #e2e0dc; border-radius: 8px; padding: 18px 20px; margin-bottom: 20px;
@@ -71,12 +75,15 @@
 
   .actions-row { display: flex; gap: 10px; margin-top: 16px; }
 
+  #detailEmpty { font-size: 12.5px; color: #8a877e; }
+
   #orgList { list-style: none; margin: 0; padding: 0; }
   #orgList li {
     padding: 10px 0; border-bottom: 1px solid #eeece7; cursor: pointer;
     display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
   }
   #orgList li:hover { color: #8a5a2b; }
+  #orgList li.selected { background: #fbf3ea; }
   #orgList li:last-child { border-bottom: none; }
   #orgList .org-name { font-size: 13.5px; font-weight: 500; }
   #orgList .org-meta { font-size: 11.5px; color: #8a877e; }
@@ -94,7 +101,7 @@
 </header>
 
 <div id="main">
-  <div id="left">
+  <div id="colLeft">
     <div class="card">
       <h2>Research a firm</h2>
       <div class="form-row">
@@ -130,28 +137,35 @@
     </div>
   </div>
 
-  <div id="rightPane">
+  <div id="colMiddle">
     <div class="card">
       <h2>Saved firms</h2>
-      <ul id="orgList"></ul>
+      <div class="scroll-box">
+        <ul id="orgList"></ul>
+      </div>
       <div id="emptyOrgList">None saved yet.</div>
     </div>
+  </div>
 
-    <div class="card" id="detailCard" style="display:none">
-      <div class="org-header">
-        <h3 id="detName"></h3>
-        <span class="org-type-pill" id="detType"></span>
-      </div>
-      <div class="org-links" id="detLinks"></div>
-      <div class="org-desc" id="detDesc"></div>
-      <table id="detTable">
-        <thead>
-          <tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr>
-        </thead>
-        <tbody id="detTableBody"></tbody>
-      </table>
-      <div class="actions-row">
-        <button class="danger" id="deleteBtn">Delete</button>
+  <div id="colRight">
+    <div class="card" id="detailCard">
+      <div id="detailEmpty">Select a firm from the list to see its profile.</div>
+      <div id="detailContent" style="display:none">
+        <div class="org-header">
+          <h3 id="detName"></h3>
+          <span class="org-type-pill" id="detType"></span>
+        </div>
+        <div class="org-links" id="detLinks"></div>
+        <div class="org-desc" id="detDesc"></div>
+        <table id="detTable">
+          <thead>
+            <tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr>
+          </thead>
+          <tbody id="detTableBody"></tbody>
+        </table>
+        <div class="actions-row">
+          <button class="danger" id="deleteBtn">Delete</button>
+        </div>
       </div>
     </div>
   </div>
@@ -273,6 +287,14 @@ async function loadOrgList() {
     </li>
   `).join("");
   [...listEl.children].forEach(li => li.addEventListener("click", () => showDetail(li.dataset.id)));
+  const selectedId = document.getElementById("detailCard").dataset.id;
+  if (selectedId) highlightSelected(selectedId);
+}
+
+function highlightSelected(id) {
+  [...document.getElementById("orgList").children].forEach(li => {
+    li.classList.toggle("selected", li.dataset.id === id);
+  });
 }
 
 async function showDetail(id) {
@@ -292,14 +314,18 @@ async function showDetail(id) {
     m => m.people.full_name, m => m.title, m => m.focus, m => m.people.country, m => m.people.linkedin_url
   );
   document.getElementById("detailCard").dataset.id = org.id;
-  document.getElementById("detailCard").style.display = "block";
+  document.getElementById("detailEmpty").style.display = "none";
+  document.getElementById("detailContent").style.display = "block";
+  highlightSelected(id);
 }
 
 async function deleteOrg() {
   const id = document.getElementById("detailCard").dataset.id;
   if (!id || !confirm("Delete this firm and its team from the database?")) return;
   await fetch(`/api/organizations/${id}`, { method: "DELETE" });
-  document.getElementById("detailCard").style.display = "none";
+  document.getElementById("detailCard").dataset.id = "";
+  document.getElementById("detailContent").style.display = "none";
+  document.getElementById("detailEmpty").style.display = "block";
   loadOrgList();
 }
 
