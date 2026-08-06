@@ -1,12 +1,21 @@
 """
-Graph — local web UI + Claude-powered research backend for a database of
-VCs, CVCs, business angels, and family offices, their team members, and
-the connections between them.
+Graph — local web UI + research backend for a database of VCs, CVCs, business
+angels, and family offices, their team members, and the connections between
+them.
+
+Research is a hybrid: Claude web search (cheap model, tight search budget)
+finds the firm's website/LinkedIn and its team - names, titles, sector/focus,
+country, personal LinkedIn URLs - since that needs open-ended search Apollo's
+Free-plan API can't do (people search/match are paid-plan-only there). Apollo
+then does one free organizations/enrich call, by domain, to backfill hq
+location/description/LinkedIn only where Claude came up empty - it's a
+structured, indexed lookup, so it's worth using where it's actually free.
 
 Run: python3 graph_app.py
 Requires: pip install anthropic
 Requires env (shell or local .env file, gitignored):
-  ANTHROPIC_API_KEY     - for researching firms/people via Claude web search
+  ANTHROPIC_API_KEY     - for research (web search) - required
+  APOLLO_API_KEY        - for the free organization backfill - optional, skipped without it
   SUPABASE_URL          - e.g. https://xxxx.supabase.co
   SUPABASE_SERVICE_KEY  - the service_role secret key (Project Settings > API Keys)
 Opens http://localhost:7434 in your browser automatically.
@@ -25,8 +34,11 @@ from pathlib import Path
 
 import anthropic
 
-MODEL = "claude-opus-4-8"
+RESEARCH_MODEL = "claude-sonnet-5"
+MAX_WEB_SEARCHES = 8  # bounds cost of the research call
 PORT = 7434
+
+APOLLO_BASE = "https://api.apollo.io/api/v1"
 
 APP_DIR = Path(__file__).resolve().parent
 HTML_FILE = APP_DIR / "graph.html"
@@ -88,6 +100,79 @@ def _supabase_request(method: str, path: str, params: dict = None, body=None, pr
         raise RuntimeError(f"Supabase {method} {path} failed ({exc.code}): {detail}")
 
 
+def _apollo_configured() -> bool:
+    return bool(os.environ.get("APOLLO_API_KEY"))
+
+
+def _apollo_request(method: str, path: str, params: dict = None, json_body=None):
+    url = f"{APOLLO_BASE}/{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
+    headers = {
+        "x-api-key": os.environ["APOLLO_API_KEY"],
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    data = json.dumps(json_body).encode() if json_body is not None else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:500]
+        raise RuntimeError(f"Apollo {method} {path} failed ({exc.code}): {detail}")
+
+
+def _domain_from_url(url: str):
+    if not url:
+        return None
+    domain = re.sub(r"^https?://", "", url.strip(), flags=re.IGNORECASE)
+    domain = domain.split("/")[0]
+    domain = re.sub(r"^www\.", "", domain, flags=re.IGNORECASE)
+    return domain or None
+
+
+def _apollo_enrich_by_domain(domain: str):
+    """Free on every Apollo plan (unlike organization/people search, which are
+    paid-plan-only). Best-effort: returns None on any failure rather than
+    raising, since this is purely a nice-to-have backfill."""
+    try:
+        data = _apollo_request("GET", "organizations/enrich", params={"domain": domain})
+    except Exception:
+        return None
+    return (data or {}).get("organization")
+
+
+def _format_location(city, state, country):
+    if city and state and country == "United States":
+        return f"{city}, {state}"
+    if city and country:
+        return f"{city}, {country}"
+    return country or None
+
+
+def _backfill_from_apollo(org: dict):
+    """Fills gaps in Claude's result (never overwrites what it already found)
+    using Apollo's free organizations/enrich, keyed off the website's domain."""
+    if not _apollo_configured():
+        return
+    domain = _domain_from_url(org.get("website_url"))
+    if not domain:
+        return
+    apollo_org = _apollo_enrich_by_domain(domain)
+    if not apollo_org:
+        return
+    if not org.get("linkedin_url") and apollo_org.get("linkedin_url"):
+        org["linkedin_url"] = apollo_org["linkedin_url"]
+    if not org.get("description") and apollo_org.get("short_description"):
+        org["description"] = apollo_org["short_description"]
+    if not org.get("hq_country"):
+        location = _format_location(apollo_org.get("city"), apollo_org.get("state"), apollo_org.get("country"))
+        if location:
+            org["hq_country"] = location
+
+
 def _research_organization(name: str, org_type: str) -> dict:
     client = anthropic.Anthropic()
     org_type_label = ORG_TYPE_LABELS.get(org_type, "investment firm")
@@ -104,8 +189,9 @@ each person find:
    - their personal LinkedIn profile URL, only if you can find and confirm it - leave null \
 otherwise, never guess or construct one
 
-Use web search as needed, searching multiple times if useful (official site, LinkedIn, team \
-page, press). When you are done, respond with ONLY a single fenced json code block, and nothing \
+Use web search as needed, but don't over-search - a couple of searches per hard-to-find person is \
+plenty; if it's not findable after that, use null and move on rather than exhausting your search \
+budget on it. When you are done, respond with ONLY a single fenced json code block, and nothing \
 else after it, containing exactly this shape:
 
 ```json
@@ -123,10 +209,10 @@ else after it, containing exactly this shape:
 }}
 ```"""
     response = client.messages.create(
-        model=MODEL,
+        model=RESEARCH_MODEL,
         max_tokens=4096,
         system=RESEARCH_SYSTEM_PROMPT,
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 12}],
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": MAX_WEB_SEARCHES}],
         messages=[{"role": "user", "content": prompt}],
     )
     text = "".join(b.text for b in response.content if b.type == "text")
@@ -136,6 +222,7 @@ else after it, containing exactly this shape:
     data = json.loads(match.group(1))
     data.setdefault("organization", {})["org_type"] = org_type
     data.setdefault("people", [])
+    _backfill_from_apollo(data["organization"])
     return data
 
 
@@ -288,6 +375,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/config":
             self._send_json(200, {
                 "supabase_configured": _supabase_configured(),
+                "apollo_configured": _apollo_configured(),
                 "anthropic_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
             })
         elif self.path == "/api/organizations":
@@ -364,7 +452,10 @@ def main():
     _load_dotenv()
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("Warning: ANTHROPIC_API_KEY is not set.")
-        print("  export ANTHROPIC_API_KEY=your-key-here, or add it to a local .env file")
+        print("  research will not work without it")
+    if not _apollo_configured():
+        print("Warning: APOLLO_API_KEY is not set.")
+        print("  research will still work, but organization backfill (hq/description) via Apollo will be skipped")
     if not _supabase_configured():
         print("Warning: SUPABASE_URL / SUPABASE_SERVICE_KEY are not set.")
         print("  research will still work, but saving/browsing the database will not")
