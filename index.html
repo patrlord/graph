@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Graph — VC / Investor Database</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f6f5f3; color: #1c1c1c;
+  }
+  header {
+    padding: 16px 24px; background: #fff; border-bottom: 1px solid #e2e0dc;
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header p { margin: 2px 0 0; font-size: 12px; color: #6b6862; }
+  #headerRight { display: flex; align-items: center; gap: 14px; }
+  #globalStatus { font-size: 12px; color: #8a5a2b; font-weight: 500; }
+  #changeTokenBtn { font-size: 12px; background: none; border: none; color: #8a877e; text-decoration: underline; padding: 0; cursor: pointer; }
+
+  #main { padding: 24px; max-width: 1500px; margin: 0 auto; }
+  #lowerGrid {
+    display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.6fr);
+    gap: 20px; align-items: start;
+  }
+  #lowerGrid > div, #researchSection > div { min-width: 0; }
+  @media (max-width: 900px) { #main { padding: 16px; } #lowerGrid { grid-template-columns: 1fr; gap: 16px; } }
+
+  .scroll-box { max-height: 640px; overflow-y: auto; }
+
+  .card {
+    background: #fff; border: 1px solid #e2e0dc; border-radius: 8px; padding: 18px 20px; margin-bottom: 20px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 14px; font-weight: 600; }
+
+  .form-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+  .form-row input[type=text] {
+    flex: 1 1 180px; min-width: 0; font-size: 14px; padding: 8px 10px; border: 1px solid #d8d5cf; border-radius: 6px;
+  }
+  select {
+    font-size: 13px; padding: 8px 10px; border: 1px solid #d8d5cf; border-radius: 6px; background: #fff;
+  }
+  button {
+    font-size: 13px; padding: 8px 14px; border: 1px solid #8a5a2b; border-radius: 6px;
+    background: #8a5a2b; color: #fff; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: #764a22; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: #fbfaf8; color: #1c1c1c; border-color: #d8d5cf; }
+  button.secondary:hover { background: #f0eee9; }
+  button.danger { background: #fff; color: #a33; border-color: #e0b8b8; }
+  button.danger:hover { background: #fdf2f2; }
+
+  #researchStatus { font-size: 12.5px; color: #6b6862; margin-top: 8px; min-height: 16px; }
+  #researchStatus.error { color: #a33; }
+
+  .org-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .org-header h3 { margin: 0; font-size: 16px; }
+  .org-type-pill {
+    display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: #f0eee9; color: #6b6862; border: 1px solid #e2e0dc; text-transform: uppercase; letter-spacing: .03em;
+  }
+  .org-links { font-size: 12.5px; margin-top: 6px; }
+  .org-links a { color: #8a5a2b; text-decoration: none; margin-right: 14px; }
+  .org-links a:hover { text-decoration: underline; }
+  .org-desc { font-size: 13px; color: #444; margin-top: 8px; line-height: 1.5; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #eeece7; vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: #8a877e; font-weight: 600; }
+  td.name { font-weight: 500; }
+  td .sub { font-size: 11.5px; color: #8a877e; }
+  a.li-link { color: #8a5a2b; text-decoration: none; font-size: 12px; }
+  a.li-link:hover { text-decoration: underline; }
+  .none { color: #b5b1a9; }
+
+  .actions-row { display: flex; gap: 10px; margin-top: 16px; }
+
+  #detailEmpty { font-size: 12.5px; color: #8a877e; }
+
+  #orgList { list-style: none; margin: 0; padding: 0; }
+  #orgList li {
+    padding: 10px 0; border-bottom: 1px solid #eeece7; cursor: pointer;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  }
+  #orgList li:hover { color: #8a5a2b; }
+  #orgList li.selected { background: #fbf3ea; }
+  #orgList li:last-child { border-bottom: none; }
+  #orgList .org-name { font-size: 13.5px; font-weight: 500; }
+  #orgList .org-meta { font-size: 11.5px; color: #8a877e; }
+  #emptyOrgList { font-size: 12.5px; color: #8a877e; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Graph</h1>
+    <p>Database of VCs, CVCs, business angels &amp; family offices</p>
+  </div>
+  <div id="headerRight">
+    <span id="globalStatus"></span>
+    <button id="changeTokenBtn">change access token</button>
+  </div>
+</header>
+
+<div id="main">
+  <div id="researchSection">
+    <div class="card">
+      <h2>Research a firm</h2>
+      <div class="form-row">
+        <input type="text" id="nameInput" placeholder="Firm name, e.g. Sequoia Capital">
+        <select id="orgTypeInput">
+          <option value="vc">VC</option>
+          <option value="cvc">CVC</option>
+          <option value="angel">Business angel</option>
+          <option value="family_office">Family office</option>
+        </select>
+        <button id="researchBtn">Research</button>
+      </div>
+      <div id="researchStatus"></div>
+    </div>
+
+    <div class="card" id="resultCard" style="display:none">
+      <div class="org-header">
+        <h3 id="resName"></h3>
+        <span class="org-type-pill" id="resType"></span>
+      </div>
+      <div class="org-links" id="resLinks"></div>
+      <div class="org-desc" id="resDesc"></div>
+      <table id="resTable">
+        <thead>
+          <tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr>
+        </thead>
+        <tbody id="resTableBody"></tbody>
+      </table>
+      <div class="actions-row">
+        <button id="saveBtn">Save to database</button>
+        <span id="saveStatus" style="font-size:12.5px;color:#6b6862;align-self:center;"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="lowerGrid">
+  <div id="colCompanies">
+    <div class="card">
+      <h2>Saved firms</h2>
+      <div class="scroll-box">
+        <ul id="orgList"></ul>
+      </div>
+      <div id="emptyOrgList">None saved yet.</div>
+    </div>
+  </div>
+
+  <div id="colDetail">
+    <div class="card" id="detailCard">
+      <div id="detailEmpty">Select a firm from the list to see its profile.</div>
+      <div id="detailContent" style="display:none">
+        <div class="org-header">
+          <h3 id="detName"></h3>
+          <span class="org-type-pill" id="detType"></span>
+        </div>
+        <div class="org-links" id="detLinks"></div>
+        <div class="org-desc" id="detDesc"></div>
+        <table id="detTable">
+          <thead>
+            <tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr>
+          </thead>
+          <tbody id="detTableBody"></tbody>
+        </table>
+        <div class="actions-row">
+          <button class="danger" id="deleteBtn">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+</div>
+
+<script>
+// Points at the Supabase Edge Function that replaces the local Python
+// backend when this page is served statically (e.g. from GitHub Pages).
+const API_BASE = "https://chfqbznodqapxjcqzupj.supabase.co/functions/v1/graph-api";
+const TOKEN_KEY = "graph_access_token";
+
+const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "Family office" };
+let lastResearch = null;
+
+function getToken() {
+  let token = localStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    token = (window.prompt("Enter the access token for this app:") || "").trim();
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+  }
+  return token;
+}
+
+function changeToken() {
+  const token = (window.prompt("Enter the access token for this app:") || "").trim();
+  if (token) {
+    localStorage.setItem(TOKEN_KEY, token);
+    loadOrgList();
+  }
+}
+
+async function api(path, options = {}) {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", "x-access-token": token || "", ...(options.headers || {}) },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
+    document.getElementById("globalStatus").textContent = "Access token rejected — reload to try again.";
+  }
+  return res;
+}
+
+function linkedInCell(url) {
+  if (!url) return '<span class="none">not found</span>';
+  return `<a class="li-link" href="${url}" target="_blank" rel="noopener">LinkedIn ↗</a>`;
+}
+
+function renderPeopleRows(people, getName, getTitle, getFocus, getCountry, getLinkedIn) {
+  return people.map(p => `
+    <tr>
+      <td class="name">${getName(p)}</td>
+      <td>${getTitle(p) || '<span class="none">—</span>'}${getFocus(p) ? `<div class="sub">${getFocus(p)}</div>` : ""}</td>
+      <td>${getCountry(p) || '<span class="none">—</span>'}</td>
+      <td>${linkedInCell(getLinkedIn(p))}</td>
+    </tr>
+  `).join("");
+}
+
+async function runResearch() {
+  const name = document.getElementById("nameInput").value.trim();
+  const orgType = document.getElementById("orgTypeInput").value;
+  const status = document.getElementById("researchStatus");
+  const btn = document.getElementById("researchBtn");
+  if (!name) { status.textContent = "Enter a firm name."; status.className = "error"; return; }
+
+  btn.disabled = true;
+  status.className = "";
+  status.textContent = "Researching — this can take a bit while it searches the web…";
+  document.getElementById("resultCard").style.display = "none";
+
+  try {
+    const res = await api("/research", { method: "POST", body: JSON.stringify({ name, org_type: orgType }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Research failed");
+    lastResearch = data;
+    renderResult(data);
+    status.textContent = `Found ${data.people.length} team member(s).`;
+  } catch (err) {
+    status.className = "error";
+    status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderResult(data) {
+  const org = data.organization;
+  document.getElementById("resName").textContent = org.name;
+  document.getElementById("resType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
+  const links = [];
+  if (org.website_url) links.push(`<a href="${org.website_url}" target="_blank" rel="noopener">Website ↗</a>`);
+  if (org.linkedin_url) links.push(`<a href="${org.linkedin_url}" target="_blank" rel="noopener">LinkedIn ↗</a>`);
+  if (org.hq_country) links.push(`<span>${org.hq_country}</span>`);
+  document.getElementById("resLinks").innerHTML = links.join("");
+  document.getElementById("resDesc").textContent = org.description || "";
+  document.getElementById("resTableBody").innerHTML = renderPeopleRows(
+    data.people,
+    p => p.full_name, p => p.title, p => p.focus, p => p.country, p => p.linkedin_url
+  );
+  document.getElementById("saveStatus").textContent = "";
+  document.getElementById("resultCard").style.display = "block";
+}
+
+async function saveResult() {
+  if (!lastResearch) return;
+  const btn = document.getElementById("saveBtn");
+  const status = document.getElementById("saveStatus");
+  btn.disabled = true;
+  status.textContent = "Saving…";
+  try {
+    const res = await api("/organizations", { method: "POST", body: JSON.stringify(lastResearch) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed");
+    status.textContent = "Saved.";
+    loadOrgList();
+  } catch (err) {
+    status.textContent = "Error: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function loadOrgList() {
+  const res = await api("/organizations");
+  const listEl = document.getElementById("orgList");
+  const emptyEl = document.getElementById("emptyOrgList");
+  if (!res.ok) { listEl.innerHTML = ""; emptyEl.textContent = "Could not load the list."; emptyEl.style.display = "block"; return; }
+  const orgs = await res.json();
+  if (!orgs.length) { listEl.innerHTML = ""; emptyEl.style.display = "block"; return; }
+  emptyEl.style.display = "none";
+  listEl.innerHTML = orgs.map(o => `
+    <li data-id="${o.id}">
+      <span class="org-name">${o.name}</span>
+      <span class="org-meta">${ORG_TYPE_LABEL[o.org_type] || o.org_type}${o.hq_country ? " · " + o.hq_country : ""}</span>
+    </li>
+  `).join("");
+  [...listEl.children].forEach(li => li.addEventListener("click", () => showDetail(li.dataset.id)));
+  const selectedId = document.getElementById("detailCard").dataset.id;
+  if (selectedId) highlightSelected(selectedId);
+}
+
+function highlightSelected(id) {
+  [...document.getElementById("orgList").children].forEach(li => {
+    li.classList.toggle("selected", li.dataset.id === id);
+  });
+}
+
+async function showDetail(id) {
+  const res = await api(`/organizations/${id}`);
+  const org = await res.json();
+  if (!res.ok) return;
+  document.getElementById("detName").textContent = org.name;
+  document.getElementById("detType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
+  const links = [];
+  if (org.website_url) links.push(`<a href="${org.website_url}" target="_blank" rel="noopener">Website ↗</a>`);
+  if (org.linkedin_url) links.push(`<a href="${org.linkedin_url}" target="_blank" rel="noopener">LinkedIn ↗</a>`);
+  if (org.hq_country) links.push(`<span>${org.hq_country}</span>`);
+  document.getElementById("detLinks").innerHTML = links.join("");
+  document.getElementById("detDesc").textContent = org.description || "";
+  document.getElementById("detTableBody").innerHTML = renderPeopleRows(
+    org.people,
+    m => m.people.full_name, m => m.title, m => m.focus, m => m.people.country, m => m.people.linkedin_url
+  );
+  document.getElementById("detailCard").dataset.id = org.id;
+  document.getElementById("detailEmpty").style.display = "none";
+  document.getElementById("detailContent").style.display = "block";
+  highlightSelected(id);
+}
+
+async function deleteOrg() {
+  const id = document.getElementById("detailCard").dataset.id;
+  if (!id || !confirm("Delete this firm and its team from the database?")) return;
+  await api(`/organizations/${id}`, { method: "DELETE" });
+  document.getElementById("detailCard").dataset.id = "";
+  document.getElementById("detailContent").style.display = "none";
+  document.getElementById("detailEmpty").style.display = "block";
+  loadOrgList();
+}
+
+document.getElementById("researchBtn").addEventListener("click", runResearch);
+document.getElementById("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") runResearch(); });
+document.getElementById("saveBtn").addEventListener("click", saveResult);
+document.getElementById("deleteBtn").addEventListener("click", deleteOrg);
+document.getElementById("changeTokenBtn").addEventListener("click", changeToken);
+
+loadOrgList();
+</script>
+
+</body>
+</html>
