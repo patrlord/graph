@@ -1,13 +1,17 @@
 // Graph API - Supabase Edge Function
 //
 // Hosted replacement for graph_app.py's backend. Holds ANTHROPIC_API_KEY,
-// APOLLO_API_KEY, and APP_ACCESS_TOKEN as Supabase function secrets (never
-// shipped to the static frontend). SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
-// are auto-provided by the Edge Functions runtime.
+// APOLLO_API_KEY, and ALLOWED_EMAIL as Supabase function secrets (never
+// shipped to the static frontend). SUPABASE_URL / SUPABASE_ANON_KEY /
+// SUPABASE_SERVICE_ROLE_KEY are auto-provided by the Edge Functions runtime.
 //
-// Every request must carry header `x-access-token: <APP_ACCESS_TOKEN>` -
-// this is a private tool, not a public one, so everything is gated
-// (including reads), not just the paid research call.
+// Auth: every request must carry `Authorization: Bearer <supabase-user-jwt>`
+// from a real signed-in Supabase Auth session (not just the anon key, which
+// is itself a validly-signed JWT but isn't tied to any user - it's checked
+// for explicitly). The authenticated user's email must also match
+// ALLOWED_EMAIL, as a second layer independent of whether public sign-ups
+// happen to be left enabled on the project. This is a private tool, not a
+// public one, so everything is gated (including reads), not just research.
 //
 // Routes (path is whatever follows the function name, e.g. /graph-api/research):
 //   POST   /research            { name, org_type } -> { organization, people }
@@ -17,10 +21,28 @@
 //   DELETE /organizations/:id   -> { ok: true }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const APOLLO_API_KEY = Deno.env.get("APOLLO_API_KEY");
-const APP_ACCESS_TOKEN = Deno.env.get("APP_ACCESS_TOKEN");
+const ALLOWED_EMAIL = Deno.env.get("ALLOWED_EMAIL");
+
+async function authenticate(req: Request): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const auth = req.headers.get("Authorization") || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token) return { ok: false, status: 401, error: "missing bearer token" };
+  if (!ALLOWED_EMAIL) return { ok: false, status: 500, error: "ALLOWED_EMAIL is not configured on the server." };
+
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { Authorization: `Bearer ${token}`, apikey: ANON_KEY },
+  });
+  if (!res.ok) return { ok: false, status: 401, error: "invalid or expired session" };
+  const user = await res.json();
+  if ((user.email || "").toLowerCase() !== ALLOWED_EMAIL.toLowerCase()) {
+    return { ok: false, status: 403, error: "this account is not authorized for this app" };
+  }
+  return { ok: true };
+}
 
 const RESEARCH_MODEL = "claude-sonnet-5";
 const MAX_WEB_SEARCHES = 8;
@@ -42,7 +64,7 @@ const RESEARCH_SYSTEM_PROMPT =
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "content-type, x-access-token",
+  "Access-Control-Allow-Headers": "authorization, content-type",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
 };
 
@@ -347,8 +369,8 @@ class HttpError extends Error {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
 
-  if (!APP_ACCESS_TOKEN) return json({ error: "APP_ACCESS_TOKEN is not configured on the server." }, 500);
-  if (req.headers.get("x-access-token") !== APP_ACCESS_TOKEN) return json({ error: "unauthorized" }, 401);
+  const auth = await authenticate(req);
+  if (!auth.ok) return json({ error: auth.error }, auth.status);
 
   const url = new URL(req.url);
   const path = url.pathname.replace(/^\/graph-api/, "") || "/";

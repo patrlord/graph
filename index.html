@@ -18,9 +18,21 @@
   header p { margin: 2px 0 0; font-size: 12px; color: #6b6862; }
   #headerRight { display: flex; align-items: center; gap: 14px; }
   #globalStatus { font-size: 12px; color: #8a5a2b; font-weight: 500; }
-  #changeTokenBtn { font-size: 12px; background: none; border: none; color: #8a877e; text-decoration: underline; padding: 0; cursor: pointer; }
+  #signedInAs { font-size: 12px; color: #6b6862; }
+  #signOutBtn { font-size: 12px; background: none; border: none; color: #8a877e; text-decoration: underline; padding: 0; cursor: pointer; }
 
-  #main { padding: 24px; max-width: 1500px; margin: 0 auto; }
+  #loginScreen {
+    max-width: 360px; margin: 80px auto; text-align: left;
+  }
+  #loginScreen .card { margin-bottom: 0; }
+  #loginScreen input[type=email], #loginScreen input[type=password] {
+    display: block; width: 100%; font-size: 14px; padding: 8px 10px; border: 1px solid #d8d5cf;
+    border-radius: 6px; margin-bottom: 10px;
+  }
+  #loginScreen button { width: 100%; }
+  #loginStatus { font-size: 12.5px; color: #a33; margin-top: 10px; min-height: 16px; }
+
+  #main { display: none; padding: 24px; max-width: 1500px; margin: 0 auto; }
   #lowerGrid {
     display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.6fr);
     gap: 20px; align-items: start;
@@ -102,9 +114,20 @@
   </div>
   <div id="headerRight">
     <span id="globalStatus"></span>
-    <button id="changeTokenBtn">change access token</button>
+    <span id="signedInAs" style="display:none"></span>
+    <button id="signOutBtn" style="display:none">sign out</button>
   </div>
 </header>
+
+<div id="loginScreen">
+  <div class="card">
+    <h2>Sign in</h2>
+    <input type="email" id="loginEmail" placeholder="Email" autocomplete="username">
+    <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+    <button id="loginBtn">Sign in</button>
+    <div id="loginStatus"></div>
+  </div>
+</div>
 
 <div id="main">
   <div id="researchSection">
@@ -179,44 +202,69 @@
   </div>
 </div>
 
-<script>
-// Points at the Supabase Edge Function that replaces the local Python
-// backend when this page is served statically (e.g. from GitHub Pages).
-const API_BASE = "https://chfqbznodqapxjcqzupj.supabase.co/functions/v1/graph-api";
-const TOKEN_KEY = "graph_access_token";
+<script type="module">
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// Points at this project's Supabase Auth + the Edge Function that replaces
+// the local Python backend when this page is served statically (e.g. from
+// GitHub Pages). The anon key is meant to be public/embedded - it's safe
+// here; it grants no access on its own, only a signed-in session does.
+const SUPABASE_URL = "https://chfqbznodqapxjcqzupj.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_SiN9EMxBxQ-qc34l8UScYQ_EEAFW_Cp";
+const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/graph-api`;
+
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "Family office" };
 let lastResearch = null;
 
-function getToken() {
-  let token = localStorage.getItem(TOKEN_KEY);
-  if (!token) {
-    token = (window.prompt("Enter the access token for this app:") || "").trim();
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-  }
-  return token;
-}
-
-function changeToken() {
-  const token = (window.prompt("Enter the access token for this app:") || "").trim();
-  if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
-    loadOrgList();
-  }
-}
-
 async function api(path, options = {}) {
-  const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
+  const { data: { session } } = await sb.auth.getSession();
+  const res = await fetch(`${FUNCTION_BASE}${path}`, {
     ...options,
-    headers: { "Content-Type": "application/json", "x-access-token": token || "", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token || ""}`, ...(options.headers || {}) },
   });
-  if (res.status === 401) {
-    localStorage.removeItem(TOKEN_KEY);
-    document.getElementById("globalStatus").textContent = "Access token rejected — reload to try again.";
+  if (res.status === 401 || res.status === 403) {
+    document.getElementById("globalStatus").textContent = "Session rejected — try signing in again.";
   }
   return res;
 }
+
+async function signIn() {
+  const email = document.getElementById("loginEmail").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const status = document.getElementById("loginStatus");
+  const btn = document.getElementById("loginBtn");
+  if (!email || !password) { status.textContent = "Enter email and password."; return; }
+  btn.disabled = true;
+  status.textContent = "";
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) status.textContent = error.message;
+  btn.disabled = false;
+}
+
+async function signOut() {
+  await sb.auth.signOut();
+}
+
+function showApp(user) {
+  document.getElementById("loginScreen").style.display = "none";
+  document.getElementById("main").style.display = "block";
+  document.getElementById("signedInAs").textContent = user.email;
+  document.getElementById("signedInAs").style.display = "inline";
+  document.getElementById("signOutBtn").style.display = "inline";
+  loadOrgList();
+}
+
+function showLogin() {
+  document.getElementById("loginScreen").style.display = "block";
+  document.getElementById("main").style.display = "none";
+  document.getElementById("signedInAs").style.display = "none";
+  document.getElementById("signOutBtn").style.display = "none";
+}
+
+sb.auth.onAuthStateChange((_event, session) => {
+  if (session) showApp(session.user); else showLogin();
+});
 
 function linkedInCell(url) {
   if (!url) return '<span class="none">not found</span>';
@@ -359,9 +407,9 @@ document.getElementById("researchBtn").addEventListener("click", runResearch);
 document.getElementById("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") runResearch(); });
 document.getElementById("saveBtn").addEventListener("click", saveResult);
 document.getElementById("deleteBtn").addEventListener("click", deleteOrg);
-document.getElementById("changeTokenBtn").addEventListener("click", changeToken);
-
-loadOrgList();
+document.getElementById("signOutBtn").addEventListener("click", signOut);
+document.getElementById("loginBtn").addEventListener("click", signIn);
+document.getElementById("loginPassword").addEventListener("keydown", e => { if (e.key === "Enter") signIn(); });
 </script>
 
 </body>
