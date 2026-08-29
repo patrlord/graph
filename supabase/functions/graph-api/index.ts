@@ -461,7 +461,9 @@ const NEWS_JSON_SCHEMA = {
 async function searchAndSaveNews(entityType: string, entityId: string, name: string, orgContext?: string) {
   const prompt = `Search for recent news about "${name}"${orgContext ? ` at ${orgContext}` : ""} - funding announcements, new roles or hires, notable coverage, or other newsworthy mentions from roughly the last year.
 
-For each distinct item found (up to 8), report: title, url, source/publication name, published date if known (else null), and a one-sentence summary. Only include real articles/pages you actually found via search - never invent one.`;
+For each distinct item found (up to 8), report: title, url, source/publication name, published date if known (else null), and a one-sentence summary. Only include real articles/pages you actually found via search - never invent one.
+
+The title and summary must be plain prose only - no markdown links, citation brackets, or bracketed references like "[source](url)" anywhere in either field. Put the URL only in the "url" field.`;
 
   const data = await openRouterCall(prompt, "news_search", NEWS_JSON_SCHEMA);
   const items = (data.items || []).filter((i: any) => i.title && i.url);

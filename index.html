@@ -407,15 +407,30 @@ function renderPeopleRows(people, getName, getTitle, getFocus, getCountry, getLi
   `).join("");
 }
 
+// Some models embed inline markdown citations like "[linkedin.com](https://…)"
+// straight into free-text fields even when told not to - strip them so
+// nothing citation-shaped survives into the plain-text display.
+function stripMarkdownLinks(text) {
+  if (!text) return text;
+  return text
+    .replace(/\[[^\]]*\]\(https?:\/\/[^)]*\)/g, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .trim();
+}
+
 function renderNewsList(containerId, items) {
   const el = document.getElementById(containerId);
   if (!items || !items.length) { el.innerHTML = '<div class="empty-note">No news found yet.</div>'; return; }
-  el.innerHTML = items.map(n => `
+  el.innerHTML = items.map(n => {
+    const title = stripMarkdownLinks(n.title);
+    const summary = stripMarkdownLinks(n.summary);
+    return `
     <div class="news-item">
-      <div class="news-line1">${n.published_at ? `<span class="news-date">${n.published_at}</span> ` : ""}<a class="news-title" href="${n.url}" target="_blank" rel="noopener" title="${n.title}">${n.title}</a></div>
-      ${n.summary ? `<div class="news-summary">${n.summary}</div>` : ""}
-    </div>
-  `).join("");
+      <div class="news-line1">${n.published_at ? `<span class="news-date">${n.published_at}</span> ` : ""}<a class="news-title" href="${n.url}" target="_blank" rel="noopener" title="${title}">${title}</a></div>
+      ${summary ? `<div class="news-summary">${summary}</div>` : ""}
+    </div>`;
+  }).join("");
 }
 
 // ---------- organizations: list + search + sort ----------
