@@ -400,7 +400,7 @@ async function signOut() { await sb.auth.signOut(); }
 
 function showApp(user) {
   document.getElementById("loginScreen").style.display = "none";
-  document.getElementById("main").style.display = "flex";
+  document.getElementById("main").style.display = "block";
   document.getElementById("signedInAs").textContent = user.email;
   document.getElementById("signedInAs").style.display = "inline";
   document.getElementById("signOutBtn").style.display = "inline";
