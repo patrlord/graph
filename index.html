@@ -6,11 +6,14 @@
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: #f6f5f3; color: #1c1c1c;
+    display: flex; flex-direction: column; overflow: hidden;
   }
   header {
+    flex: 0 0 auto;
     padding: 16px 24px; background: #fff; border-bottom: 1px solid #e2e0dc;
     display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
   }
@@ -30,25 +33,52 @@
   #loginScreen button { width: 100%; }
   #loginStatus { font-size: 12.5px; color: #a33; margin-top: 10px; min-height: 16px; }
 
-  #main { display: none; padding: 20px; max-width: 1800px; margin: 0 auto; }
-  #quadGrid {
-    display: grid; grid-template-columns: minmax(360px, 2fr) minmax(280px, 1fr);
-    gap: 18px; align-items: start;
+  #main {
+    display: none; flex: 1 1 auto; min-height: 0; overflow: hidden;
+    padding: 20px; max-width: 1800px; margin: 0 auto; width: 100%;
   }
-  @media (max-width: 900px) { #main { padding: 14px; } #quadGrid { grid-template-columns: 1fr; } }
+  #quadGrid {
+    display: grid; height: 100%; min-height: 0;
+    grid-template-columns: var(--colSplit, 66%) 8px 1fr;
+    grid-template-rows: var(--rowSplit, 420px) 8px 1fr;
+  }
+  #orgListCard { grid-column: 1; grid-row: 1; }
+  #orgDetailCard { grid-column: 3; grid-row: 1; }
+  #peopleListCard { grid-column: 1; grid-row: 3; }
+  #personDetailCard { grid-column: 3; grid-row: 3; }
+
+  .pane-divider { position: relative; }
+  .pane-divider::after { content: ""; position: absolute; background: #e2e0dc; }
+  .pane-divider:hover::after, .pane-divider.dragging::after { background: #8a5a2b; }
+  #vDivider { grid-column: 2; grid-row: 1 / span 3; cursor: col-resize; }
+  #vDivider::after { top: 0; bottom: 0; left: 50%; width: 1px; }
+  #vDivider:hover::after, #vDivider.dragging::after { width: 2px; left: calc(50% - 1px); }
+  #hDivider { grid-column: 1 / span 3; grid-row: 2; cursor: row-resize; }
+  #hDivider::after { left: 0; right: 0; top: 50%; height: 1px; }
+  #hDivider:hover::after, #hDivider.dragging::after { height: 2px; top: calc(50% - 1px); }
+
+  @media (max-width: 900px) {
+    body { overflow: visible; }
+    #main { height: auto; overflow: visible; padding: 14px; }
+    #quadGrid { display: flex; flex-direction: column; gap: 16px; height: auto; }
+    #vDivider, #hDivider { display: none; }
+    #quadGrid > .card { height: auto !important; }
+  }
 
   .card {
     background: #fff; border: 1px solid #e2e0dc; border-radius: 8px; padding: 16px 18px;
     display: flex; flex-direction: column; min-width: 0;
   }
-  .panel-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  #quadGrid > .card { height: 100%; min-height: 0; overflow: hidden; }
+  .panel-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; flex: 0 0 auto; }
   .panel-header h2 { font-size: 13.5px; margin: 0; font-weight: 600; white-space: nowrap; }
   .panel-tools { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; justify-content: flex-end; }
   .panel-tools input[type=text] {
     font-size: 12.5px; padding: 6px 8px; border: 1px solid #d8d5cf; border-radius: 6px; width: 130px; min-width: 0;
   }
 
-  .scroll-box { max-height: 420px; overflow-y: auto; }
+  .scroll-box { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .detail-header { flex: 0 0 auto; }
 
   select {
     font-size: 13px; padding: 8px 10px; border: 1px solid #d8d5cf; border-radius: 6px; background: #fff;
@@ -120,6 +150,8 @@
   .news-summary { color: #444; margin-top: 3px; }
 
   .detail-empty { font-size: 12.5px; color: #8a877e; padding: 20px 0; text-align: center; }
+  .detail-content { display: none; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .detail-content.shown { display: flex; }
 </style>
 </head>
 <body>
@@ -148,6 +180,8 @@
 
 <div id="main">
   <div id="quadGrid">
+    <div class="pane-divider" id="vDivider"></div>
+    <div class="pane-divider" id="hDivider"></div>
 
     <!-- Top-left: organization list -->
     <div class="card" id="orgListCard">
@@ -211,24 +245,28 @@
     <div class="card" id="orgDetailCard">
       <div class="panel-header"><h2>Organization</h2></div>
       <div class="detail-empty" id="orgDetailEmpty">Select an organization from the list.</div>
-      <div id="orgDetailContent" style="display:none">
-        <div class="org-header">
-          <h3 id="detOrgName"></h3>
-          <span class="type-pill" id="detOrgType"></span>
-        </div>
-        <div class="entity-links" id="detOrgLinks"></div>
-        <div id="detOrgSectors"></div>
-        <div class="entity-desc" id="detOrgDesc"></div>
-        <div style="margin-top:14px;">
-          <button class="danger" id="deleteOrgBtn">Delete</button>
-        </div>
-        <div class="news-section">
-          <div style="display:flex;align-items:center;justify-content:space-between;">
-            <strong style="font-size:12.5px;">Latest news</strong>
-            <button class="secondary tiny" id="orgNewsSearchBtn">Search for news</button>
+      <div id="orgDetailContent" class="detail-content">
+        <div class="detail-header">
+          <div class="org-header">
+            <h3 id="detOrgName"></h3>
+            <span class="type-pill" id="detOrgType"></span>
           </div>
-          <div class="status-line" id="orgNewsStatus"></div>
-          <div id="orgNewsList"></div>
+          <div class="entity-links" id="detOrgLinks"></div>
+        </div>
+        <div class="scroll-box">
+          <div id="detOrgSectors"></div>
+          <div class="entity-desc" id="detOrgDesc"></div>
+          <div style="margin-top:14px;">
+            <button class="danger" id="deleteOrgBtn">Delete</button>
+          </div>
+          <div class="news-section">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <strong style="font-size:12.5px;">Latest news</strong>
+              <button class="secondary tiny" id="orgNewsSearchBtn">Search for news</button>
+            </div>
+            <div class="status-line" id="orgNewsStatus"></div>
+            <div id="orgNewsList"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -293,17 +331,21 @@
     <div class="card" id="personDetailCard">
       <div class="panel-header"><h2>Person</h2></div>
       <div class="detail-empty" id="personDetailEmpty">Select a person from the list.</div>
-      <div id="personDetailContent" style="display:none">
-        <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
-        <div class="entity-desc" id="detPersonMeta"></div>
-        <div class="entity-links" id="detPersonLinks"></div>
-        <div class="news-section">
-          <div style="display:flex;align-items:center;justify-content:space-between;">
-            <strong style="font-size:12.5px;">Latest news</strong>
-            <button class="secondary tiny" id="personNewsSearchBtn">Search for news</button>
+      <div id="personDetailContent" class="detail-content">
+        <div class="detail-header">
+          <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+          <div class="entity-desc" id="detPersonMeta"></div>
+          <div class="entity-links" id="detPersonLinks"></div>
+        </div>
+        <div class="scroll-box">
+          <div class="news-section">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <strong style="font-size:12.5px;">Latest news</strong>
+              <button class="secondary tiny" id="personNewsSearchBtn">Search for news</button>
+            </div>
+            <div class="status-line" id="personNewsStatus"></div>
+            <div id="personNewsList"></div>
           </div>
-          <div class="status-line" id="personNewsStatus"></div>
-          <div id="personNewsList"></div>
         </div>
       </div>
     </div>
@@ -358,7 +400,7 @@ async function signOut() { await sb.auth.signOut(); }
 
 function showApp(user) {
   document.getElementById("loginScreen").style.display = "none";
-  document.getElementById("main").style.display = "block";
+  document.getElementById("main").style.display = "flex";
   document.getElementById("signedInAs").textContent = user.email;
   document.getElementById("signedInAs").style.display = "inline";
   document.getElementById("signOutBtn").style.display = "inline";
@@ -519,7 +561,7 @@ async function selectOrg(id) {
 
 function renderOrgDetail(org) {
   document.getElementById("orgDetailEmpty").style.display = "none";
-  document.getElementById("orgDetailContent").style.display = "block";
+  document.getElementById("orgDetailContent").classList.add("shown");
   document.getElementById("detOrgName").textContent = org.name;
   document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
   document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
@@ -557,7 +599,7 @@ async function deleteSelectedOrg() {
   await api(`/organizations/${selectedOrg.id}`, { method: "DELETE" });
   selectedOrg = null; selectedPersonId = null;
   document.getElementById("orgDetailEmpty").style.display = "block";
-  document.getElementById("orgDetailContent").style.display = "none";
+  document.getElementById("orgDetailContent").classList.remove("shown");
   renderPeopleList([], "empty");
   showPersonDetail(null);
   loadOrgList();
@@ -626,11 +668,11 @@ async function selectPerson(p) {
 function showPersonDetail(person) {
   if (!person) {
     document.getElementById("personDetailEmpty").style.display = "block";
-    document.getElementById("personDetailContent").style.display = "none";
+    document.getElementById("personDetailContent").classList.remove("shown");
     return;
   }
   document.getElementById("personDetailEmpty").style.display = "none";
-  document.getElementById("personDetailContent").style.display = "block";
+  document.getElementById("personDetailContent").classList.add("shown");
   document.getElementById("detPersonName").textContent = person.full_name;
   document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
   document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
@@ -821,6 +863,57 @@ document.getElementById("personAddToggleBtn").addEventListener("click", () => {
 document.getElementById("personResearchBtn").addEventListener("click", runPersonResearch);
 document.getElementById("personSaveBtn").addEventListener("click", savePersonResult);
 document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
+
+// ---------- draggable quadrant dividers ----------
+
+function readStorage(key) { try { return localStorage.getItem(key); } catch { return null; } }
+function writeStorage(key, value) { try { localStorage.setItem(key, value); } catch {} }
+
+function initDivider(divider, axis, cssVar, storageKey) {
+  const grid = document.getElementById("quadGrid");
+  const saved = readStorage(storageKey);
+  if (saved) grid.style.setProperty(cssVar, saved);
+
+  let dragging = false;
+
+  function move(clientX, clientY) {
+    const rect = grid.getBoundingClientRect();
+    let value;
+    if (axis === "x") {
+      const pct = Math.min(75, Math.max(25, ((clientX - rect.left) / rect.width) * 100));
+      value = `${pct.toFixed(2)}%`;
+    } else {
+      const px = Math.min(rect.height - 150, Math.max(150, clientY - rect.top));
+      value = `${Math.round(px)}px`;
+    }
+    grid.style.setProperty(cssVar, value);
+    writeStorage(storageKey, value);
+  }
+
+  function start(e) {
+    dragging = true;
+    divider.classList.add("dragging");
+    document.body.style.userSelect = "none";
+    e.preventDefault();
+  }
+  function end() {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove("dragging");
+    document.body.style.userSelect = "";
+  }
+
+  divider.addEventListener("mousedown", start);
+  window.addEventListener("mousemove", e => { if (dragging) move(e.clientX, e.clientY); });
+  window.addEventListener("mouseup", end);
+
+  divider.addEventListener("touchstart", e => start(e), { passive: false });
+  window.addEventListener("touchmove", e => { if (dragging && e.touches[0]) move(e.touches[0].clientX, e.touches[0].clientY); }, { passive: true });
+  window.addEventListener("touchend", end);
+}
+
+initDivider(document.getElementById("vDivider"), "x", "--colSplit", "graph_colSplit");
+initDivider(document.getElementById("hDivider"), "y", "--rowSplit", "graph_rowSplit");
 </script>
 
 </body>
