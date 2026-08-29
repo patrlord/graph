@@ -113,11 +113,10 @@
   .news-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e0dc; }
   .news-item { padding: 8px 0; border-bottom: 1px solid #f2f0ec; font-size: 12px; }
   .news-item:last-child { border-bottom: none; }
+  .news-line1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .news-date { color: #8a877e; font-size: 11px; }
   .news-item a.news-title { color: #1c1c1c; text-decoration: none; font-weight: 500; }
   .news-item a.news-title:hover { text-decoration: underline; }
-  .news-meta { color: #8a877e; font-size: 11px; margin-top: 2px; }
-  .news-meta a { color: #8a877e; text-decoration: none; }
-  .news-meta a:hover { text-decoration: underline; color: #8a5a2b; }
   .news-summary { color: #444; margin-top: 3px; }
 
   .detail-empty { font-size: 12.5px; color: #8a877e; padding: 20px 0; text-align: center; }
@@ -408,23 +407,15 @@ function renderPeopleRows(people, getName, getTitle, getFocus, getCountry, getLi
   `).join("");
 }
 
-function domainOf(url) {
-  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return null; }
-}
-
 function renderNewsList(containerId, items) {
   const el = document.getElementById(containerId);
   if (!items || !items.length) { el.innerHTML = '<div class="empty-note">No news found yet.</div>'; return; }
-  el.innerHTML = items.map(n => {
-    const domain = domainOf(n.url);
-    const sourceLink = domain ? `<a href="${n.url}" target="_blank" rel="noopener">${domain}</a>` : (n.source || "");
-    return `
+  el.innerHTML = items.map(n => `
     <div class="news-item">
-      <a class="news-title" href="${n.url}" target="_blank" rel="noopener">${n.title}</a>
-      <div class="news-meta">${[sourceLink, n.published_at].filter(Boolean).join(" · ")}</div>
+      <div class="news-line1">${n.published_at ? `<span class="news-date">${n.published_at}</span> ` : ""}<a class="news-title" href="${n.url}" target="_blank" rel="noopener" title="${n.title}">${n.title}</a></div>
       ${n.summary ? `<div class="news-summary">${n.summary}</div>` : ""}
-    </div>`;
-  }).join("");
+    </div>
+  `).join("");
 }
 
 // ---------- organizations: list + search + sort ----------
