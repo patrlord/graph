@@ -1,6 +1,6 @@
 // Graph API - Supabase Edge Function
 //
-// Hosted replacement for graph_app.py's backend. Holds ANTHROPIC_API_KEY,
+// Backend for the Graph app (GitHub Pages frontend). Holds OPENROUTER_API_KEY,
 // APOLLO_API_KEY, and ALLOWED_EMAIL as Supabase function secrets (never
 // shipped to the static frontend). SUPABASE_URL / SUPABASE_ANON_KEY /
 // SUPABASE_SERVICE_ROLE_KEY are auto-provided by the Edge Functions runtime.
@@ -10,22 +10,64 @@
 // is itself a validly-signed JWT but isn't tied to any user - it's checked
 // for explicitly). The authenticated user's email must also match
 // ALLOWED_EMAIL, as a second layer independent of whether public sign-ups
-// happen to be left enabled on the project. This is a private tool, not a
-// public one, so everything is gated (including reads), not just research.
+// happen to be left enabled on the project.
+//
+// Research/news use OpenRouter (openai/gpt-5-nano) with its web-search
+// plugin: exactly one grounded search per call, not an open-ended agentic
+// search loop - bounded, predictable cost. Apollo's free organizations/
+// enrich still runs afterward as a backfill for whatever OpenRouter didn't
+// find (hq location/description/LinkedIn), same as before.
 //
 // Routes (path is whatever follows the function name, e.g. /graph-api/research):
 //   POST   /research            { name, org_type } -> { organization, people }
-//   GET    /organizations       -> [ {id, name, org_type, website_url, linkedin_url, hq_country, updated_at}, ... ]
+//   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }
+//   GET    /organizations       -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at}, ... ]
 //   POST   /organizations       { organization, people } -> saved { organization, people }
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
+//   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ]
+//   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
+//   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
+const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
 const APOLLO_API_KEY = Deno.env.get("APOLLO_API_KEY");
 const ALLOWED_EMAIL = Deno.env.get("ALLOWED_EMAIL");
+
+const OPENROUTER_MODEL = "openai/gpt-5-nano";
+const APOLLO_BASE = "https://api.apollo.io/api/v1";
+
+const ORG_TYPE_LABELS: Record<string, string> = {
+  vc: "venture capital firm",
+  cvc: "corporate venture capital arm",
+  angel: "business angel / angel investor",
+  family_office: "family office",
+};
+
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+};
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+  });
+}
+
+class HttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// ---------- Auth ----------
 
 async function authenticate(req: Request): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
   const auth = req.headers.get("Authorization") || "";
@@ -42,37 +84,6 @@ async function authenticate(req: Request): Promise<{ ok: true } | { ok: false; s
     return { ok: false, status: 403, error: "this account is not authorized for this app" };
   }
   return { ok: true };
-}
-
-const RESEARCH_MODEL = "claude-sonnet-5";
-const MAX_WEB_SEARCHES = 8;
-const APOLLO_BASE = "https://api.apollo.io/api/v1";
-
-const ORG_TYPE_LABELS: Record<string, string> = {
-  vc: "venture capital firm",
-  cvc: "corporate venture capital arm",
-  angel: "business angel / angel investor",
-  family_office: "family office",
-};
-
-const RESEARCH_SYSTEM_PROMPT =
-  "You are a careful research assistant that finds accurate, current information about " +
-  "investment firms and the people on their team using web search. Be conservative: only " +
-  "state facts you actually found via search, and never invent, guess, or construct a URL " +
-  "(website or LinkedIn). If you cannot find a piece of information, use null rather than " +
-  "guessing at it.";
-
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, content-type",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-};
-
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-  });
 }
 
 // ---------- Supabase REST helper ----------
@@ -103,13 +114,21 @@ async function supabaseRequest(
   return text ? JSON.parse(text) : null;
 }
 
+function isBlank(v: unknown): boolean {
+  if (v === null || v === undefined || v === "") return true;
+  if (Array.isArray(v) && v.length === 0) return true;
+  return false;
+}
+
 function mergeFields(existing: Record<string, any>, newFields: Record<string, any>) {
   const merged: Record<string, any> = {};
   for (const [k, v] of Object.entries(newFields)) {
-    merged[k] = v !== null && v !== undefined && v !== "" ? v : existing[k];
+    merged[k] = isBlank(v) ? existing[k] : v;
   }
   return merged;
 }
+
+// ---------- Organizations / people / memberships ----------
 
 async function findOrganizationByName(name: string) {
   const rows = await supabaseRequest("GET", "organizations", {
@@ -138,6 +157,7 @@ async function saveOrganization(payload: any) {
     linkedin_url: orgIn.linkedin_url || null,
     hq_country: orgIn.hq_country || null,
     description: orgIn.description || null,
+    sectors: Array.isArray(orgIn.sectors) ? orgIn.sectors.filter(Boolean) : [],
   };
 
   const existingOrg = await findOrganizationByName(name);
@@ -223,7 +243,7 @@ async function saveOrganization(payload: any) {
 async function listOrganizations() {
   return await supabaseRequest("GET", "organizations", {
     params: {
-      select: "id,name,org_type,website_url,linkedin_url,hq_country,updated_at",
+      select: "id,name,org_type,website_url,linkedin_url,hq_country,sectors,updated_at",
       order: "name.asc",
     },
   });
@@ -240,6 +260,25 @@ async function getOrganization(id: string) {
     },
   });
   return org;
+}
+
+async function searchPeopleGlobal(query: string) {
+  const people = await supabaseRequest("GET", "people", {
+    params: {
+      full_name: `ilike.*${query}*`,
+      select: "*,memberships(organization_id,is_current,updated_at,title,organizations(id,name))",
+      limit: "25",
+    },
+  });
+  return (people ?? []).map((p: any) => {
+    const ms = [...(p.memberships || [])].sort((a: any, b: any) => {
+      if (a.is_current !== b.is_current) return a.is_current ? -1 : 1;
+      return (b.updated_at || "").localeCompare(a.updated_at || "");
+    });
+    const best = ms[0];
+    const { memberships, ...rest } = p;
+    return { ...rest, title: best?.title || null, organization: best?.organizations || null };
+  });
 }
 
 // ---------- Apollo (free organizations/enrich backfill only) ----------
@@ -284,71 +323,87 @@ async function backfillFromApollo(org: Record<string, any>) {
   }
 }
 
-// ---------- Research (Claude web search) ----------
+// ---------- OpenRouter ----------
 
-async function researchOrganization(name: string, orgType: string) {
-  if (!ANTHROPIC_API_KEY) throw new HttpError(503, "ANTHROPIC_API_KEY is not configured.");
-  const orgTypeLabel = ORG_TYPE_LABELS[orgType] || "investment firm";
-  const prompt = `Research "${name}", a ${orgTypeLabel}.
-
-1. Find its official website URL and its official LinkedIn company page URL.
-2. Identify its current key team members - partners, principals, investment directors, and \
-similar investment-team roles (skip purely operational/admin staff like office managers). For \
-each person find:
-   - full name
-   - title (their role at the firm)
-   - sector/focus if stated anywhere (e.g. "Fintech, Series A-B"), else null
-   - the country they are based in, else null
-   - their personal LinkedIn profile URL, only if you can find and confirm it - leave null \
-otherwise, never guess or construct one
-
-Use web search as needed, but don't over-search - a couple of searches per hard-to-find person is \
-plenty; if it's not findable after that, use null and move on rather than exhausting your search \
-budget on it. When you are done, respond with ONLY a single fenced json code block, and nothing \
-else after it, containing exactly this shape:
-
-\`\`\`json
-{
-  "organization": {
-    "name": "...",
-    "website_url": "... or null",
-    "linkedin_url": "... or null",
-    "hq_country": "... or null",
-    "description": "one sentence description of the firm, or null"
-  },
-  "people": [
-    {"full_name": "...", "title": "...", "focus": "... or null", "country": "... or null", "linkedin_url": "... or null"}
-  ]
-}
-\`\`\``;
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+async function openRouterCall(userContent: string, schemaName: string, jsonSchema: any): Promise<any> {
+  if (!OPENROUTER_API_KEY) throw new HttpError(503, "OPENROUTER_API_KEY is not configured.");
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
+      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://patrlord.github.io/graph/",
+      "X-Title": "Graph",
     },
     body: JSON.stringify({
-      model: RESEARCH_MODEL,
-      max_tokens: 4096,
-      system: RESEARCH_SYSTEM_PROMPT,
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: MAX_WEB_SEARCHES }],
-      messages: [{ role: "user", content: prompt }],
+      model: OPENROUTER_MODEL,
+      messages: [{ role: "user", content: userContent }],
+      plugins: [{ id: "web", engine: "exa", max_results: 10 }],
+      response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
     }),
   });
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 500);
-    throw new Error(`Anthropic request failed (${res.status}): ${detail}`);
+    throw new Error(`OpenRouter request failed (${res.status}): ${detail}`);
   }
-  const response = await res.json();
-  const text = (response.content ?? [])
-    .filter((b: any) => b.type === "text")
-    .map((b: any) => b.text)
-    .join("");
-  const match = text.match(/```json\s*(\{[\s\S]*?\})\s*```/);
-  if (!match) throw new Error("Could not find a JSON result in the model's response.");
-  const data = JSON.parse(match[1]);
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error("OpenRouter returned no content.");
+  return JSON.parse(content);
+}
+
+const NEVER_GUESS = "Never invent, guess, or construct a URL, name, or fact you didn't actually find via search - use null for anything you can't confirm.";
+
+const RESEARCH_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    organization: {
+      type: "object",
+      properties: {
+        name: { type: ["string", "null"] },
+        website_url: { type: ["string", "null"] },
+        linkedin_url: { type: ["string", "null"] },
+        hq_country: { type: ["string", "null"] },
+        description: { type: ["string", "null"] },
+        sectors: { type: "array", items: { type: "string" } },
+      },
+      required: ["name", "website_url", "linkedin_url", "hq_country", "description", "sectors"],
+      additionalProperties: false,
+    },
+    people: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          full_name: { type: "string" },
+          title: { type: ["string", "null"] },
+          focus: { type: ["string", "null"] },
+          country: { type: ["string", "null"] },
+          linkedin_url: { type: ["string", "null"] },
+        },
+        required: ["full_name", "title", "focus", "country", "linkedin_url"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["organization", "people"],
+  additionalProperties: false,
+};
+
+async function researchOrganization(name: string, orgType: string) {
+  const orgTypeLabel = ORG_TYPE_LABELS[orgType] || "investment firm";
+  const prompt = `Search for and find information about "${name}", a ${orgTypeLabel}: its official website, LinkedIn company page, key team members, and sectors it invests in.
+
+Report:
+- Official website URL and LinkedIn company page URL, only if confirmed
+- Where it's headquartered (city and country)
+- A one-sentence description of the firm
+- 2-6 short sector/industry tags it focuses on (e.g. "Fintech", "AI infrastructure", "Climate tech")
+- Its current key team members - partners, principals, investment directors and similar investment-team roles (skip admin/ops staff). For each: full name, title, sector/focus if stated, country they're based in, and personal LinkedIn URL if confirmed.
+
+${NEVER_GUESS}`;
+
+  const data = await openRouterCall(prompt, "firm_research", RESEARCH_JSON_SCHEMA);
   data.organization = data.organization || {};
   data.organization.org_type = orgType;
   data.people = data.people || [];
@@ -356,15 +411,91 @@ else after it, containing exactly this shape:
   return data;
 }
 
-// ---------- Routing ----------
+async function researchPerson(name: string, companyHint: string, linkedinUrl: string) {
+  if (!name && !linkedinUrl) throw new HttpError(400, "name or linkedin_url is required");
+  const who = name
+    ? `"${name}"${companyHint ? `, who may work at "${companyHint}"` : ""}`
+    : `the person at this LinkedIn URL: ${linkedinUrl}`;
+  const prompt = `Search for and identify ${who} - an individual working at a VC, CVC, business angel, or family office firm.
 
-class HttpError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
+Report:
+- Their full name, current title, sector/focus if stated, and the country they're based in
+- Their confirmed personal LinkedIn URL
+- The firm they currently work at: its name, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and 2-6 short sector/industry tags
+
+If you cannot confidently identify this person or their current firm, leave the relevant fields null rather than guessing. Return exactly one entry in "people" (or none if you can't confirm anyone).
+
+${NEVER_GUESS}`;
+
+  const data = await openRouterCall(prompt, "person_research", RESEARCH_JSON_SCHEMA);
+  data.organization = data.organization || {};
+  data.organization.org_type = "vc";
+  data.people = (data.people || []).slice(0, 1);
+  if (data.organization.name) await backfillFromApollo(data.organization);
+  return data;
 }
+
+const NEWS_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          url: { type: "string" },
+          source: { type: ["string", "null"] },
+          published_at: { type: ["string", "null"] },
+          summary: { type: ["string", "null"] },
+        },
+        required: ["title", "url", "source", "published_at", "summary"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["items"],
+  additionalProperties: false,
+};
+
+async function searchAndSaveNews(entityType: string, entityId: string, name: string, orgContext?: string) {
+  const prompt = `Search for recent news about "${name}"${orgContext ? ` at ${orgContext}` : ""} - funding announcements, new roles or hires, notable coverage, or other newsworthy mentions from roughly the last year.
+
+For each distinct item found (up to 8), report: title, url, source/publication name, published date if known (else null), and a one-sentence summary. Only include real articles/pages you actually found via search - never invent one.`;
+
+  const data = await openRouterCall(prompt, "news_search", NEWS_JSON_SCHEMA);
+  const items = (data.items || []).filter((i: any) => i.title && i.url);
+  if (items.length) {
+    const rows = items.map((i: any) => ({
+      entity_type: entityType,
+      entity_id: entityId,
+      title: i.title,
+      url: i.url,
+      source: i.source || null,
+      published_at: i.published_at || null,
+      summary: i.summary || null,
+    }));
+    await supabaseRequest("POST", "news_items", {
+      body: rows,
+      params: { on_conflict: "entity_type,entity_id,url" },
+      prefer: "resolution=merge-duplicates,return=minimal",
+    });
+  }
+  return await listNews(entityType, entityId);
+}
+
+async function listNews(entityType: string, entityId: string) {
+  return await supabaseRequest("GET", "news_items", {
+    params: {
+      entity_type: `eq.${entityType}`,
+      entity_id: `eq.${entityId}`,
+      select: "*",
+      order: "found_at.desc",
+    },
+  });
+}
+
+// ---------- Routing ----------
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -384,6 +515,15 @@ Deno.serve(async (req) => {
       return json(await researchOrganization(name, orgType));
     }
 
+    if (req.method === "POST" && path === "/research-person") {
+      const body = await req.json();
+      return json(await researchPerson(
+        (body.name ?? "").trim(),
+        (body.company_hint ?? "").trim(),
+        (body.linkedin_url ?? "").trim(),
+      ));
+    }
+
     if (req.method === "GET" && path === "/organizations") {
       return json(await listOrganizations());
     }
@@ -391,6 +531,28 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/organizations") {
       const body = await req.json();
       return json(await saveOrganization(body));
+    }
+
+    if (req.method === "GET" && path === "/people") {
+      const q = (url.searchParams.get("q") ?? "").trim();
+      if (!q) return json({ error: "q is required" }, 400);
+      return json(await searchPeopleGlobal(q));
+    }
+
+    if (req.method === "GET" && path === "/news") {
+      const entityType = url.searchParams.get("entity_type") ?? "";
+      const entityId = url.searchParams.get("entity_id") ?? "";
+      if (!entityType || !entityId) return json({ error: "entity_type and entity_id are required" }, 400);
+      return json(await listNews(entityType, entityId));
+    }
+
+    if (req.method === "POST" && path === "/news/search") {
+      const body = await req.json();
+      const { entity_type, entity_id, name, org_context } = body;
+      if (!entity_type || !entity_id || !name) {
+        return json({ error: "entity_type, entity_id, and name are required" }, 400);
+      }
+      return json(await searchAndSaveNews(entity_type, entity_id, name, org_context));
     }
 
     const orgIdMatch = path.match(/^\/organizations\/([^/]+)$/);

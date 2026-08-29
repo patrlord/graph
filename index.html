@@ -17,13 +17,11 @@
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
   header p { margin: 2px 0 0; font-size: 12px; color: #6b6862; }
   #headerRight { display: flex; align-items: center; gap: 14px; }
-  #globalStatus { font-size: 12px; color: #8a5a2b; font-weight: 500; }
+  #globalStatus { font-size: 12px; color: #a33; font-weight: 500; }
   #signedInAs { font-size: 12px; color: #6b6862; }
   #signOutBtn { font-size: 12px; background: none; border: none; color: #8a877e; text-decoration: underline; padding: 0; cursor: pointer; }
 
-  #loginScreen {
-    max-width: 360px; margin: 80px auto; text-align: left;
-  }
+  #loginScreen { max-width: 360px; margin: 80px auto; text-align: left; }
   #loginScreen .card { margin-bottom: 0; }
   #loginScreen input[type=email], #loginScreen input[type=password] {
     display: block; width: 100%; font-size: 14px; padding: 8px 10px; border: 1px solid #d8d5cf;
@@ -32,30 +30,32 @@
   #loginScreen button { width: 100%; }
   #loginStatus { font-size: 12.5px; color: #a33; margin-top: 10px; min-height: 16px; }
 
-  #main { display: none; padding: 24px; max-width: 1500px; margin: 0 auto; }
-  #lowerGrid {
-    display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.6fr);
-    gap: 20px; align-items: start;
+  #main { display: none; padding: 20px; max-width: 1600px; margin: 0 auto; }
+  #quadGrid {
+    display: grid; grid-template-columns: minmax(300px, 1fr) minmax(380px, 1.5fr);
+    gap: 18px; align-items: start;
   }
-  #lowerGrid > div, #researchSection > div { min-width: 0; }
-  @media (max-width: 900px) { #main { padding: 16px; } #lowerGrid { grid-template-columns: 1fr; gap: 16px; } }
-
-  .scroll-box { max-height: 640px; overflow-y: auto; }
+  @media (max-width: 900px) { #main { padding: 14px; } #quadGrid { grid-template-columns: 1fr; } }
 
   .card {
-    background: #fff; border: 1px solid #e2e0dc; border-radius: 8px; padding: 18px 20px; margin-bottom: 20px;
+    background: #fff; border: 1px solid #e2e0dc; border-radius: 8px; padding: 16px 18px;
+    display: flex; flex-direction: column; min-width: 0;
   }
-  .card h2 { font-size: 14px; margin: 0 0 14px; font-weight: 600; }
+  .panel-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .panel-header h2 { font-size: 13.5px; margin: 0; font-weight: 600; white-space: nowrap; }
+  .panel-tools { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; justify-content: flex-end; }
+  .panel-tools input[type=text] {
+    font-size: 12.5px; padding: 6px 8px; border: 1px solid #d8d5cf; border-radius: 6px; width: 130px; min-width: 0;
+  }
 
-  .form-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
-  .form-row input[type=text] {
-    flex: 1 1 180px; min-width: 0; font-size: 14px; padding: 8px 10px; border: 1px solid #d8d5cf; border-radius: 6px;
-  }
+  .scroll-box { max-height: 420px; overflow-y: auto; }
+
   select {
     font-size: 13px; padding: 8px 10px; border: 1px solid #d8d5cf; border-radius: 6px; background: #fff;
   }
+  input[type=text] { font-size: 13px; padding: 7px 9px; border: 1px solid #d8d5cf; border-radius: 6px; }
   button {
-    font-size: 13px; padding: 8px 14px; border: 1px solid #8a5a2b; border-radius: 6px;
+    font-size: 12.5px; padding: 6px 12px; border: 1px solid #8a5a2b; border-radius: 6px;
     background: #8a5a2b; color: #fff; cursor: pointer; white-space: nowrap;
   }
   button:hover { background: #764a22; }
@@ -64,45 +64,61 @@
   button.secondary:hover { background: #f0eee9; }
   button.danger { background: #fff; color: #a33; border-color: #e0b8b8; }
   button.danger:hover { background: #fdf2f2; }
+  button.tiny { padding: 4px 8px; font-size: 11.5px; }
 
-  #researchStatus { font-size: 12.5px; color: #6b6862; margin-top: 8px; min-height: 16px; }
-  #researchStatus.error { color: #a33; }
+  .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
+  .status-line.error { color: #a33; }
+
+  .addPanel {
+    display: none; border: 1px solid #e2e0dc; border-radius: 6px; padding: 12px; margin-bottom: 14px; background: #fbfaf8;
+  }
+  .addPanel.open { display: block; }
+  .addPanel .form-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .addPanel .form-row input[type=text] { flex: 1 1 140px; min-width: 0; }
+  .addPanel .or-sep { font-size: 11px; color: #8a877e; text-align: center; margin: 6px 0; }
 
   .org-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-  .org-header h3 { margin: 0; font-size: 16px; }
-  .org-type-pill {
-    display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  .org-header h3 { margin: 0; font-size: 15.5px; }
+  .type-pill {
+    display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
     background: #f0eee9; color: #6b6862; border: 1px solid #e2e0dc; text-transform: uppercase; letter-spacing: .03em;
   }
-  .org-links { font-size: 12.5px; margin-top: 6px; }
-  .org-links a { color: #8a5a2b; text-decoration: none; margin-right: 14px; }
-  .org-links a:hover { text-decoration: underline; }
-  .org-desc { font-size: 13px; color: #444; margin-top: 8px; line-height: 1.5; }
-
-  table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
-  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #eeece7; vertical-align: top; }
-  th { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: #8a877e; font-weight: 600; }
-  td.name { font-weight: 500; }
-  td .sub { font-size: 11.5px; color: #8a877e; }
-  a.li-link { color: #8a5a2b; text-decoration: none; font-size: 12px; }
-  a.li-link:hover { text-decoration: underline; }
+  .sector-tag {
+    display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; margin: 2px 3px 2px 0;
+    background: #f5ebe0; color: #8a5a2b; border: 1px solid #ecd9c3;
+  }
+  .entity-links { font-size: 12px; margin-top: 6px; }
+  .entity-links a { color: #8a5a2b; text-decoration: none; margin-right: 12px; }
+  .entity-links a:hover { text-decoration: underline; }
+  .entity-desc { font-size: 12.5px; color: #444; margin-top: 8px; line-height: 1.5; }
   .none { color: #b5b1a9; }
 
-  .actions-row { display: flex; gap: 10px; margin-top: 16px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 7px; border-bottom: 1px solid #eeece7; vertical-align: top; }
+  th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: #8a877e; font-weight: 600; }
+  a.li-link { color: #8a5a2b; text-decoration: none; font-size: 11.5px; }
+  a.li-link:hover { text-decoration: underline; }
 
-  #detailEmpty { font-size: 12.5px; color: #8a877e; }
-
-  #orgList { list-style: none; margin: 0; padding: 0; }
-  #orgList li {
-    padding: 10px 0; border-bottom: 1px solid #eeece7; cursor: pointer;
-    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  ul.entity-list { list-style: none; margin: 0; padding: 0; }
+  ul.entity-list li {
+    padding: 9px 2px; border-bottom: 1px solid #eeece7; cursor: pointer;
   }
-  #orgList li:hover { color: #8a5a2b; }
-  #orgList li.selected { background: #fbf3ea; }
-  #orgList li:last-child { border-bottom: none; }
-  #orgList .org-name { font-size: 13.5px; font-weight: 500; }
-  #orgList .org-meta { font-size: 11.5px; color: #8a877e; }
-  #emptyOrgList { font-size: 12.5px; color: #8a877e; }
+  ul.entity-list li:hover { color: #8a5a2b; }
+  ul.entity-list li.selected { background: #fbf3ea; }
+  ul.entity-list li:last-child { border-bottom: none; }
+  .li-name { font-size: 13px; font-weight: 500; display: block; }
+  .li-meta { font-size: 11px; color: #8a877e; }
+  .empty-note { font-size: 12px; color: #8a877e; padding: 4px 2px; }
+
+  .news-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e0dc; }
+  .news-item { padding: 8px 0; border-bottom: 1px solid #f2f0ec; font-size: 12px; }
+  .news-item:last-child { border-bottom: none; }
+  .news-item a { color: #1c1c1c; text-decoration: none; font-weight: 500; }
+  .news-item a:hover { text-decoration: underline; }
+  .news-meta { color: #8a877e; font-size: 11px; margin-top: 2px; }
+  .news-summary { color: #444; margin-top: 3px; }
+
+  .detail-empty { font-size: 12.5px; color: #8a877e; padding: 20px 0; text-align: center; }
 </style>
 </head>
 <body>
@@ -115,13 +131,13 @@
   <div id="headerRight">
     <span id="globalStatus"></span>
     <span id="signedInAs" style="display:none"></span>
-    <button id="signOutBtn" style="display:none">sign out</button>
+    <button id="signOutBtn" class="secondary" style="display:none">sign out</button>
   </div>
 </header>
 
 <div id="loginScreen">
   <div class="card">
-    <h2>Sign in</h2>
+    <h2 style="font-size:14px;margin:0 0 12px;">Sign in</h2>
     <input type="email" id="loginEmail" placeholder="Email" autocomplete="username">
     <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
     <button id="loginBtn">Sign in</button>
@@ -130,92 +146,169 @@
 </div>
 
 <div id="main">
-  <div id="researchSection">
-    <div class="card">
-      <h2>Research a firm</h2>
-      <div class="form-row">
-        <input type="text" id="nameInput" placeholder="Firm name, e.g. Sequoia Capital">
-        <select id="orgTypeInput">
-          <option value="vc">VC</option>
-          <option value="cvc">CVC</option>
-          <option value="angel">Business angel</option>
-          <option value="family_office">Family office</option>
-        </select>
-        <button id="researchBtn">Research</button>
-      </div>
-      <div id="researchStatus"></div>
-    </div>
+  <div id="quadGrid">
 
-    <div class="card" id="resultCard" style="display:none">
-      <div class="org-header">
-        <h3 id="resName"></h3>
-        <span class="org-type-pill" id="resType"></span>
+    <!-- Top-left: organization list -->
+    <div class="card" id="orgListCard">
+      <div class="panel-header">
+        <h2>Organizations</h2>
+        <div class="panel-tools">
+          <input type="text" id="orgSearchInput" placeholder="Search…">
+          <button class="secondary tiny" id="orgSearchClearBtn">Clear</button>
+          <button class="tiny" id="orgAddToggleBtn">+ Add</button>
+        </div>
       </div>
-      <div class="org-links" id="resLinks"></div>
-      <div class="org-desc" id="resDesc"></div>
-      <table id="resTable">
-        <thead>
-          <tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr>
-        </thead>
-        <tbody id="resTableBody"></tbody>
-      </table>
-      <div class="actions-row">
-        <button id="saveBtn">Save to database</button>
-        <span id="saveStatus" style="font-size:12.5px;color:#6b6862;align-self:center;"></span>
-      </div>
-    </div>
-  </div>
 
-  <div id="lowerGrid">
-  <div id="colCompanies">
-    <div class="card">
-      <h2>Saved firms</h2>
+      <div class="addPanel" id="orgAddPanel">
+        <div class="form-row">
+          <input type="text" id="nameInput" placeholder="Firm name, e.g. Sequoia Capital">
+          <select id="orgTypeInput">
+            <option value="vc">VC</option>
+            <option value="cvc">CVC</option>
+            <option value="angel">Business angel</option>
+            <option value="family_office">Family office</option>
+          </select>
+          <button id="researchBtn">Research</button>
+        </div>
+        <div class="status-line" id="researchStatus"></div>
+
+        <div id="resultCard" style="display:none">
+          <div class="org-header">
+            <h3 id="resName"></h3>
+            <span class="type-pill" id="resType"></span>
+          </div>
+          <div class="entity-links" id="resLinks"></div>
+          <div id="resSectors"></div>
+          <div class="entity-desc" id="resDesc"></div>
+          <table id="resTable">
+            <thead><tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr></thead>
+            <tbody id="resTableBody"></tbody>
+          </table>
+          <div style="display:flex;gap:10px;margin-top:12px;align-items:center;">
+            <button id="saveBtn">Save to database</button>
+            <span class="status-line" id="saveStatus"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="scroll-box">
-        <ul id="orgList"></ul>
+        <ul class="entity-list" id="orgList"></ul>
       </div>
-      <div id="emptyOrgList">None saved yet.</div>
+      <div class="empty-note" id="emptyOrgList" style="display:none">None saved yet.</div>
     </div>
-  </div>
 
-  <div id="colDetail">
-    <div class="card" id="detailCard">
-      <div id="detailEmpty">Select a firm from the list to see its profile.</div>
-      <div id="detailContent" style="display:none">
+    <!-- Top-right: organization detail -->
+    <div class="card" id="orgDetailCard">
+      <div class="panel-header"><h2>Organization</h2></div>
+      <div class="detail-empty" id="orgDetailEmpty">Select an organization from the list.</div>
+      <div id="orgDetailContent" style="display:none">
         <div class="org-header">
-          <h3 id="detName"></h3>
-          <span class="org-type-pill" id="detType"></span>
+          <h3 id="detOrgName"></h3>
+          <span class="type-pill" id="detOrgType"></span>
         </div>
-        <div class="org-links" id="detLinks"></div>
-        <div class="org-desc" id="detDesc"></div>
-        <table id="detTable">
-          <thead>
-            <tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr>
-          </thead>
-          <tbody id="detTableBody"></tbody>
-        </table>
-        <div class="actions-row">
-          <button class="danger" id="deleteBtn">Delete</button>
+        <div class="entity-links" id="detOrgLinks"></div>
+        <div id="detOrgSectors"></div>
+        <div class="entity-desc" id="detOrgDesc"></div>
+        <div style="margin-top:14px;">
+          <button class="danger" id="deleteOrgBtn">Delete</button>
+        </div>
+        <div class="news-section">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <strong style="font-size:12.5px;">Latest news</strong>
+            <button class="secondary tiny" id="orgNewsSearchBtn">Search for news</button>
+          </div>
+          <div class="status-line" id="orgNewsStatus"></div>
+          <div id="orgNewsList"></div>
         </div>
       </div>
     </div>
-  </div>
+
+    <!-- Bottom-left: people list -->
+    <div class="card" id="peopleListCard">
+      <div class="panel-header">
+        <h2>People</h2>
+        <div class="panel-tools">
+          <input type="text" id="peopleSearchInput" placeholder="Search…">
+          <button class="secondary tiny" id="peopleSearchClearBtn">Clear</button>
+          <button class="tiny" id="personAddToggleBtn">+ Add</button>
+        </div>
+      </div>
+
+      <div class="addPanel" id="personAddPanel">
+        <div class="form-row">
+          <input type="text" id="personNameInput" placeholder="Full name">
+          <input type="text" id="personCompanyInput" placeholder="Company (optional)">
+        </div>
+        <div class="or-sep">— or —</div>
+        <div class="form-row">
+          <input type="text" id="personLinkedinInput" placeholder="LinkedIn profile URL">
+        </div>
+        <button id="personResearchBtn">Search</button>
+        <div class="status-line" id="personResearchStatus"></div>
+
+        <div id="personResultCard" style="display:none">
+          <div style="font-size:12px;color:#6b6862;margin-top:10px;">Firm</div>
+          <div class="org-header">
+            <h3 id="presName" style="font-size:14px;"></h3>
+          </div>
+          <div class="entity-links" id="presLinks"></div>
+          <div style="font-size:12px;color:#6b6862;margin-top:10px;">Person</div>
+          <table>
+            <thead><tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr></thead>
+            <tbody id="presTableBody"></tbody>
+          </table>
+          <div style="display:flex;gap:10px;margin-top:12px;align-items:center;">
+            <button id="personSaveBtn">Save to database</button>
+            <span class="status-line" id="personSaveStatus"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="scroll-box">
+        <ul class="entity-list" id="peopleList"></ul>
+      </div>
+      <div class="empty-note" id="emptyPeopleList" style="display:none">Select an organization, or search all people.</div>
+    </div>
+
+    <!-- Bottom-right: person detail -->
+    <div class="card" id="personDetailCard">
+      <div class="panel-header"><h2>Person</h2></div>
+      <div class="detail-empty" id="personDetailEmpty">Select a person from the list.</div>
+      <div id="personDetailContent" style="display:none">
+        <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+        <div class="entity-desc" id="detPersonMeta"></div>
+        <div class="entity-links" id="detPersonLinks"></div>
+        <div class="news-section">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <strong style="font-size:12.5px;">Latest news</strong>
+            <button class="secondary tiny" id="personNewsSearchBtn">Search for news</button>
+          </div>
+          <div class="status-line" id="personNewsStatus"></div>
+          <div id="personNewsList"></div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
 <script type="module">
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// Points at this project's Supabase Auth + the Edge Function that replaces
-// the local Python backend when this page is served statically (e.g. from
-// GitHub Pages). The anon key is meant to be public/embedded - it's safe
-// here; it grants no access on its own, only a signed-in session does.
 const SUPABASE_URL = "https://chfqbznodqapxjcqzupj.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_SiN9EMxBxQ-qc34l8UScYQ_EEAFW_Cp";
 const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/graph-api`;
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "Family office" };
-let lastResearch = null;
+
+let orgListCache = [];
+let selectedOrg = null;   // full org detail incl. .people (membership rows)
+let selectedPersonId = null;
+let lastOrgResearch = null;
+let lastPersonResearch = null;
+
+// ---------- auth ----------
 
 async function api(path, options = {}) {
   const { data: { session } } = await sb.auth.getSession();
@@ -242,9 +335,7 @@ async function signIn() {
   btn.disabled = false;
 }
 
-async function signOut() {
-  await sb.auth.signOut();
-}
+async function signOut() { await sb.auth.signOut(); }
 
 function showApp(user) {
   document.getElementById("loginScreen").style.display = "none";
@@ -266,150 +357,409 @@ sb.auth.onAuthStateChange((_event, session) => {
   if (session) showApp(session.user); else showLogin();
 });
 
+// ---------- shared render helpers ----------
+
 function linkedInCell(url) {
   if (!url) return '<span class="none">not found</span>';
   return `<a class="li-link" href="${url}" target="_blank" rel="noopener">LinkedIn ↗</a>`;
 }
 
+function entityLinksHtml(website_url, linkedin_url, hq_country) {
+  const links = [];
+  if (website_url) links.push(`<a href="${website_url}" target="_blank" rel="noopener">Website ↗</a>`);
+  if (linkedin_url) links.push(`<a href="${linkedin_url}" target="_blank" rel="noopener">LinkedIn ↗</a>`);
+  if (hq_country) links.push(`<span>${hq_country}</span>`);
+  return links.join("");
+}
+
+function sectorsHtml(sectors) {
+  if (!sectors || !sectors.length) return "";
+  return sectors.map(s => `<span class="sector-tag">${s}</span>`).join("");
+}
+
 function renderPeopleRows(people, getName, getTitle, getFocus, getCountry, getLinkedIn) {
   return people.map(p => `
     <tr>
-      <td class="name">${getName(p)}</td>
-      <td>${getTitle(p) || '<span class="none">—</span>'}${getFocus(p) ? `<div class="sub">${getFocus(p)}</div>` : ""}</td>
+      <td>${getName(p)}</td>
+      <td>${getTitle(p) || '<span class="none">—</span>'}${getFocus(p) ? `<div class="li-meta">${getFocus(p)}</div>` : ""}</td>
       <td>${getCountry(p) || '<span class="none">—</span>'}</td>
       <td>${linkedInCell(getLinkedIn(p))}</td>
     </tr>
   `).join("");
 }
 
-async function runResearch() {
+function renderNewsList(containerId, items) {
+  const el = document.getElementById(containerId);
+  if (!items || !items.length) { el.innerHTML = '<div class="empty-note">No news found yet.</div>'; return; }
+  el.innerHTML = items.map(n => `
+    <div class="news-item">
+      <a href="${n.url}" target="_blank" rel="noopener">${n.title}</a>
+      <div class="news-meta">${[n.source, n.published_at].filter(Boolean).join(" · ")}</div>
+      ${n.summary ? `<div class="news-summary">${n.summary}</div>` : ""}
+    </div>
+  `).join("");
+}
+
+// ---------- organizations: list + search ----------
+
+async function loadOrgList() {
+  const res = await api("/organizations");
+  if (!res.ok) { orgListCache = []; renderOrgList([]); return; }
+  orgListCache = await res.json();
+  applyOrgFilter();
+}
+
+function applyOrgFilter() {
+  const q = document.getElementById("orgSearchInput").value.trim().toLowerCase();
+  const filtered = !q ? orgListCache : orgListCache.filter(o =>
+    o.name.toLowerCase().includes(q) || (o.sectors || []).some(s => s.toLowerCase().includes(q))
+  );
+  renderOrgList(filtered);
+}
+
+function renderOrgList(orgs) {
+  const listEl = document.getElementById("orgList");
+  const emptyEl = document.getElementById("emptyOrgList");
+  if (!orgs.length) { listEl.innerHTML = ""; emptyEl.style.display = "block"; return; }
+  emptyEl.style.display = "none";
+  listEl.innerHTML = orgs.map(o => `
+    <li data-id="${o.id}">
+      <span class="li-name">${o.name} <span class="type-pill">${ORG_TYPE_LABEL[o.org_type] || o.org_type}</span></span>
+      <span class="li-meta">${o.hq_country || ""}${(o.sectors || []).length ? " · " + o.sectors.join(", ") : ""}</span>
+    </li>
+  `).join("");
+  [...listEl.children].forEach(li => li.addEventListener("click", () => selectOrg(li.dataset.id)));
+  if (selectedOrg) highlightSelected("orgList", selectedOrg.id);
+}
+
+function highlightSelected(listId, id) {
+  [...document.getElementById(listId).children].forEach(li => li.classList.toggle("selected", li.dataset.id === id));
+}
+
+// ---------- organization detail + its people ----------
+
+async function selectOrg(id) {
+  const res = await api(`/organizations/${id}`);
+  if (!res.ok) return;
+  selectedOrg = await res.json();
+  selectedPersonId = null;
+  renderOrgDetail(selectedOrg);
+  highlightSelected("orgList", id);
+  document.getElementById("peopleSearchInput").value = "";
+  renderPeopleList(selectedOrg.people, "org");
+  showPersonDetail(null);
+  loadOrgNews(selectedOrg);
+}
+
+function renderOrgDetail(org) {
+  document.getElementById("orgDetailEmpty").style.display = "none";
+  document.getElementById("orgDetailContent").style.display = "block";
+  document.getElementById("detOrgName").textContent = org.name;
+  document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
+  document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
+  document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
+  document.getElementById("detOrgDesc").textContent = org.description || "";
+  document.getElementById("orgNewsList").innerHTML = "";
+}
+
+async function loadOrgNews(org) {
+  const res = await api(`/news?entity_type=organization&entity_id=${org.id}`);
+  if (res.ok) renderNewsList("orgNewsList", await res.json());
+}
+
+async function searchOrgNews() {
+  if (!selectedOrg) return;
+  const btn = document.getElementById("orgNewsSearchBtn");
+  const status = document.getElementById("orgNewsStatus");
+  btn.disabled = true; status.textContent = "Searching…"; status.className = "status-line";
+  try {
+    const res = await api("/news/search", {
+      method: "POST",
+      body: JSON.stringify({ entity_type: "organization", entity_id: selectedOrg.id, name: selectedOrg.name }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Search failed");
+    renderNewsList("orgNewsList", data);
+    status.textContent = "";
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally { btn.disabled = false; }
+}
+
+async function deleteSelectedOrg() {
+  if (!selectedOrg || !confirm("Delete this organization and its team from the database?")) return;
+  await api(`/organizations/${selectedOrg.id}`, { method: "DELETE" });
+  selectedOrg = null; selectedPersonId = null;
+  document.getElementById("orgDetailEmpty").style.display = "block";
+  document.getElementById("orgDetailContent").style.display = "none";
+  renderPeopleList([], "empty");
+  showPersonDetail(null);
+  loadOrgList();
+}
+
+// ---------- people: list + search + detail ----------
+
+function renderPeopleList(items, mode) {
+  const listEl = document.getElementById("peopleList");
+  const emptyEl = document.getElementById("emptyPeopleList");
+  listEl.dataset.mode = mode;
+  if (!items || !items.length) {
+    listEl.innerHTML = "";
+    emptyEl.textContent = mode === "global" ? "No matches." : "Select an organization, or search all people.";
+    emptyEl.style.display = "block";
+    return;
+  }
+  emptyEl.style.display = "none";
+  listEl.innerHTML = items.map(entry => {
+    const p = mode === "org" ? entry.people : entry;
+    const title = mode === "org" ? entry.title : entry.title;
+    const orgName = mode === "global" ? (entry.organization ? entry.organization.name : "") : "";
+    return `
+      <li data-id="${p.id}">
+        <span class="li-name">${p.full_name}</span>
+        <span class="li-meta">${[title, orgName, p.country].filter(Boolean).join(" · ")}</span>
+      </li>`;
+  }).join("");
+  [...listEl.children].forEach((li, i) => li.addEventListener("click", () => {
+    const entry = items[i];
+    if (mode === "org") {
+      selectPersonFromOrg(entry);
+    } else {
+      selectPersonGlobal(entry);
+    }
+  }));
+  if (selectedPersonId) highlightSelected("peopleList", selectedPersonId);
+}
+
+function selectPersonFromOrg(membershipEntry) {
+  selectedPersonId = membershipEntry.people.id;
+  showPersonDetail({
+    id: membershipEntry.people.id,
+    full_name: membershipEntry.people.full_name,
+    linkedin_url: membershipEntry.people.linkedin_url,
+    country: membershipEntry.people.country,
+    title: membershipEntry.title,
+    focus: membershipEntry.focus,
+  });
+  highlightSelected("peopleList", selectedPersonId);
+}
+
+async function selectPersonGlobal(entry) {
+  if (entry.organization) {
+    await selectOrg(entry.organization.id);
+    // selectOrg reloads the people list scoped to that org; re-select this person within it.
+    document.getElementById("peopleSearchInput").value = "";
+    selectedPersonId = entry.id;
+    highlightSelected("peopleList", selectedPersonId);
+    showPersonDetail({
+      id: entry.id, full_name: entry.full_name, linkedin_url: entry.linkedin_url,
+      country: entry.country, title: entry.title, focus: null,
+    });
+  } else {
+    selectedPersonId = entry.id;
+    showPersonDetail({
+      id: entry.id, full_name: entry.full_name, linkedin_url: entry.linkedin_url,
+      country: entry.country, title: entry.title, focus: null,
+    });
+  }
+}
+
+function showPersonDetail(person) {
+  if (!person) {
+    document.getElementById("personDetailEmpty").style.display = "block";
+    document.getElementById("personDetailContent").style.display = "none";
+    return;
+  }
+  document.getElementById("personDetailEmpty").style.display = "none";
+  document.getElementById("personDetailContent").style.display = "block";
+  document.getElementById("detPersonName").textContent = person.full_name;
+  document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
+  document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
+  document.getElementById("personNewsList").innerHTML = "";
+  loadPersonNews(person);
+}
+
+async function loadPersonNews(person) {
+  const res = await api(`/news?entity_type=person&entity_id=${person.id}`);
+  if (res.ok) renderNewsList("personNewsList", await res.json());
+}
+
+async function searchPersonNews() {
+  if (!selectedPersonId) return;
+  const name = document.getElementById("detPersonName").textContent;
+  const btn = document.getElementById("personNewsSearchBtn");
+  const status = document.getElementById("personNewsStatus");
+  btn.disabled = true; status.textContent = "Searching…"; status.className = "status-line";
+  try {
+    const res = await api("/news/search", {
+      method: "POST",
+      body: JSON.stringify({
+        entity_type: "person", entity_id: selectedPersonId, name,
+        org_context: selectedOrg ? selectedOrg.name : undefined,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Search failed");
+    renderNewsList("personNewsList", data);
+    status.textContent = "";
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally { btn.disabled = false; }
+}
+
+async function applyPeopleFilter() {
+  const q = document.getElementById("peopleSearchInput").value.trim();
+  if (selectedOrg) {
+    const filtered = !q ? selectedOrg.people : selectedOrg.people.filter(m =>
+      m.people.full_name.toLowerCase().includes(q.toLowerCase())
+    );
+    renderPeopleList(filtered, "org");
+  } else if (q) {
+    const res = await api(`/people?q=${encodeURIComponent(q)}`);
+    renderPeopleList(res.ok ? await res.json() : [], "global");
+  } else {
+    renderPeopleList([], "empty");
+  }
+}
+
+// ---------- add organization (research) ----------
+
+async function runOrgResearch() {
   const name = document.getElementById("nameInput").value.trim();
   const orgType = document.getElementById("orgTypeInput").value;
   const status = document.getElementById("researchStatus");
   const btn = document.getElementById("researchBtn");
-  if (!name) { status.textContent = "Enter a firm name."; status.className = "error"; return; }
-
-  btn.disabled = true;
-  status.className = "";
-  status.textContent = "Researching — this can take a bit while it searches the web…";
+  if (!name) { status.className = "status-line error"; status.textContent = "Enter a firm name."; return; }
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
   document.getElementById("resultCard").style.display = "none";
-
   try {
     const res = await api("/research", { method: "POST", body: JSON.stringify({ name, org_type: orgType }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Research failed");
-    lastResearch = data;
-    renderResult(data);
+    lastOrgResearch = data;
+    renderOrgResearchResult(data);
     status.textContent = `Found ${data.people.length} team member(s).`;
   } catch (err) {
-    status.className = "error";
-    status.textContent = err.message;
-  } finally {
-    btn.disabled = false;
-  }
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally { btn.disabled = false; }
 }
 
-function renderResult(data) {
+function renderOrgResearchResult(data) {
   const org = data.organization;
   document.getElementById("resName").textContent = org.name;
   document.getElementById("resType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
-  const links = [];
-  if (org.website_url) links.push(`<a href="${org.website_url}" target="_blank" rel="noopener">Website ↗</a>`);
-  if (org.linkedin_url) links.push(`<a href="${org.linkedin_url}" target="_blank" rel="noopener">LinkedIn ↗</a>`);
-  if (org.hq_country) links.push(`<span>${org.hq_country}</span>`);
-  document.getElementById("resLinks").innerHTML = links.join("");
+  document.getElementById("resLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
+  document.getElementById("resSectors").innerHTML = sectorsHtml(org.sectors);
   document.getElementById("resDesc").textContent = org.description || "";
   document.getElementById("resTableBody").innerHTML = renderPeopleRows(
-    data.people,
-    p => p.full_name, p => p.title, p => p.focus, p => p.country, p => p.linkedin_url
+    data.people, p => p.full_name, p => p.title, p => p.focus, p => p.country, p => p.linkedin_url
   );
   document.getElementById("saveStatus").textContent = "";
   document.getElementById("resultCard").style.display = "block";
 }
 
-async function saveResult() {
-  if (!lastResearch) return;
+async function saveOrgResult() {
+  if (!lastOrgResearch) return;
   const btn = document.getElementById("saveBtn");
   const status = document.getElementById("saveStatus");
-  btn.disabled = true;
-  status.textContent = "Saving…";
+  btn.disabled = true; status.textContent = "Saving…"; status.className = "status-line";
   try {
-    const res = await api("/organizations", { method: "POST", body: JSON.stringify(lastResearch) });
+    const res = await api("/organizations", { method: "POST", body: JSON.stringify(lastOrgResearch) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Save failed");
     status.textContent = "Saved.";
-    loadOrgList();
+    await loadOrgList();
+    selectOrg(data.organization.id);
+    document.getElementById("orgAddPanel").classList.remove("open");
   } catch (err) {
-    status.textContent = "Error: " + err.message;
-  } finally {
-    btn.disabled = false;
-  }
+    status.className = "status-line error"; status.textContent = "Error: " + err.message;
+  } finally { btn.disabled = false; }
 }
 
-async function loadOrgList() {
-  const res = await api("/organizations");
-  const listEl = document.getElementById("orgList");
-  const emptyEl = document.getElementById("emptyOrgList");
-  if (!res.ok) { listEl.innerHTML = ""; emptyEl.textContent = "Could not load the list."; emptyEl.style.display = "block"; return; }
-  const orgs = await res.json();
-  if (!orgs.length) { listEl.innerHTML = ""; emptyEl.style.display = "block"; return; }
-  emptyEl.style.display = "none";
-  listEl.innerHTML = orgs.map(o => `
-    <li data-id="${o.id}">
-      <span class="org-name">${o.name}</span>
-      <span class="org-meta">${ORG_TYPE_LABEL[o.org_type] || o.org_type}${o.hq_country ? " · " + o.hq_country : ""}</span>
-    </li>
-  `).join("");
-  [...listEl.children].forEach(li => li.addEventListener("click", () => showDetail(li.dataset.id)));
-  const selectedId = document.getElementById("detailCard").dataset.id;
-  if (selectedId) highlightSelected(selectedId);
+// ---------- add person (research) ----------
+
+async function runPersonResearch() {
+  const name = document.getElementById("personNameInput").value.trim();
+  const companyHint = document.getElementById("personCompanyInput").value.trim();
+  const linkedinUrl = document.getElementById("personLinkedinInput").value.trim();
+  const status = document.getElementById("personResearchStatus");
+  const btn = document.getElementById("personResearchBtn");
+  if (!name && !linkedinUrl) { status.className = "status-line error"; status.textContent = "Enter a name or a LinkedIn URL."; return; }
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
+  document.getElementById("personResultCard").style.display = "none";
+  try {
+    const res = await api("/research-person", {
+      method: "POST",
+      body: JSON.stringify({ name, company_hint: companyHint, linkedin_url: linkedinUrl }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Research failed");
+    if (!data.people.length) throw new Error("Could not confidently identify this person.");
+    lastPersonResearch = data;
+    renderPersonResearchResult(data);
+    status.textContent = data.organization.name ? "" : "Found the person, but not their current firm — save is disabled.";
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally { btn.disabled = false; }
 }
 
-function highlightSelected(id) {
-  [...document.getElementById("orgList").children].forEach(li => {
-    li.classList.toggle("selected", li.dataset.id === id);
-  });
-}
-
-async function showDetail(id) {
-  const res = await api(`/organizations/${id}`);
-  const org = await res.json();
-  if (!res.ok) return;
-  document.getElementById("detName").textContent = org.name;
-  document.getElementById("detType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
-  const links = [];
-  if (org.website_url) links.push(`<a href="${org.website_url}" target="_blank" rel="noopener">Website ↗</a>`);
-  if (org.linkedin_url) links.push(`<a href="${org.linkedin_url}" target="_blank" rel="noopener">LinkedIn ↗</a>`);
-  if (org.hq_country) links.push(`<span>${org.hq_country}</span>`);
-  document.getElementById("detLinks").innerHTML = links.join("");
-  document.getElementById("detDesc").textContent = org.description || "";
-  document.getElementById("detTableBody").innerHTML = renderPeopleRows(
-    org.people,
-    m => m.people.full_name, m => m.title, m => m.focus, m => m.people.country, m => m.people.linkedin_url
+function renderPersonResearchResult(data) {
+  const org = data.organization;
+  document.getElementById("presName").textContent = org.name || "(firm not identified)";
+  document.getElementById("presLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
+  document.getElementById("presTableBody").innerHTML = renderPeopleRows(
+    data.people, p => p.full_name, p => p.title, p => p.focus, p => p.country, p => p.linkedin_url
   );
-  document.getElementById("detailCard").dataset.id = org.id;
-  document.getElementById("detailEmpty").style.display = "none";
-  document.getElementById("detailContent").style.display = "block";
-  highlightSelected(id);
+  document.getElementById("personSaveStatus").textContent = "";
+  document.getElementById("personSaveBtn").disabled = !org.name;
+  document.getElementById("personResultCard").style.display = "block";
 }
 
-async function deleteOrg() {
-  const id = document.getElementById("detailCard").dataset.id;
-  if (!id || !confirm("Delete this firm and its team from the database?")) return;
-  await api(`/organizations/${id}`, { method: "DELETE" });
-  document.getElementById("detailCard").dataset.id = "";
-  document.getElementById("detailContent").style.display = "none";
-  document.getElementById("detailEmpty").style.display = "block";
-  loadOrgList();
+async function savePersonResult() {
+  if (!lastPersonResearch || !lastPersonResearch.organization.name) return;
+  const btn = document.getElementById("personSaveBtn");
+  const status = document.getElementById("personSaveStatus");
+  btn.disabled = true; status.textContent = "Saving…"; status.className = "status-line";
+  try {
+    const res = await api("/organizations", { method: "POST", body: JSON.stringify(lastPersonResearch) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed");
+    status.textContent = "Saved.";
+    await loadOrgList();
+    await selectOrg(data.organization.id);
+    document.getElementById("personAddPanel").classList.remove("open");
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = "Error: " + err.message;
+  } finally { btn.disabled = false; }
 }
 
-document.getElementById("researchBtn").addEventListener("click", runResearch);
-document.getElementById("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") runResearch(); });
-document.getElementById("saveBtn").addEventListener("click", saveResult);
-document.getElementById("deleteBtn").addEventListener("click", deleteOrg);
-document.getElementById("signOutBtn").addEventListener("click", signOut);
+// ---------- wiring ----------
+
 document.getElementById("loginBtn").addEventListener("click", signIn);
 document.getElementById("loginPassword").addEventListener("keydown", e => { if (e.key === "Enter") signIn(); });
+document.getElementById("signOutBtn").addEventListener("click", signOut);
+
+document.getElementById("orgSearchInput").addEventListener("input", applyOrgFilter);
+document.getElementById("orgSearchClearBtn").addEventListener("click", () => { document.getElementById("orgSearchInput").value = ""; applyOrgFilter(); });
+document.getElementById("orgAddToggleBtn").addEventListener("click", () => document.getElementById("orgAddPanel").classList.toggle("open"));
+document.getElementById("researchBtn").addEventListener("click", runOrgResearch);
+document.getElementById("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") runOrgResearch(); });
+document.getElementById("saveBtn").addEventListener("click", saveOrgResult);
+document.getElementById("deleteOrgBtn").addEventListener("click", deleteSelectedOrg);
+document.getElementById("orgNewsSearchBtn").addEventListener("click", searchOrgNews);
+
+document.getElementById("peopleSearchInput").addEventListener("input", applyPeopleFilter);
+document.getElementById("peopleSearchClearBtn").addEventListener("click", () => { document.getElementById("peopleSearchInput").value = ""; applyPeopleFilter(); });
+document.getElementById("personAddToggleBtn").addEventListener("click", () => {
+  const panel = document.getElementById("personAddPanel");
+  panel.classList.toggle("open");
+  if (panel.classList.contains("open") && selectedOrg) {
+    document.getElementById("personCompanyInput").value = selectedOrg.name;
+  }
+});
+document.getElementById("personResearchBtn").addEventListener("click", runPersonResearch);
+document.getElementById("personSaveBtn").addEventListener("click", savePersonResult);
+document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
 </script>
 
 </body>
