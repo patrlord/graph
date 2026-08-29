@@ -30,9 +30,9 @@
   #loginScreen button { width: 100%; }
   #loginStatus { font-size: 12.5px; color: #a33; margin-top: 10px; min-height: 16px; }
 
-  #main { display: none; padding: 20px; max-width: 1600px; margin: 0 auto; }
+  #main { display: none; padding: 20px; max-width: 1800px; margin: 0 auto; }
   #quadGrid {
-    display: grid; grid-template-columns: minmax(300px, 1fr) minmax(380px, 1.5fr);
+    display: grid; grid-template-columns: minmax(360px, 2fr) minmax(280px, 1fr);
     gap: 18px; align-items: start;
   }
   @media (max-width: 900px) { #main { padding: 14px; } #quadGrid { grid-template-columns: 1fr; } }
@@ -99,23 +99,25 @@
   a.li-link { color: #8a5a2b; text-decoration: none; font-size: 11.5px; }
   a.li-link:hover { text-decoration: underline; }
 
-  ul.entity-list { list-style: none; margin: 0; padding: 0; }
-  ul.entity-list li {
-    padding: 9px 2px; border-bottom: 1px solid #eeece7; cursor: pointer;
-  }
-  ul.entity-list li:hover { color: #8a5a2b; }
-  ul.entity-list li.selected { background: #fbf3ea; }
-  ul.entity-list li:last-child { border-bottom: none; }
-  .li-name { font-size: 13px; font-weight: 500; display: block; }
-  .li-meta { font-size: 11px; color: #8a877e; }
+  table.sortable-table th { cursor: pointer; user-select: none; white-space: nowrap; }
+  table.sortable-table th:hover { color: #8a5a2b; }
+  table.sortable-table th .sort-arrow { font-size: 9px; margin-left: 2px; color: #b5b1a9; }
+  table.sortable-table th.sorted .sort-arrow { color: #8a5a2b; }
+  table.sortable-table tbody tr { cursor: pointer; }
+  table.sortable-table tbody tr:hover { color: #8a5a2b; }
+  table.sortable-table tbody tr.selected { background: #fbf3ea; }
+  table.sortable-table td.li-name { font-weight: 500; color: #1c1c1c; }
+  .li-meta { font-size: 10.5px; color: #8a877e; }
   .empty-note { font-size: 12px; color: #8a877e; padding: 4px 2px; }
 
   .news-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e0dc; }
   .news-item { padding: 8px 0; border-bottom: 1px solid #f2f0ec; font-size: 12px; }
   .news-item:last-child { border-bottom: none; }
-  .news-item a { color: #1c1c1c; text-decoration: none; font-weight: 500; }
-  .news-item a:hover { text-decoration: underline; }
+  .news-item a.news-title { color: #1c1c1c; text-decoration: none; font-weight: 500; }
+  .news-item a.news-title:hover { text-decoration: underline; }
   .news-meta { color: #8a877e; font-size: 11px; margin-top: 2px; }
+  .news-meta a { color: #8a877e; text-decoration: none; }
+  .news-meta a:hover { text-decoration: underline; color: #8a5a2b; }
   .news-summary { color: #444; margin-top: 3px; }
 
   .detail-empty { font-size: 12.5px; color: #8a877e; padding: 20px 0; text-align: center; }
@@ -192,7 +194,16 @@
       </div>
 
       <div class="scroll-box">
-        <ul class="entity-list" id="orgList"></ul>
+        <table class="sortable-table" id="orgTable">
+          <thead>
+            <tr>
+              <th data-sort="name">Name <span class="sort-arrow"></span></th>
+              <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
+              <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
+            </tr>
+          </thead>
+          <tbody id="orgList"></tbody>
+        </table>
       </div>
       <div class="empty-note" id="emptyOrgList" style="display:none">None saved yet.</div>
     </div>
@@ -265,7 +276,16 @@
       </div>
 
       <div class="scroll-box">
-        <ul class="entity-list" id="peopleList"></ul>
+        <table class="sortable-table" id="peopleTable">
+          <thead>
+            <tr>
+              <th data-sort="full_name">Name <span class="sort-arrow"></span></th>
+              <th data-sort="country">Country <span class="sort-arrow"></span></th>
+              <th data-sort="title">Role <span class="sort-arrow"></span></th>
+            </tr>
+          </thead>
+          <tbody id="peopleList"></tbody>
+        </table>
       </div>
       <div class="empty-note" id="emptyPeopleList" style="display:none">Select an organization, or search all people.</div>
     </div>
@@ -388,19 +408,28 @@ function renderPeopleRows(people, getName, getTitle, getFocus, getCountry, getLi
   `).join("");
 }
 
+function domainOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return null; }
+}
+
 function renderNewsList(containerId, items) {
   const el = document.getElementById(containerId);
   if (!items || !items.length) { el.innerHTML = '<div class="empty-note">No news found yet.</div>'; return; }
-  el.innerHTML = items.map(n => `
+  el.innerHTML = items.map(n => {
+    const domain = domainOf(n.url);
+    const sourceLink = domain ? `<a href="${n.url}" target="_blank" rel="noopener">${domain}</a>` : (n.source || "");
+    return `
     <div class="news-item">
-      <a href="${n.url}" target="_blank" rel="noopener">${n.title}</a>
-      <div class="news-meta">${[n.source, n.published_at].filter(Boolean).join(" · ")}</div>
+      <a class="news-title" href="${n.url}" target="_blank" rel="noopener">${n.title}</a>
+      <div class="news-meta">${[sourceLink, n.published_at].filter(Boolean).join(" · ")}</div>
       ${n.summary ? `<div class="news-summary">${n.summary}</div>` : ""}
-    </div>
-  `).join("");
+    </div>`;
+  }).join("");
 }
 
-// ---------- organizations: list + search ----------
+// ---------- organizations: list + search + sort ----------
+
+let orgSort = { field: "name", dir: "asc" };
 
 async function loadOrgList() {
   const res = await api("/organizations");
@@ -411,29 +440,60 @@ async function loadOrgList() {
 
 function applyOrgFilter() {
   const q = document.getElementById("orgSearchInput").value.trim().toLowerCase();
-  const filtered = !q ? orgListCache : orgListCache.filter(o =>
-    o.name.toLowerCase().includes(q) || (o.sectors || []).some(s => s.toLowerCase().includes(q))
+  let filtered = !q ? orgListCache.slice() : orgListCache.filter(o =>
+    o.name.toLowerCase().includes(q) ||
+    (o.hq_country || "").toLowerCase().includes(q) ||
+    (ORG_TYPE_LABEL[o.org_type] || o.org_type || "").toLowerCase().includes(q) ||
+    (o.sectors || []).some(s => s.toLowerCase().includes(q))
   );
+  filtered.sort(makeComparator(orgSort, (item, field) => field === "org_type" ? (ORG_TYPE_LABEL[item.org_type] || item.org_type) : undefined));
   renderOrgList(filtered);
+}
+
+// fieldValueFn(item, field) may return an override display value for a field
+// (e.g. mapping org_type to its label); returning undefined falls back to item[field].
+function makeComparator(sortState, fieldValueFn) {
+  return (a, b) => {
+    const { field, dir } = sortState;
+    const av = (fieldValueFn && fieldValueFn(a, field)) ?? a[field] ?? "";
+    const bv = (fieldValueFn && fieldValueFn(b, field)) ?? b[field] ?? "";
+    const cmp = String(av).localeCompare(String(bv), undefined, { sensitivity: "base" });
+    return dir === "asc" ? cmp : -cmp;
+  };
+}
+
+function wireSortHeaders(tableId, sortState, onSort) {
+  const table = document.getElementById(tableId);
+  [...table.querySelectorAll("th[data-sort]")].forEach(th => {
+    th.classList.toggle("sorted", th.dataset.sort === sortState.field);
+    th.querySelector(".sort-arrow").textContent = th.dataset.sort === sortState.field ? (sortState.dir === "asc" ? "▲" : "▼") : "";
+    th.onclick = () => {
+      if (sortState.field === th.dataset.sort) sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
+      else { sortState.field = th.dataset.sort; sortState.dir = "asc"; }
+      onSort();
+    };
+  });
 }
 
 function renderOrgList(orgs) {
   const listEl = document.getElementById("orgList");
   const emptyEl = document.getElementById("emptyOrgList");
+  wireSortHeaders("orgTable", orgSort, applyOrgFilter);
   if (!orgs.length) { listEl.innerHTML = ""; emptyEl.style.display = "block"; return; }
   emptyEl.style.display = "none";
   listEl.innerHTML = orgs.map(o => `
-    <li data-id="${o.id}">
-      <span class="li-name">${o.name} <span class="type-pill">${ORG_TYPE_LABEL[o.org_type] || o.org_type}</span></span>
-      <span class="li-meta">${o.hq_country || ""}${(o.sectors || []).length ? " · " + o.sectors.join(", ") : ""}</span>
-    </li>
+    <tr data-id="${o.id}">
+      <td class="li-name">${o.name}</td>
+      <td>${o.hq_country || '<span class="none">—</span>'}</td>
+      <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type}</td>
+    </tr>
   `).join("");
-  [...listEl.children].forEach(li => li.addEventListener("click", () => selectOrg(li.dataset.id)));
+  [...listEl.children].forEach(tr => tr.addEventListener("click", () => selectOrg(tr.dataset.id)));
   if (selectedOrg) highlightSelected("orgList", selectedOrg.id);
 }
 
 function highlightSelected(listId, id) {
-  [...document.getElementById(listId).children].forEach(li => li.classList.toggle("selected", li.dataset.id === id));
+  [...document.getElementById(listId).children].forEach(row => row.classList.toggle("selected", row.dataset.id === id));
 }
 
 // ---------- organization detail + its people ----------
@@ -499,69 +559,62 @@ async function deleteSelectedOrg() {
 
 // ---------- people: list + search + detail ----------
 
+let peopleSort = { field: "full_name", dir: "asc" };
+let currentPeopleMode = "empty";
+let currentPeopleItems = [];  // normalized: {id, full_name, country, title, focus, linkedin_url, organization}
+
+function normalizePeopleItems(items, mode) {
+  return (items || []).map(entry => mode === "org"
+    ? {
+        id: entry.people.id, full_name: entry.people.full_name, linkedin_url: entry.people.linkedin_url,
+        country: entry.people.country, title: entry.title, focus: entry.focus, organization: null,
+      }
+    : {
+        id: entry.id, full_name: entry.full_name, linkedin_url: entry.linkedin_url,
+        country: entry.country, title: entry.title, focus: null, organization: entry.organization || null,
+      });
+}
+
 function renderPeopleList(items, mode) {
+  currentPeopleMode = mode;
+  currentPeopleItems = normalizePeopleItems(items, mode);
+  wireSortHeaders("peopleTable", peopleSort, () => {
+    currentPeopleItems.sort(makeComparator(peopleSort));
+    renderPeopleTableBody();
+  });
+  currentPeopleItems.sort(makeComparator(peopleSort));
+  renderPeopleTableBody();
+}
+
+function renderPeopleTableBody() {
   const listEl = document.getElementById("peopleList");
   const emptyEl = document.getElementById("emptyPeopleList");
-  listEl.dataset.mode = mode;
-  if (!items || !items.length) {
+  if (!currentPeopleItems.length) {
     listEl.innerHTML = "";
-    emptyEl.textContent = mode === "global" ? "No matches." : "Select an organization, or search all people.";
+    emptyEl.textContent = currentPeopleMode === "global" ? "No matches." : "Select an organization, or search all people.";
     emptyEl.style.display = "block";
     return;
   }
   emptyEl.style.display = "none";
-  listEl.innerHTML = items.map(entry => {
-    const p = mode === "org" ? entry.people : entry;
-    const title = mode === "org" ? entry.title : entry.title;
-    const orgName = mode === "global" ? (entry.organization ? entry.organization.name : "") : "";
-    return `
-      <li data-id="${p.id}">
-        <span class="li-name">${p.full_name}</span>
-        <span class="li-meta">${[title, orgName, p.country].filter(Boolean).join(" · ")}</span>
-      </li>`;
-  }).join("");
-  [...listEl.children].forEach((li, i) => li.addEventListener("click", () => {
-    const entry = items[i];
-    if (mode === "org") {
-      selectPersonFromOrg(entry);
-    } else {
-      selectPersonGlobal(entry);
-    }
-  }));
+  listEl.innerHTML = currentPeopleItems.map(p => `
+    <tr data-id="${p.id}">
+      <td class="li-name">${p.full_name}</td>
+      <td>${p.country || '<span class="none">—</span>'}</td>
+      <td>${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}</td>
+    </tr>
+  `).join("");
+  [...listEl.children].forEach((tr, i) => tr.addEventListener("click", () => selectPerson(currentPeopleItems[i])));
   if (selectedPersonId) highlightSelected("peopleList", selectedPersonId);
 }
 
-function selectPersonFromOrg(membershipEntry) {
-  selectedPersonId = membershipEntry.people.id;
-  showPersonDetail({
-    id: membershipEntry.people.id,
-    full_name: membershipEntry.people.full_name,
-    linkedin_url: membershipEntry.people.linkedin_url,
-    country: membershipEntry.people.country,
-    title: membershipEntry.title,
-    focus: membershipEntry.focus,
-  });
-  highlightSelected("peopleList", selectedPersonId);
-}
-
-async function selectPersonGlobal(entry) {
-  if (entry.organization) {
-    await selectOrg(entry.organization.id);
-    // selectOrg reloads the people list scoped to that org; re-select this person within it.
+async function selectPerson(p) {
+  if (currentPeopleMode === "global" && p.organization) {
+    await selectOrg(p.organization.id);  // reloads the people list scoped to that org
     document.getElementById("peopleSearchInput").value = "";
-    selectedPersonId = entry.id;
-    highlightSelected("peopleList", selectedPersonId);
-    showPersonDetail({
-      id: entry.id, full_name: entry.full_name, linkedin_url: entry.linkedin_url,
-      country: entry.country, title: entry.title, focus: null,
-    });
-  } else {
-    selectedPersonId = entry.id;
-    showPersonDetail({
-      id: entry.id, full_name: entry.full_name, linkedin_url: entry.linkedin_url,
-      country: entry.country, title: entry.title, focus: null,
-    });
   }
+  selectedPersonId = p.id;
+  highlightSelected("peopleList", selectedPersonId);
+  showPersonDetail(p);
 }
 
 function showPersonDetail(person) {
@@ -608,10 +661,12 @@ async function searchPersonNews() {
 }
 
 async function applyPeopleFilter() {
-  const q = document.getElementById("peopleSearchInput").value.trim();
+  const q = document.getElementById("peopleSearchInput").value.trim().toLowerCase();
   if (selectedOrg) {
     const filtered = !q ? selectedOrg.people : selectedOrg.people.filter(m =>
-      m.people.full_name.toLowerCase().includes(q.toLowerCase())
+      m.people.full_name.toLowerCase().includes(q) ||
+      (m.people.country || "").toLowerCase().includes(q) ||
+      (m.title || "").toLowerCase().includes(q)
     );
     renderPeopleList(filtered, "org");
   } else if (q) {
