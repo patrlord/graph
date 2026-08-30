@@ -204,8 +204,12 @@
             <option value="angel">Business angel</option>
             <option value="family_office">Family office</option>
           </select>
-          <button id="researchBtn">Research</button>
         </div>
+        <div class="or-sep">— or —</div>
+        <div class="form-row">
+          <input type="text" id="orgLinkedinInput" placeholder="LinkedIn company page URL">
+        </div>
+        <button id="researchBtn">Research</button>
         <div class="status-line" id="researchStatus"></div>
 
         <div id="resultCard" style="display:none">
@@ -730,19 +734,22 @@ async function applyPeopleFilter() {
 
 async function runOrgResearch() {
   const name = document.getElementById("nameInput").value.trim();
+  const linkedinUrl = document.getElementById("orgLinkedinInput").value.trim();
   const orgType = document.getElementById("orgTypeInput").value;
   const status = document.getElementById("researchStatus");
   const btn = document.getElementById("researchBtn");
-  if (!name) { status.className = "status-line error"; status.textContent = "Enter a firm name."; return; }
+  if (!name && !linkedinUrl) { status.className = "status-line error"; status.textContent = "Enter a firm name or a LinkedIn URL."; return; }
   btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
   document.getElementById("resultCard").style.display = "none";
   try {
-    const res = await api("/research", { method: "POST", body: JSON.stringify({ name, org_type: orgType }) });
+    const res = await api("/research", { method: "POST", body: JSON.stringify({ name, linkedin_url: linkedinUrl, org_type: orgType }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Research failed");
     lastOrgResearch = data;
     renderOrgResearchResult(data);
-    status.textContent = `Found ${data.people.length} team member(s).`;
+    status.textContent = data.organization.name
+      ? `Found ${data.people.length} team member(s).`
+      : "Could not confidently identify this firm — save is disabled.";
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally { btn.disabled = false; }
@@ -750,7 +757,7 @@ async function runOrgResearch() {
 
 function renderOrgResearchResult(data) {
   const org = data.organization;
-  document.getElementById("resName").textContent = org.name;
+  document.getElementById("resName").textContent = org.name || "(firm not identified)";
   document.getElementById("resType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
   document.getElementById("resLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
   document.getElementById("resSectors").innerHTML = sectorsHtml(org.sectors);
@@ -759,11 +766,12 @@ function renderOrgResearchResult(data) {
     data.people, p => p.full_name, p => p.title, p => p.focus, p => p.country, p => p.linkedin_url
   );
   document.getElementById("saveStatus").textContent = "";
+  document.getElementById("saveBtn").disabled = !org.name;
   document.getElementById("resultCard").style.display = "block";
 }
 
 async function saveOrgResult() {
-  if (!lastOrgResearch) return;
+  if (!lastOrgResearch || !lastOrgResearch.organization.name) return;
   const btn = document.getElementById("saveBtn");
   const status = document.getElementById("saveStatus");
   btn.disabled = true; status.textContent = "Saving…"; status.className = "status-line";
@@ -848,6 +856,7 @@ document.getElementById("orgSearchClearBtn").addEventListener("click", () => { d
 document.getElementById("orgAddToggleBtn").addEventListener("click", () => document.getElementById("orgAddPanel").classList.toggle("open"));
 document.getElementById("researchBtn").addEventListener("click", runOrgResearch);
 document.getElementById("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") runOrgResearch(); });
+document.getElementById("orgLinkedinInput").addEventListener("keydown", e => { if (e.key === "Enter") runOrgResearch(); });
 document.getElementById("saveBtn").addEventListener("click", saveOrgResult);
 document.getElementById("deleteOrgBtn").addEventListener("click", deleteSelectedOrg);
 document.getElementById("orgNewsSearchBtn").addEventListener("click", searchOrgNews);

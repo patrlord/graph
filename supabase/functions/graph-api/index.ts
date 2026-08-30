@@ -390,16 +390,21 @@ const RESEARCH_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
-async function researchOrganization(name: string, orgType: string) {
+async function researchOrganization(name: string, orgType: string, linkedinUrl: string) {
+  if (!name && !linkedinUrl) throw new HttpError(400, "name or linkedin_url is required");
   const orgTypeLabel = ORG_TYPE_LABELS[orgType] || "investment firm";
-  const prompt = `Search for and find information about "${name}", a ${orgTypeLabel}: its official website, LinkedIn company page, key team members, and sectors it invests in.
+  const who = name ? `"${name}", a ${orgTypeLabel}` : `the ${orgTypeLabel} at this LinkedIn company page: ${linkedinUrl}`;
+  const prompt = `Search for and find information about ${who}: its official website, LinkedIn company page, key team members, and sectors it invests in.
 
 Report:
+- Its name
 - Official website URL and LinkedIn company page URL, only if confirmed
 - Where it's headquartered (city and country)
 - A one-sentence description of the firm
 - 2-6 short sector/industry tags it focuses on (e.g. "Fintech", "AI infrastructure", "Climate tech")
 - Its current key team members - partners, principals, investment directors and similar investment-team roles (skip admin/ops staff). For each: full name, title, sector/focus if stated, country they're based in, and personal LinkedIn URL if confirmed.
+
+If you cannot confidently identify the firm, leave "name" and other fields null rather than guessing.
 
 ${NEVER_GUESS}`;
 
@@ -407,7 +412,7 @@ ${NEVER_GUESS}`;
   data.organization = data.organization || {};
   data.organization.org_type = orgType;
   data.people = data.people || [];
-  await backfillFromApollo(data.organization);
+  if (data.organization.name) await backfillFromApollo(data.organization);
   return data;
 }
 
@@ -512,9 +517,10 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/research") {
       const body = await req.json();
       const name = (body.name ?? "").trim();
+      const linkedinUrl = (body.linkedin_url ?? "").trim();
       const orgType = body.org_type || "vc";
-      if (!name) return json({ error: "name is required" }, 400);
-      return json(await researchOrganization(name, orgType));
+      if (!name && !linkedinUrl) return json({ error: "name or linkedin_url is required" }, 400);
+      return json(await researchOrganization(name, orgType, linkedinUrl));
     }
 
     if (req.method === "POST" && path === "/research-person") {
