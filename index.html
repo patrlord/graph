@@ -99,13 +99,44 @@
   .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
   .status-line.error { color: #a33; }
 
-  .addPanel {
-    display: none; border: 1px solid #e2e0dc; border-radius: 6px; padding: 12px; margin-bottom: 14px; background: #fbfaf8;
+  .list-view, .add-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+
+  .view-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex: 0 0 auto; }
+  .view-header h3 { margin: 0; font-size: 13.5px; font-weight: 600; }
+  .close-x {
+    background: none; border: none; font-size: 15px; line-height: 1; color: #8a877e; cursor: pointer;
+    padding: 3px 7px; border-radius: 4px;
   }
-  .addPanel.open { display: block; }
-  .addPanel .form-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-  .addPanel .form-row input[type=text] { flex: 1 1 140px; min-width: 0; }
-  .addPanel .or-sep { font-size: 11px; color: #8a877e; text-align: center; margin: 6px 0; }
+  .close-x:hover { color: #a33; background: #fdf2f2; }
+
+  .bulk-cols { display: flex; gap: 12px; flex: 0 0 170px; margin-bottom: 10px; }
+  .bulk-col { flex: 1 1 50%; display: flex; flex-direction: column; min-width: 0; }
+  .bulk-col label { font-size: 11px; color: #8a877e; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .03em; }
+  .bulk-col textarea {
+    flex: 1 1 auto; min-height: 0; font-family: inherit; font-size: 12.5px; padding: 8px;
+    border: 1px solid #d8d5cf; border-radius: 6px; resize: none;
+  }
+
+  .bulk-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; flex: 0 0 auto; margin-bottom: 10px; }
+  .bulk-controls .status-line { margin-top: 0; }
+
+  .bulk-people-wrap { flex: 0 0 auto; max-height: 190px; overflow-y: auto; margin-bottom: 10px; border: 1px solid #eeece7; border-radius: 6px; }
+  table.bulk-people-table { margin-top: 0; }
+  table.bulk-people-table th { position: sticky; top: 0; background: #fff; }
+  table.bulk-people-table td { padding: 4px 5px; }
+  table.bulk-people-table input[type=text] { width: 100%; border: 1px solid #e2e0dc; border-radius: 4px; padding: 5px 6px; font-size: 12.5px; }
+  .bp-remove { background: none; border: none; color: #b5b1a9; cursor: pointer; font-size: 14px; padding: 0 4px; line-height: 1; }
+  .bp-remove:hover { color: #a33; }
+
+  .bulk-results { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .bulk-result-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 2px; font-size: 12.5px; border-bottom: 1px solid #f2f0ec; }
+  .bulk-result-row:last-child { border-bottom: none; }
+  .bulk-result-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bulk-status { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; flex: 0 0 auto; }
+  .bulk-status.pending { background: #f0eee9; color: #8a877e; }
+  .bulk-status.working { background: #fdf0da; color: #8a5a2b; }
+  .bulk-status.done { background: #e4f2e6; color: #2f7a3d; }
+  .bulk-status.failed { background: #fdecec; color: #a33; }
 
   .org-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .org-header h3 { margin: 0; font-size: 15.5px; }
@@ -186,7 +217,7 @@
 
     <!-- Top-left: organization list -->
     <div class="card" id="orgListCard">
-      <div class="panel-header">
+      <div class="panel-header" id="orgListHeader">
         <h2>Organizations</h2>
         <div class="panel-tools">
           <input type="text" id="orgSearchInput" placeholder="Search…">
@@ -195,55 +226,49 @@
         </div>
       </div>
 
-      <div class="addPanel" id="orgAddPanel">
-        <div class="form-row">
-          <input type="text" id="nameInput" placeholder="Firm name, e.g. Sequoia Capital">
-          <select id="orgTypeInput">
+      <div id="orgListView" class="list-view">
+        <div class="scroll-box">
+          <table class="sortable-table" id="orgTable">
+            <thead>
+              <tr>
+                <th data-sort="name">Name <span class="sort-arrow"></span></th>
+                <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
+                <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
+              </tr>
+            </thead>
+            <tbody id="orgList"></tbody>
+          </table>
+        </div>
+        <div class="empty-note" id="emptyOrgList" style="display:none">None saved yet.</div>
+      </div>
+
+      <div id="orgAddView" class="add-view" style="display:none">
+        <div class="view-header">
+          <h3>Add organizations</h3>
+          <button class="close-x" id="orgAddCloseBtn" title="Close">✕</button>
+        </div>
+        <div class="bulk-cols">
+          <div class="bulk-col">
+            <label>Company names</label>
+            <textarea id="bulkOrgNames" placeholder="One per line, or comma-separated&#10;Sequoia Capital&#10;Point Nine&#10;…"></textarea>
+          </div>
+          <div class="bulk-col">
+            <label>LinkedIn URLs</label>
+            <textarea id="bulkOrgLinkedin" placeholder="One per line, or comma-separated&#10;https://www.linkedin.com/company/…"></textarea>
+          </div>
+        </div>
+        <div class="bulk-controls">
+          <select id="bulkOrgTypeInput">
             <option value="vc">VC</option>
             <option value="cvc">CVC</option>
             <option value="angel">Business angel</option>
             <option value="family_office">Family office</option>
           </select>
+          <button id="bulkOrgStartBtn">Add</button>
+          <span class="status-line" id="bulkOrgStatus"></span>
         </div>
-        <div class="or-sep">— or —</div>
-        <div class="form-row">
-          <input type="text" id="orgLinkedinInput" placeholder="LinkedIn company page URL">
-        </div>
-        <button id="researchBtn">Research</button>
-        <div class="status-line" id="researchStatus"></div>
-
-        <div id="resultCard" style="display:none">
-          <div class="org-header">
-            <h3 id="resName"></h3>
-            <span class="type-pill" id="resType"></span>
-          </div>
-          <div class="entity-links" id="resLinks"></div>
-          <div id="resSectors"></div>
-          <div class="entity-desc" id="resDesc"></div>
-          <table id="resTable">
-            <thead><tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr></thead>
-            <tbody id="resTableBody"></tbody>
-          </table>
-          <div style="display:flex;gap:10px;margin-top:12px;align-items:center;">
-            <button id="saveBtn">Save to database</button>
-            <span class="status-line" id="saveStatus"></span>
-          </div>
-        </div>
+        <div class="bulk-results" id="bulkOrgResults"></div>
       </div>
-
-      <div class="scroll-box">
-        <table class="sortable-table" id="orgTable">
-          <thead>
-            <tr>
-              <th data-sort="name">Name <span class="sort-arrow"></span></th>
-              <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
-              <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
-            </tr>
-          </thead>
-          <tbody id="orgList"></tbody>
-        </table>
-      </div>
-      <div class="empty-note" id="emptyOrgList" style="display:none">None saved yet.</div>
     </div>
 
     <!-- Top-right: organization detail -->
@@ -278,7 +303,7 @@
 
     <!-- Bottom-left: people list -->
     <div class="card" id="peopleListCard">
-      <div class="panel-header">
+      <div class="panel-header" id="peopleListHeader">
         <h2>People</h2>
         <div class="panel-tools">
           <input type="text" id="peopleSearchInput" placeholder="Search…">
@@ -287,49 +312,40 @@
         </div>
       </div>
 
-      <div class="addPanel" id="personAddPanel">
-        <div class="form-row">
-          <input type="text" id="personNameInput" placeholder="Full name">
-          <input type="text" id="personCompanyInput" placeholder="Company (optional)">
-        </div>
-        <div class="or-sep">— or —</div>
-        <div class="form-row">
-          <input type="text" id="personLinkedinInput" placeholder="LinkedIn profile URL">
-        </div>
-        <button id="personResearchBtn">Search</button>
-        <div class="status-line" id="personResearchStatus"></div>
-
-        <div id="personResultCard" style="display:none">
-          <div style="font-size:12px;color:#6b6862;margin-top:10px;">Firm</div>
-          <div class="org-header">
-            <h3 id="presName" style="font-size:14px;"></h3>
-          </div>
-          <div class="entity-links" id="presLinks"></div>
-          <div style="font-size:12px;color:#6b6862;margin-top:10px;">Person</div>
-          <table>
-            <thead><tr><th>Name</th><th>Role</th><th>Country</th><th>LinkedIn</th></tr></thead>
-            <tbody id="presTableBody"></tbody>
+      <div id="peopleListView" class="list-view">
+        <div class="scroll-box">
+          <table class="sortable-table" id="peopleTable">
+            <thead>
+              <tr>
+                <th data-sort="full_name">Name <span class="sort-arrow"></span></th>
+                <th data-sort="country">Country <span class="sort-arrow"></span></th>
+                <th data-sort="title">Role <span class="sort-arrow"></span></th>
+              </tr>
+            </thead>
+            <tbody id="peopleList"></tbody>
           </table>
-          <div style="display:flex;gap:10px;margin-top:12px;align-items:center;">
-            <button id="personSaveBtn">Save to database</button>
-            <span class="status-line" id="personSaveStatus"></span>
-          </div>
         </div>
+        <div class="empty-note" id="emptyPeopleList" style="display:none">Select an organization, or search all people.</div>
       </div>
 
-      <div class="scroll-box">
-        <table class="sortable-table" id="peopleTable">
-          <thead>
-            <tr>
-              <th data-sort="full_name">Name <span class="sort-arrow"></span></th>
-              <th data-sort="country">Country <span class="sort-arrow"></span></th>
-              <th data-sort="title">Role <span class="sort-arrow"></span></th>
-            </tr>
-          </thead>
-          <tbody id="peopleList"></tbody>
-        </table>
+      <div id="peopleAddView" class="add-view" style="display:none">
+        <div class="view-header">
+          <h3>Add people</h3>
+          <button class="close-x" id="personAddCloseBtn" title="Close">✕</button>
+        </div>
+        <div class="bulk-people-wrap">
+          <table class="bulk-people-table">
+            <thead><tr><th>Name</th><th>Company (optional)</th><th></th></tr></thead>
+            <tbody id="bulkPeopleRows"></tbody>
+          </table>
+        </div>
+        <div class="bulk-controls">
+          <button class="secondary tiny" id="bulkPeopleAddRowBtn">+ Row</button>
+          <button id="bulkPeopleStartBtn">Add</button>
+          <span class="status-line" id="bulkPeopleStatus"></span>
+        </div>
+        <div class="bulk-results" id="bulkPeopleResults"></div>
       </div>
-      <div class="empty-note" id="emptyPeopleList" style="display:none">Select an organization, or search all people.</div>
     </div>
 
     <!-- Bottom-right: person detail -->
@@ -371,8 +387,6 @@ const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "F
 let orgListCache = [];
 let selectedOrg = null;   // full org detail incl. .people (membership rows)
 let selectedPersonId = null;
-let lastOrgResearch = null;
-let lastPersonResearch = null;
 
 // ---------- auth ----------
 
@@ -730,119 +744,197 @@ async function applyPeopleFilter() {
   }
 }
 
-// ---------- add organization (research) ----------
+// ---------- add organizations / add people: shared view + bulk helpers ----------
 
-async function runOrgResearch() {
-  const name = document.getElementById("nameInput").value.trim();
-  const linkedinUrl = document.getElementById("orgLinkedinInput").value.trim();
-  const orgType = document.getElementById("orgTypeInput").value;
-  const status = document.getElementById("researchStatus");
-  const btn = document.getElementById("researchBtn");
-  if (!name && !linkedinUrl) { status.className = "status-line error"; status.textContent = "Enter a firm name or a LinkedIn URL."; return; }
-  btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
-  document.getElementById("resultCard").style.display = "none";
-  try {
-    const res = await api("/research", { method: "POST", body: JSON.stringify({ name, linkedin_url: linkedinUrl, org_type: orgType }) });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Research failed");
-    lastOrgResearch = data;
-    renderOrgResearchResult(data);
-    status.textContent = data.organization.name
-      ? `Found ${data.people.length} team member(s).`
-      : "Could not confidently identify this firm — save is disabled.";
-  } catch (err) {
-    status.className = "status-line error"; status.textContent = err.message;
-  } finally { btn.disabled = false; }
+function splitList(raw) {
+  return raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
 }
 
-function renderOrgResearchResult(data) {
-  const org = data.organization;
-  document.getElementById("resName").textContent = org.name || "(firm not identified)";
-  document.getElementById("resType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
-  document.getElementById("resLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
-  document.getElementById("resSectors").innerHTML = sectorsHtml(org.sectors);
-  document.getElementById("resDesc").textContent = org.description || "";
-  document.getElementById("resTableBody").innerHTML = renderPeopleRows(
-    data.people, p => p.full_name, p => p.title, p => p.focus, p => p.country, p => p.linkedin_url
-  );
-  document.getElementById("saveStatus").textContent = "";
-  document.getElementById("saveBtn").disabled = !org.name;
-  document.getElementById("resultCard").style.display = "block";
+function addBulkResultRow(container, label) {
+  const row = document.createElement("div");
+  row.className = "bulk-result-row";
+  const labelEl = document.createElement("span");
+  labelEl.className = "bulk-result-label";
+  labelEl.textContent = label;
+  const statusEl = document.createElement("span");
+  statusEl.className = "bulk-status pending";
+  statusEl.textContent = "Queued";
+  row.append(labelEl, statusEl);
+  container.appendChild(row);
+  return statusEl;
 }
 
-async function saveOrgResult() {
-  if (!lastOrgResearch || !lastOrgResearch.organization.name) return;
-  const btn = document.getElementById("saveBtn");
-  const status = document.getElementById("saveStatus");
-  btn.disabled = true; status.textContent = "Saving…"; status.className = "status-line";
-  try {
-    const res = await api("/organizations", { method: "POST", body: JSON.stringify(lastOrgResearch) });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Save failed");
-    status.textContent = "Saved.";
-    await loadOrgList();
-    selectOrg(data.organization.id);
-    document.getElementById("orgAddPanel").classList.remove("open");
-  } catch (err) {
-    status.className = "status-line error"; status.textContent = "Error: " + err.message;
-  } finally { btn.disabled = false; }
+function setBulkStatus(el, cls, text) {
+  el.className = `bulk-status ${cls}`;
+  el.textContent = text;
 }
 
-// ---------- add person (research) ----------
-
-async function runPersonResearch() {
-  const name = document.getElementById("personNameInput").value.trim();
-  const companyHint = document.getElementById("personCompanyInput").value.trim();
-  const linkedinUrl = document.getElementById("personLinkedinInput").value.trim();
-  const status = document.getElementById("personResearchStatus");
-  const btn = document.getElementById("personResearchBtn");
-  if (!name && !linkedinUrl) { status.className = "status-line error"; status.textContent = "Enter a name or a LinkedIn URL."; return; }
-  btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
-  document.getElementById("personResultCard").style.display = "none";
-  try {
-    const res = await api("/research-person", {
-      method: "POST",
-      body: JSON.stringify({ name, company_hint: companyHint, linkedin_url: linkedinUrl }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Research failed");
-    if (!data.people.length) throw new Error("Could not confidently identify this person.");
-    lastPersonResearch = data;
-    renderPersonResearchResult(data);
-    status.textContent = data.organization.name ? "" : "Found the person, but not their current firm — save is disabled.";
-  } catch (err) {
-    status.className = "status-line error"; status.textContent = err.message;
-  } finally { btn.disabled = false; }
+function showOrgListView() {
+  document.getElementById("orgListHeader").style.display = "flex";
+  document.getElementById("orgListView").style.display = "flex";
+  document.getElementById("orgAddView").style.display = "none";
 }
 
-function renderPersonResearchResult(data) {
-  const org = data.organization;
-  document.getElementById("presName").textContent = org.name || "(firm not identified)";
-  document.getElementById("presLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
-  document.getElementById("presTableBody").innerHTML = renderPeopleRows(
-    data.people, p => p.full_name, p => p.title, p => p.focus, p => p.country, p => p.linkedin_url
-  );
-  document.getElementById("personSaveStatus").textContent = "";
-  document.getElementById("personSaveBtn").disabled = !org.name;
-  document.getElementById("personResultCard").style.display = "block";
+function showOrgAddView() {
+  document.getElementById("orgListHeader").style.display = "none";
+  document.getElementById("orgListView").style.display = "none";
+  document.getElementById("orgAddView").style.display = "flex";
 }
 
-async function savePersonResult() {
-  if (!lastPersonResearch || !lastPersonResearch.organization.name) return;
-  const btn = document.getElementById("personSaveBtn");
-  const status = document.getElementById("personSaveStatus");
-  btn.disabled = true; status.textContent = "Saving…"; status.className = "status-line";
-  try {
-    const res = await api("/organizations", { method: "POST", body: JSON.stringify(lastPersonResearch) });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Save failed");
-    status.textContent = "Saved.";
-    await loadOrgList();
-    await selectOrg(data.organization.id);
-    document.getElementById("personAddPanel").classList.remove("open");
-  } catch (err) {
-    status.className = "status-line error"; status.textContent = "Error: " + err.message;
-  } finally { btn.disabled = false; }
+function showPeopleListView() {
+  document.getElementById("peopleListHeader").style.display = "flex";
+  document.getElementById("peopleListView").style.display = "flex";
+  document.getElementById("peopleAddView").style.display = "none";
+}
+
+function showPeopleAddView() {
+  document.getElementById("peopleListHeader").style.display = "none";
+  document.getElementById("peopleListView").style.display = "none";
+  document.getElementById("peopleAddView").style.display = "flex";
+  if (!document.querySelector("#bulkPeopleRows tr")) {
+    addBulkPeopleRow(); addBulkPeopleRow(); addBulkPeopleRow();
+  }
+}
+
+// ---------- add organizations (bulk: names and/or LinkedIn URLs) ----------
+
+async function startBulkOrgAdd() {
+  const names = splitList(document.getElementById("bulkOrgNames").value);
+  const urls = splitList(document.getElementById("bulkOrgLinkedin").value);
+  const orgType = document.getElementById("bulkOrgTypeInput").value;
+  const status = document.getElementById("bulkOrgStatus");
+  const btn = document.getElementById("bulkOrgStartBtn");
+  const items = [
+    ...names.map(name => ({ name, linkedin_url: "" })),
+    ...urls.map(linkedin_url => ({ name: "", linkedin_url })),
+  ];
+  if (!items.length) { status.className = "status-line error"; status.textContent = "Enter at least one name or LinkedIn URL."; return; }
+
+  const resultsEl = document.getElementById("bulkOrgResults");
+  resultsEl.innerHTML = "";
+  const statusEls = items.map(item => addBulkResultRow(resultsEl, item.name || item.linkedin_url));
+
+  btn.disabled = true; status.className = "status-line";
+  let succeeded = 0;
+  for (let i = 0; i < items.length; i++) {
+    status.textContent = `Processing ${i + 1} / ${items.length}…`;
+    setBulkStatus(statusEls[i], "working", "Researching…");
+    try {
+      const res = await api("/research", {
+        method: "POST",
+        body: JSON.stringify({ name: items[i].name, linkedin_url: items[i].linkedin_url, org_type: orgType }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Research failed");
+      if (!data.organization.name) throw new Error("Could not identify this firm");
+      const saveRes = await api("/organizations", { method: "POST", body: JSON.stringify(data) });
+      const saveData = await saveRes.json();
+      if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
+      setBulkStatus(statusEls[i], "done", `Saved (${data.people.length})`);
+      succeeded++;
+    } catch (err) {
+      setBulkStatus(statusEls[i], "failed", err.message);
+    }
+  }
+  btn.disabled = false;
+  status.className = "status-line";
+  status.textContent = `Done: ${succeeded} / ${items.length} saved.`;
+  document.getElementById("bulkOrgNames").value = "";
+  document.getElementById("bulkOrgLinkedin").value = "";
+  await loadOrgList();
+}
+
+// ---------- add people (bulk: name + optional company, table entry) ----------
+
+function buildBulkPeopleRow(name = "", company = "") {
+  const tr = document.createElement("tr");
+  const nameTd = document.createElement("td");
+  const nameInput = document.createElement("input");
+  nameInput.type = "text"; nameInput.className = "bp-name"; nameInput.placeholder = "Full name"; nameInput.value = name;
+  nameInput.addEventListener("paste", handleBulkPeoplePaste);
+  nameTd.appendChild(nameInput);
+  const companyTd = document.createElement("td");
+  const companyInput = document.createElement("input");
+  companyInput.type = "text"; companyInput.className = "bp-company"; companyInput.placeholder = "Company (optional)"; companyInput.value = company;
+  companyTd.appendChild(companyInput);
+  const removeTd = document.createElement("td");
+  const removeBtn = document.createElement("button");
+  removeBtn.className = "bp-remove"; removeBtn.title = "Remove row"; removeBtn.textContent = "✕";
+  removeBtn.addEventListener("click", () => tr.remove());
+  removeTd.appendChild(removeBtn);
+  tr.append(nameTd, companyTd, removeTd);
+  return tr;
+}
+
+function addBulkPeopleRow(name = "", company = "") {
+  const tr = buildBulkPeopleRow(name, company);
+  document.getElementById("bulkPeopleRows").appendChild(tr);
+  return tr;
+}
+
+function handleBulkPeoplePaste(e) {
+  const text = (e.clipboardData || window.clipboardData).getData("text");
+  if (!text || !text.includes("\n")) return;  // a plain single-line paste behaves normally
+  e.preventDefault();
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return;
+  let row = e.target.closest("tr");
+  lines.forEach((line, i) => {
+    const [name, company] = line.split(/\t|,/).map(s => (s || "").trim());
+    if (i === 0) {
+      row.querySelector(".bp-name").value = name || "";
+      row.querySelector(".bp-company").value = company || "";
+    } else {
+      const newRow = buildBulkPeopleRow(name || "", company || "");
+      row.insertAdjacentElement("afterend", newRow);
+      row = newRow;
+    }
+  });
+}
+
+async function startBulkPeopleAdd() {
+  const rows = [...document.querySelectorAll("#bulkPeopleRows tr")];
+  const items = rows.map(tr => ({
+    name: tr.querySelector(".bp-name").value.trim(),
+    company: tr.querySelector(".bp-company").value.trim(),
+  })).filter(item => item.name);
+  const status = document.getElementById("bulkPeopleStatus");
+  const btn = document.getElementById("bulkPeopleStartBtn");
+  if (!items.length) { status.className = "status-line error"; status.textContent = "Enter at least one name."; return; }
+
+  const resultsEl = document.getElementById("bulkPeopleResults");
+  resultsEl.innerHTML = "";
+  const statusEls = items.map(item => addBulkResultRow(resultsEl, item.name));
+
+  btn.disabled = true; status.className = "status-line";
+  let succeeded = 0;
+  for (let i = 0; i < items.length; i++) {
+    status.textContent = `Processing ${i + 1} / ${items.length}…`;
+    setBulkStatus(statusEls[i], "working", "Researching…");
+    try {
+      const res = await api("/research-person", {
+        method: "POST",
+        body: JSON.stringify({ name: items[i].name, company_hint: items[i].company, linkedin_url: "" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Research failed");
+      if (!data.people.length || !data.organization.name) throw new Error("Could not identify person/firm");
+      const saveRes = await api("/organizations", { method: "POST", body: JSON.stringify(data) });
+      const saveData = await saveRes.json();
+      if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
+      setBulkStatus(statusEls[i], "done", "Saved");
+      succeeded++;
+    } catch (err) {
+      setBulkStatus(statusEls[i], "failed", err.message);
+    }
+  }
+  btn.disabled = false;
+  status.className = "status-line";
+  status.textContent = `Done: ${succeeded} / ${items.length} saved.`;
+  document.getElementById("bulkPeopleRows").innerHTML = "";
+  addBulkPeopleRow(); addBulkPeopleRow(); addBulkPeopleRow();
+  await loadOrgList();
+  if (selectedOrg) await selectOrg(selectedOrg.id);
 }
 
 // ---------- wiring ----------
@@ -853,25 +945,22 @@ document.getElementById("signOutBtn").addEventListener("click", signOut);
 
 document.getElementById("orgSearchInput").addEventListener("input", applyOrgFilter);
 document.getElementById("orgSearchClearBtn").addEventListener("click", () => { document.getElementById("orgSearchInput").value = ""; applyOrgFilter(); });
-document.getElementById("orgAddToggleBtn").addEventListener("click", () => document.getElementById("orgAddPanel").classList.toggle("open"));
-document.getElementById("researchBtn").addEventListener("click", runOrgResearch);
-document.getElementById("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") runOrgResearch(); });
-document.getElementById("orgLinkedinInput").addEventListener("keydown", e => { if (e.key === "Enter") runOrgResearch(); });
-document.getElementById("saveBtn").addEventListener("click", saveOrgResult);
+document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
+document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);
+document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
 document.getElementById("deleteOrgBtn").addEventListener("click", deleteSelectedOrg);
 document.getElementById("orgNewsSearchBtn").addEventListener("click", searchOrgNews);
 
 document.getElementById("peopleSearchInput").addEventListener("input", applyPeopleFilter);
 document.getElementById("peopleSearchClearBtn").addEventListener("click", () => { document.getElementById("peopleSearchInput").value = ""; applyPeopleFilter(); });
 document.getElementById("personAddToggleBtn").addEventListener("click", () => {
-  const panel = document.getElementById("personAddPanel");
-  panel.classList.toggle("open");
-  if (panel.classList.contains("open") && selectedOrg) {
-    document.getElementById("personCompanyInput").value = selectedOrg.name;
-  }
+  showPeopleAddView();
+  const firstEmptyCompany = document.querySelector("#bulkPeopleRows .bp-company");
+  if (selectedOrg && firstEmptyCompany && !firstEmptyCompany.value) firstEmptyCompany.value = selectedOrg.name;
 });
-document.getElementById("personResearchBtn").addEventListener("click", runPersonResearch);
-document.getElementById("personSaveBtn").addEventListener("click", savePersonResult);
+document.getElementById("personAddCloseBtn").addEventListener("click", showPeopleListView);
+document.getElementById("bulkPeopleAddRowBtn").addEventListener("click", () => addBulkPeopleRow());
+document.getElementById("bulkPeopleStartBtn").addEventListener("click", startBulkPeopleAdd);
 document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
 
 // ---------- draggable quadrant dividers ----------
