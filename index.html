@@ -843,10 +843,7 @@ async function startBulkOrgAdd() {
       setBulkStatus(statusEls[i], "done", saveData.organization_existed
         ? `Already in database — merged (${data.people.length})`
         : `Saved (${data.people.length})`);
-      makeBulkRowClickable(statusEls[i], () => {
-        showOrgListView();
-        selectOrg(saveData.organization.id);
-      });
+      makeBulkRowClickable(statusEls[i], () => selectOrg(saveData.organization.id));
       succeeded++;
     } catch (err) {
       setBulkStatus(statusEls[i], "failed", err.message);
@@ -940,8 +937,6 @@ async function startBulkPeopleAdd() {
       if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
       setBulkStatus(statusEls[i], "done", saveData.people?.[0]?.job_changed ? "Saved (job change)" : "Saved");
       makeBulkRowClickable(statusEls[i], async () => {
-        showOrgListView();
-        showPeopleListView();
         await selectOrg(saveData.organization.id);
         const match = currentPeopleItems.find(item => item.id === saveData.people?.[0]?.id);
         if (match) selectPerson(match);
