@@ -120,6 +120,26 @@ function isBlank(v: unknown): boolean {
   return false;
 }
 
+// Collapses any LinkedIn URL variant (country subdomains like at./de./fr.,
+// missing www, trailing slash, tracking query strings, http) down to one
+// canonical form: https://www.linkedin.com/<path>. Leaves non-LinkedIn or
+// unparseable values untouched rather than guessing.
+function normalizeLinkedinUrl(raw?: string | null): string | null {
+  if (!raw) return null;
+  const original = raw.trim();
+  if (!original) return null;
+  const withScheme = /^https?:\/\//i.test(original) ? original : `https://${original}`;
+  let u: URL;
+  try {
+    u = new URL(withScheme);
+  } catch {
+    return original;
+  }
+  if (!/(^|\.)linkedin\.com$/i.test(u.hostname)) return original;
+  const path = u.pathname.replace(/\/+$/, "");
+  return `https://www.linkedin.com${path}`;
+}
+
 function mergeFields(existing: Record<string, any>, newFields: Record<string, any>) {
   const merged: Record<string, any> = {};
   for (const [k, v] of Object.entries(newFields)) {
@@ -154,7 +174,7 @@ async function saveOrganization(payload: any) {
     name,
     org_type: orgIn.org_type || "vc",
     website_url: orgIn.website_url || null,
-    linkedin_url: orgIn.linkedin_url || null,
+    linkedin_url: normalizeLinkedinUrl(orgIn.linkedin_url),
     hq_country: orgIn.hq_country || null,
     description: orgIn.description || null,
     sectors: Array.isArray(orgIn.sectors) ? orgIn.sectors.filter(Boolean) : [],
@@ -181,7 +201,7 @@ async function saveOrganization(payload: any) {
     if (!fullName) continue;
     const personFields = {
       full_name: fullName,
-      linkedin_url: p.linkedin_url || null,
+      linkedin_url: normalizeLinkedinUrl(p.linkedin_url),
       country: p.country || null,
     };
     const candidates = await findPeopleByName(fullName);
