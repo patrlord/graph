@@ -26,6 +26,7 @@
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
 //   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
+//   POST   /people/find-linkedin  { person_id, name, title?, company? } -> { linkedin_url } (saved if found)
 //   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
 //   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
 
@@ -579,6 +580,42 @@ async function listNews(entityType: string, entityId: string) {
   });
 }
 
+const FIND_LINKEDIN_SCHEMA = {
+  type: "object",
+  properties: { linkedin_url: { type: ["string", "null"] } },
+  required: ["linkedin_url"],
+  additionalProperties: false,
+};
+
+// Google-style search for "linkedin <name>, <title>, <company>", then check
+// the resulting linkedin.com/in/ candidates one at a time (in the order the
+// search ranked them) and stop at the first one that's actually verifiable
+// as this person from what the search result says about them - rather than
+// returning the top hit unconditionally. Saves directly to the person's
+// record once verified.
+async function findPersonLinkedin(personId: string, name: string, title: string, company: string) {
+  const who = [name, title, company].filter(Boolean).join(", ");
+  const prompt = `Search for: linkedin ${who}
+
+This is a person named "${name}"${title ? `, whose role is "${title}"` : ""}${company ? ` at "${company}"` : ""}. Find their personal LinkedIn profile.
+
+From the search results, identify up to 3 candidate linkedin.com/in/... profile URLs that could belong to this specific person. Check them one at a time, in the order the search ranked them: for each, look at what the result's title/snippet says about that profile (name, job title, employer) and judge whether it genuinely matches this person - the name should match, and the role/employer should at least plausibly match. Stop at the first candidate you can confidently verify this way and return its URL.
+
+If none of the candidates confidently match, return null - never guess, and never return an unverified best-guess URL.
+
+${NEVER_GUESS}`;
+
+  const data = await openRouterCall(prompt, "find_linkedin", FIND_LINKEDIN_SCHEMA);
+  const linkedinUrl = normalizeLinkedinUrl(data.linkedin_url);
+  if (linkedinUrl) {
+    await supabaseRequest("PATCH", "people", {
+      params: { id: `eq.${personId}` },
+      body: { linkedin_url: linkedinUrl },
+    });
+  }
+  return { linkedin_url: linkedinUrl };
+}
+
 // ---------- Routing ----------
 
 Deno.serve(async (req) => {
@@ -636,6 +673,14 @@ Deno.serve(async (req) => {
         return json({ error: "entity_type, entity_id, and name are required" }, 400);
       }
       return json(await searchAndSaveNews(entity_type, entity_id, name, org_context));
+    }
+
+    if (req.method === "POST" && path === "/people/find-linkedin") {
+      const body = await req.json();
+      const personId = (body.person_id ?? "").trim();
+      const name = (body.name ?? "").trim();
+      if (!personId || !name) return json({ error: "person_id and name are required" }, 400);
+      return json(await findPersonLinkedin(personId, name, (body.title ?? "").trim(), (body.company ?? "").trim()));
     }
 
     const orgIdMatch = path.match(/^\/organizations\/([^/]+)$/);

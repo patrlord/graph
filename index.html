@@ -316,6 +316,7 @@
                 <th data-sort="full_name">Name <span class="sort-arrow"></span></th>
                 <th data-sort="country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="title">Role <span class="sort-arrow"></span></th>
+                <th>LinkedIn</th>
               </tr>
             </thead>
             <tbody id="peopleList"></tbody>
@@ -439,6 +440,22 @@ sb.auth.onAuthStateChange((_event, session) => {
 function linkedInCell(url) {
   if (!url) return '<span class="none">not found</span>';
   return `<a class="li-link" href="${url}" target="_blank" rel="noopener">LinkedIn ↗</a>`;
+}
+
+function linkedinStub(url) {
+  try {
+    const path = new URL(url).pathname.replace(/^\/|\/$/g, "");
+    return path || url;
+  } catch {
+    return url;
+  }
+}
+
+function linkedinCellForPerson(p) {
+  if (p.linkedin_url) {
+    return `<a class="li-link" href="${p.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(p.linkedin_url)}</a>`;
+  }
+  return `<button class="secondary tiny find-li-btn" data-id="${p.id}">Find</button>`;
 }
 
 function entityLinksHtml(website_url, linkedin_url, hq_country) {
@@ -673,10 +690,55 @@ function renderPeopleTableBody() {
       <td class="li-name">${p.full_name}</td>
       <td>${p.country || '<span class="none">—</span>'}</td>
       <td>${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}</td>
+      <td>${linkedinCellForPerson(p)}</td>
     </tr>
   `).join("");
-  [...listEl.children].forEach((tr, i) => tr.addEventListener("click", () => selectPerson(currentPeopleItems[i])));
+  [...listEl.children].forEach((tr, i) => {
+    tr.addEventListener("click", () => selectPerson(currentPeopleItems[i]));
+    const findBtn = tr.querySelector(".find-li-btn");
+    if (findBtn) {
+      findBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        runFindLinkedin(currentPeopleItems[i], findBtn);
+      });
+    }
+  });
   if (selectedPersonId) highlightSelected("peopleList", selectedPersonId);
+}
+
+function personCompanyName(p) {
+  return currentPeopleMode === "org" ? (selectedOrg && selectedOrg.name) : (p.organization && p.organization.name);
+}
+
+async function runFindLinkedin(person, btnEl) {
+  btnEl.disabled = true;
+  btnEl.textContent = "Searching…";
+  btnEl.title = "";
+  try {
+    const res = await api("/people/find-linkedin", {
+      method: "POST",
+      body: JSON.stringify({
+        person_id: person.id, name: person.full_name,
+        title: person.title || "", company: personCompanyName(person) || "",
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Search failed");
+    if (data.linkedin_url) {
+      person.linkedin_url = data.linkedin_url;
+      const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
+      if (membership) membership.people.linkedin_url = data.linkedin_url;
+      renderPeopleTableBody();
+      if (selectedPersonId === person.id) showPersonDetail(person);
+    } else {
+      btnEl.disabled = false;
+      btnEl.textContent = "Not found";
+    }
+  } catch (err) {
+    btnEl.disabled = false;
+    btnEl.textContent = "Find";
+    btnEl.title = err.message;
+  }
 }
 
 async function selectPerson(p) {
