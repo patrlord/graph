@@ -27,6 +27,7 @@
 //   DELETE /organizations/:id   -> { ok: true }
 //   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
 //   POST   /people/find-linkedin  { person_id, name, title?, company? } -> { linkedin_url } (saved if found)
+//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url } (saved if found)
 //   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
 //   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
 
@@ -616,6 +617,30 @@ ${NEVER_GUESS}`;
   return { linkedin_url: linkedinUrl };
 }
 
+// Same idea as findPersonLinkedin, but for a company's LinkedIn page.
+async function findOrgLinkedin(orgId: string, name: string, websiteUrl: string, country: string) {
+  const who = [name, websiteUrl, country].filter(Boolean).join(", ");
+  const prompt = `Search for: linkedin ${who}
+
+This is a company named "${name}"${websiteUrl ? `, whose website is ${websiteUrl}` : ""}${country ? `, headquartered in ${country}` : ""}. Find their official LinkedIn company page.
+
+From the search results, identify up to 3 candidate linkedin.com/company/... URLs that could belong to this specific company. Check them one at a time, in the order the search ranked them: for each, look at what the result's title/snippet says about that company (name, industry, location) and judge whether it genuinely matches - the name should match, and location/industry should at least plausibly match. Stop at the first candidate you can confidently verify this way and return its URL.
+
+If none of the candidates confidently match, return null - never guess, and never return an unverified best-guess URL.
+
+${NEVER_GUESS}`;
+
+  const data = await openRouterCall(prompt, "find_org_linkedin", FIND_LINKEDIN_SCHEMA);
+  const linkedinUrl = normalizeLinkedinUrl(data.linkedin_url);
+  if (linkedinUrl) {
+    await supabaseRequest("PATCH", "organizations", {
+      params: { id: `eq.${orgId}` },
+      body: { linkedin_url: linkedinUrl },
+    });
+  }
+  return { linkedin_url: linkedinUrl };
+}
+
 // ---------- Routing ----------
 
 Deno.serve(async (req) => {
@@ -681,6 +706,14 @@ Deno.serve(async (req) => {
       const name = (body.name ?? "").trim();
       if (!personId || !name) return json({ error: "person_id and name are required" }, 400);
       return json(await findPersonLinkedin(personId, name, (body.title ?? "").trim(), (body.company ?? "").trim()));
+    }
+
+    if (req.method === "POST" && path === "/organizations/find-linkedin") {
+      const body = await req.json();
+      const orgId = (body.org_id ?? "").trim();
+      const name = (body.name ?? "").trim();
+      if (!orgId || !name) return json({ error: "org_id and name are required" }, 400);
+      return json(await findOrgLinkedin(orgId, name, (body.website_url ?? "").trim(), (body.country ?? "").trim()));
     }
 
     const orgIdMatch = path.match(/^\/organizations\/([^/]+)$/);

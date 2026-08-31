@@ -236,6 +236,7 @@
                 <th data-sort="name">Name <span class="sort-arrow"></span></th>
                 <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
+                <th>LinkedIn</th>
               </tr>
             </thead>
             <tbody id="orgList"></tbody>
@@ -451,11 +452,11 @@ function linkedinStub(url) {
   }
 }
 
-function linkedinCellForPerson(p) {
-  if (p.linkedin_url) {
-    return `<a class="li-link" href="${p.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(p.linkedin_url)}</a>`;
+function linkedinCellFor(entity) {
+  if (entity.linkedin_url) {
+    return `<a class="li-link" href="${entity.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(entity.linkedin_url)}</a>`;
   }
-  return `<button class="secondary tiny find-li-btn" data-id="${p.id}">Find</button>`;
+  return `<button class="secondary tiny find-li-btn" data-id="${entity.id}">Find</button>`;
 }
 
 function entityLinksHtml(website_url, linkedin_url, hq_country) {
@@ -567,10 +568,52 @@ function renderOrgList(orgs) {
       <td class="li-name">${o.name}</td>
       <td>${o.hq_country || '<span class="none">—</span>'}</td>
       <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type}</td>
+      <td>${linkedinCellFor(o)}</td>
     </tr>
   `).join("");
-  [...listEl.children].forEach(tr => tr.addEventListener("click", () => selectOrg(tr.dataset.id)));
+  [...listEl.children].forEach((tr, i) => {
+    tr.addEventListener("click", () => selectOrg(tr.dataset.id));
+    const findBtn = tr.querySelector(".find-li-btn");
+    if (findBtn) {
+      findBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        runFindOrgLinkedin(orgs[i], findBtn);
+      });
+    }
+  });
   if (selectedOrg) highlightSelected("orgList", selectedOrg.id);
+}
+
+async function runFindOrgLinkedin(org, btnEl) {
+  btnEl.disabled = true;
+  btnEl.textContent = "Searching…";
+  btnEl.title = "";
+  try {
+    const res = await api("/organizations/find-linkedin", {
+      method: "POST",
+      body: JSON.stringify({
+        org_id: org.id, name: org.name,
+        website_url: org.website_url || "", country: org.hq_country || "",
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Search failed");
+    if (data.linkedin_url) {
+      org.linkedin_url = data.linkedin_url;  // mutates the shared object in orgListCache too
+      if (selectedOrg && selectedOrg.id === org.id) {
+        selectedOrg.linkedin_url = data.linkedin_url;
+        renderOrgDetail(selectedOrg);
+      }
+      applyOrgFilter();
+    } else {
+      btnEl.disabled = false;
+      btnEl.textContent = "Not found";
+    }
+  } catch (err) {
+    btnEl.disabled = false;
+    btnEl.textContent = "Find";
+    btnEl.title = err.message;
+  }
 }
 
 function highlightSelected(listId, id) {
@@ -690,7 +733,7 @@ function renderPeopleTableBody() {
       <td class="li-name">${p.full_name}</td>
       <td>${p.country || '<span class="none">—</span>'}</td>
       <td>${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}</td>
-      <td>${linkedinCellForPerson(p)}</td>
+      <td>${linkedinCellFor(p)}</td>
     </tr>
   `).join("");
   [...listEl.children].forEach((tr, i) => {
