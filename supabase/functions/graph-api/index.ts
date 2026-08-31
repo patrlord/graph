@@ -25,7 +25,7 @@
 //   POST   /organizations       { organization, people } -> saved { organization, people }
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
-//   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ]
+//   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
 //   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
 //   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
 
@@ -332,13 +332,13 @@ async function getOrganization(id: string) {
 }
 
 async function searchPeopleGlobal(query: string) {
-  const people = await supabaseRequest("GET", "people", {
-    params: {
-      full_name: `ilike.*${query}*`,
-      select: "*,memberships(organization_id,is_current,updated_at,title,organizations(id,name))",
-      limit: "25",
-    },
-  });
+  const params: Record<string, string> = {
+    select: "*,memberships(organization_id,is_current,updated_at,title,organizations(id,name))",
+    order: "full_name.asc",
+    limit: query ? "25" : "1000",
+  };
+  if (query) params.full_name = `ilike.*${query}*`;
+  const people = await supabaseRequest("GET", "people", { params });
   return (people ?? []).map((p: any) => {
     const ms = [...(p.memberships || [])].sort((a: any, b: any) => {
       if (a.is_current !== b.is_current) return a.is_current ? -1 : 1;
@@ -619,7 +619,6 @@ Deno.serve(async (req) => {
 
     if (req.method === "GET" && path === "/people") {
       const q = (url.searchParams.get("q") ?? "").trim();
-      if (!q) return json({ error: "q is required" }, 400);
       return json(await searchPeopleGlobal(q));
     }
 

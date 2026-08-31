@@ -130,6 +130,8 @@
 
   .bulk-results { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   .bulk-result-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 2px; font-size: 12.5px; border-bottom: 1px solid #f2f0ec; }
+  .bulk-result-row.clickable { cursor: pointer; }
+  .bulk-result-row.clickable:hover { background: #fbf3ea; }
   .bulk-result-row:last-child { border-bottom: none; }
   .bulk-result-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bulk-status { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; flex: 0 0 auto; }
@@ -298,7 +300,7 @@
     <!-- Bottom-left: people list -->
     <div class="card" id="peopleListCard">
       <div class="panel-header" id="peopleListHeader">
-        <h2>People</h2>
+        <h2 id="peopleListTitle">People</h2>
         <div class="panel-tools">
           <input type="text" id="peopleSearchInput" placeholder="Search…">
           <button class="secondary tiny" id="peopleSearchClearBtn">Clear</button>
@@ -381,6 +383,7 @@ const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "F
 let orgListCache = [];
 let selectedOrg = null;   // full org detail incl. .people (membership rows)
 let selectedPersonId = null;
+let peopleForceGlobal = false;  // true after "Clear" is pressed: show all people regardless of org selection
 
 // ---------- auth ----------
 
@@ -559,15 +562,22 @@ function highlightSelected(listId, id) {
 
 // ---------- organization detail + its people ----------
 
+function updatePeopleHeader() {
+  document.getElementById("peopleListTitle").textContent =
+    (selectedOrg && !peopleForceGlobal) ? `People at ${selectedOrg.name}` : "People";
+}
+
 async function selectOrg(id) {
   const res = await api(`/organizations/${id}`);
   if (!res.ok) return;
   selectedOrg = await res.json();
   selectedPersonId = null;
+  peopleForceGlobal = false;
   renderOrgDetail(selectedOrg);
   highlightSelected("orgList", id);
   document.getElementById("peopleSearchInput").value = "";
   renderPeopleList(selectedOrg.people, "org");
+  updatePeopleHeader();
   showPersonDetail(null);
   loadOrgNews(selectedOrg);
 }
@@ -610,10 +620,11 @@ async function searchOrgNews() {
 async function deleteSelectedOrg() {
   if (!selectedOrg || !confirm("Delete this organization and its team from the database?")) return;
   await api(`/organizations/${selectedOrg.id}`, { method: "DELETE" });
-  selectedOrg = null; selectedPersonId = null;
+  selectedOrg = null; selectedPersonId = null; peopleForceGlobal = false;
   document.getElementById("orgDetailEmpty").style.display = "block";
   document.getElementById("orgDetailContent").classList.remove("shown");
   renderPeopleList([], "empty");
+  updatePeopleHeader();
   showPersonDetail(null);
   loadOrgList();
 }
@@ -723,14 +734,14 @@ async function searchPersonNews() {
 
 async function applyPeopleFilter() {
   const q = document.getElementById("peopleSearchInput").value.trim().toLowerCase();
-  if (selectedOrg) {
+  if (selectedOrg && !peopleForceGlobal) {
     const filtered = !q ? selectedOrg.people : selectedOrg.people.filter(m =>
       m.people.full_name.toLowerCase().includes(q) ||
       (m.people.country || "").toLowerCase().includes(q) ||
       (m.title || "").toLowerCase().includes(q)
     );
     renderPeopleList(filtered, "org");
-  } else if (q) {
+  } else if (peopleForceGlobal || q) {
     const res = await api(`/people?q=${encodeURIComponent(q)}`);
     renderPeopleList(res.ok ? await res.json() : [], "global");
   } else {
@@ -761,6 +772,12 @@ function addBulkResultRow(container, label) {
 function setBulkStatus(el, cls, text) {
   el.className = `bulk-status ${cls}`;
   el.textContent = text;
+}
+
+function makeBulkRowClickable(statusEl, onClick) {
+  const row = statusEl.parentElement;
+  row.classList.add("clickable");
+  row.addEventListener("click", onClick);
 }
 
 function showOrgListView() {
@@ -826,6 +843,10 @@ async function startBulkOrgAdd() {
       setBulkStatus(statusEls[i], "done", saveData.organization_existed
         ? `Already in database — merged (${data.people.length})`
         : `Saved (${data.people.length})`);
+      makeBulkRowClickable(statusEls[i], () => {
+        showOrgListView();
+        selectOrg(saveData.organization.id);
+      });
       succeeded++;
     } catch (err) {
       setBulkStatus(statusEls[i], "failed", err.message);
@@ -918,6 +939,13 @@ async function startBulkPeopleAdd() {
       const saveData = await saveRes.json();
       if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
       setBulkStatus(statusEls[i], "done", saveData.people?.[0]?.job_changed ? "Saved (job change)" : "Saved");
+      makeBulkRowClickable(statusEls[i], async () => {
+        showOrgListView();
+        showPeopleListView();
+        await selectOrg(saveData.organization.id);
+        const match = currentPeopleItems.find(item => item.id === saveData.people?.[0]?.id);
+        if (match) selectPerson(match);
+      });
       succeeded++;
     } catch (err) {
       setBulkStatus(statusEls[i], "failed", err.message);
@@ -947,7 +975,12 @@ document.getElementById("deleteOrgBtn").addEventListener("click", deleteSelected
 document.getElementById("orgNewsSearchBtn").addEventListener("click", searchOrgNews);
 
 document.getElementById("peopleSearchInput").addEventListener("input", applyPeopleFilter);
-document.getElementById("peopleSearchClearBtn").addEventListener("click", () => { document.getElementById("peopleSearchInput").value = ""; applyPeopleFilter(); });
+document.getElementById("peopleSearchClearBtn").addEventListener("click", () => {
+  document.getElementById("peopleSearchInput").value = "";
+  peopleForceGlobal = true;
+  updatePeopleHeader();
+  applyPeopleFilter();
+});
 document.getElementById("personAddToggleBtn").addEventListener("click", () => {
   showPeopleAddView();
   const firstEmptyCompany = document.querySelector("#bulkPeopleRows .bp-company");
