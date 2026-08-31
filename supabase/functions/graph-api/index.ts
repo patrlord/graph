@@ -140,6 +140,31 @@ function normalizeLinkedinUrl(raw?: string | null): string | null {
   return `https://www.linkedin.com${path}`;
 }
 
+// Same idea as normalizeLinkedinUrl but for any website: forces https, drops
+// www, drops trailing slash - so "duplicate website" matching isn't fooled by
+// http vs https or a trailing slash.
+function normalizeWebsiteUrl(raw?: string | null): string | null {
+  if (!raw) return null;
+  const original = raw.trim();
+  if (!original) return null;
+  const withScheme = /^https?:\/\//i.test(original) ? original : `https://${original}`;
+  let u: URL;
+  try {
+    u = new URL(withScheme);
+  } catch {
+    return original;
+  }
+  const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+  const path = u.pathname.replace(/\/+$/, "");
+  return `https://${host}${path}`;
+}
+
+// Quotes a value for use inside a PostgREST `or=(...)` filter expression,
+// where commas/parens/quotes are syntactically significant.
+function orValue(v: string): string {
+  return /[,()"]/.test(v) ? `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : v;
+}
+
 function mergeFields(existing: Record<string, any>, newFields: Record<string, any>) {
   const merged: Record<string, any> = {};
   for (const [k, v] of Object.entries(newFields)) {
@@ -150,16 +175,26 @@ function mergeFields(existing: Record<string, any>, newFields: Record<string, an
 
 // ---------- Organizations / people / memberships ----------
 
-async function findOrganizationByName(name: string) {
+// Treats an org as "the same one" if the name matches, OR its website, OR
+// its LinkedIn matches an existing row - so a firm found again under a
+// slightly different name (or via a LinkedIn-URL add) still merges into the
+// existing record instead of creating a duplicate.
+async function findExistingOrganization(name: string, websiteUrl?: string | null, linkedinUrl?: string | null) {
+  const orParts = [`name.ilike.${orValue(name)}`];
+  if (websiteUrl) orParts.push(`website_url.eq.${orValue(websiteUrl)}`);
+  if (linkedinUrl) orParts.push(`linkedin_url.eq.${orValue(linkedinUrl)}`);
   const rows = await supabaseRequest("GET", "organizations", {
-    params: { name: `ilike.${name}`, select: "*", limit: "1" },
+    params: { or: `(${orParts.join(",")})`, select: "*", limit: "5" },
   });
   return rows?.[0] ?? null;
 }
 
-async function findPeopleByName(name: string) {
+// Same idea for people: same name OR same LinkedIn URL counts as the same person.
+async function findPeopleByNameOrLinkedin(name: string, linkedinUrl?: string | null) {
+  const orParts = [`full_name.ilike.${orValue(name)}`];
+  if (linkedinUrl) orParts.push(`linkedin_url.eq.${orValue(linkedinUrl)}`);
   const rows = await supabaseRequest("GET", "people", {
-    params: { full_name: `ilike.${name}`, select: "*" },
+    params: { or: `(${orParts.join(",")})`, select: "*" },
   });
   return rows ?? [];
 }
@@ -170,17 +205,19 @@ async function saveOrganization(payload: any) {
   const name = (orgIn.name ?? "").trim();
   if (!name) throw new HttpError(400, "organization.name is required");
 
+  const websiteUrl = normalizeWebsiteUrl(orgIn.website_url);
+  const linkedinUrl = normalizeLinkedinUrl(orgIn.linkedin_url);
   const orgFields = {
     name,
     org_type: orgIn.org_type || "vc",
-    website_url: orgIn.website_url || null,
-    linkedin_url: normalizeLinkedinUrl(orgIn.linkedin_url),
+    website_url: websiteUrl,
+    linkedin_url: linkedinUrl,
     hq_country: orgIn.hq_country || null,
     description: orgIn.description || null,
     sectors: Array.isArray(orgIn.sectors) ? orgIn.sectors.filter(Boolean) : [],
   };
 
-  const existingOrg = await findOrganizationByName(name);
+  const existingOrg = await findExistingOrganization(name, websiteUrl, linkedinUrl);
   let org;
   if (existingOrg) {
     org = (await supabaseRequest("PATCH", "organizations", {
@@ -194,20 +231,22 @@ async function saveOrganization(payload: any) {
       prefer: "return=representation",
     }))[0];
   }
+  const orgExisted = !!existingOrg;
 
   const savedPeople = [];
   for (const p of peopleIn) {
     const fullName = (p.full_name ?? "").trim();
     if (!fullName) continue;
+    const personLinkedinUrl = normalizeLinkedinUrl(p.linkedin_url);
     const personFields = {
       full_name: fullName,
-      linkedin_url: normalizeLinkedinUrl(p.linkedin_url),
+      linkedin_url: personLinkedinUrl,
       country: p.country || null,
     };
-    const candidates = await findPeopleByName(fullName);
-    let existingMemberships: any[] = [];
+    const candidates = await findPeopleByNameOrLinkedin(fullName, personLinkedinUrl);
+    let membershipsAtThisOrg: any[] = [];
     if (candidates.length) {
-      existingMemberships = await supabaseRequest("GET", "memberships", {
+      membershipsAtThisOrg = await supabaseRequest("GET", "memberships", {
         params: {
           organization_id: `eq.${org.id}`,
           person_id: `in.(${candidates.map((c: any) => c.id).join(",")})`,
@@ -216,8 +255,8 @@ async function saveOrganization(payload: any) {
       });
     }
     let person = null;
-    if (existingMemberships.length) {
-      const matchId = existingMemberships[0].person_id;
+    if (membershipsAtThisOrg.length) {
+      const matchId = membershipsAtThisOrg[0].person_id;
       person = candidates.find((c: any) => c.id === matchId);
     } else if (candidates.length) {
       person = candidates[0];
@@ -243,7 +282,8 @@ async function saveOrganization(payload: any) {
       focus: p.focus || null,
       is_current: true,
     };
-    const existingMembership = existingMemberships.find((m: any) => m.person_id === person.id);
+    const existingMembership = membershipsAtThisOrg.find((m: any) => m.person_id === person.id);
+    let jobChanged = false;
     if (existingMembership) {
       membershipFields = mergeFields(existingMembership, membershipFields);
       await supabaseRequest("PATCH", "memberships", {
@@ -251,13 +291,29 @@ async function saveOrganization(payload: any) {
         body: membershipFields,
       });
     } else {
+      // Not yet a member of this org. If they're currently marked as working
+      // somewhere else, treat this as a job change: close out the old
+      // membership(s) (is_current: false, history preserved) before opening
+      // the new one, rather than leaving them "currently" at both.
+      const otherCurrentMemberships = await supabaseRequest("GET", "memberships", {
+        params: { person_id: `eq.${person.id}`, is_current: "eq.true", select: "id" },
+      });
+      if (otherCurrentMemberships.length) {
+        jobChanged = true;
+        for (const m of otherCurrentMemberships) {
+          await supabaseRequest("PATCH", "memberships", {
+            params: { id: `eq.${m.id}` },
+            body: { is_current: false },
+          });
+        }
+      }
       await supabaseRequest("POST", "memberships", { body: membershipFields });
     }
 
-    savedPeople.push({ ...person, title: membershipFields.title, focus: membershipFields.focus });
+    savedPeople.push({ ...person, title: membershipFields.title, focus: membershipFields.focus, job_changed: jobChanged });
   }
 
-  return { organization: org, people: savedPeople };
+  return { organization: org, people: savedPeople, organization_existed: orgExisted };
 }
 
 async function listOrganizations() {

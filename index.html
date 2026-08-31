@@ -830,7 +830,9 @@ async function startBulkOrgAdd() {
       const saveRes = await api("/organizations", { method: "POST", body: JSON.stringify(data) });
       const saveData = await saveRes.json();
       if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
-      setBulkStatus(statusEls[i], "done", `Saved (${data.people.length})`);
+      setBulkStatus(statusEls[i], "done", saveData.organization_existed
+        ? `Already in database — merged (${data.people.length})`
+        : `Saved (${data.people.length})`);
       succeeded++;
     } catch (err) {
       setBulkStatus(statusEls[i], "failed", err.message);
@@ -922,7 +924,7 @@ async function startBulkPeopleAdd() {
       const saveRes = await api("/organizations", { method: "POST", body: JSON.stringify(data) });
       const saveData = await saveRes.json();
       if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
-      setBulkStatus(statusEls[i], "done", "Saved");
+      setBulkStatus(statusEls[i], "done", saveData.people?.[0]?.job_changed ? "Saved (job change)" : "Saved");
       succeeded++;
     } catch (err) {
       setBulkStatus(statusEls[i], "failed", err.message);
