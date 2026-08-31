@@ -19,7 +19,7 @@
 // find (hq location/description/LinkedIn), same as before.
 //
 // Routes (path is whatever follows the function name, e.g. /graph-api/research):
-//   POST   /research            { name, org_type } -> { organization, people }
+//   POST   /research            { name?, linkedin_url? } -> { organization, people }  (org_type is identified by research, not supplied)
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }
 //   GET    /organizations       -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at}, ... ]
 //   POST   /organizations       { organization, people } -> saved { organization, people }
@@ -38,13 +38,6 @@ const ALLOWED_EMAIL = Deno.env.get("ALLOWED_EMAIL");
 
 const OPENROUTER_MODEL = "openai/gpt-5-nano";
 const APOLLO_BASE = "https://api.apollo.io/api/v1";
-
-const ORG_TYPE_LABELS: Record<string, string> = {
-  vc: "venture capital firm",
-  cvc: "corporate venture capital arm",
-  angel: "business angel / angel investor",
-  family_office: "family office",
-};
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -430,6 +423,13 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
 
 const NEVER_GUESS = "Never invent, guess, or construct a URL, name, or fact you didn't actually find via search - use null for anything you can't confirm.";
 
+const ORG_TYPE_INSTRUCTIONS = `Classify the firm's type as exactly one of:
+- "vc": an independent venture capital firm
+- "cvc": a corporate venture capital arm (invests from a corporation's balance sheet/strategic fund)
+- "angel": an individual business angel / angel investor
+- "family_office": a family office or private wealth investment vehicle
+If genuinely unclear, default to "vc".`;
+
 const RESEARCH_JSON_SCHEMA = {
   type: "object",
   properties: {
@@ -437,13 +437,14 @@ const RESEARCH_JSON_SCHEMA = {
       type: "object",
       properties: {
         name: { type: ["string", "null"] },
+        org_type: { type: "string", enum: ["vc", "cvc", "angel", "family_office"] },
         website_url: { type: ["string", "null"] },
         linkedin_url: { type: ["string", "null"] },
         hq_country: { type: ["string", "null"] },
         description: { type: ["string", "null"] },
         sectors: { type: "array", items: { type: "string" } },
       },
-      required: ["name", "website_url", "linkedin_url", "hq_country", "description", "sectors"],
+      required: ["name", "org_type", "website_url", "linkedin_url", "hq_country", "description", "sectors"],
       additionalProperties: false,
     },
     people: {
@@ -466,27 +467,27 @@ const RESEARCH_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
-async function researchOrganization(name: string, orgType: string, linkedinUrl: string) {
+async function researchOrganization(name: string, linkedinUrl: string) {
   if (!name && !linkedinUrl) throw new HttpError(400, "name or linkedin_url is required");
-  const orgTypeLabel = ORG_TYPE_LABELS[orgType] || "investment firm";
-  const who = name ? `"${name}", a ${orgTypeLabel}` : `the ${orgTypeLabel} at this LinkedIn company page: ${linkedinUrl}`;
-  const prompt = `Search for and find information about ${who}: its official website, LinkedIn company page, key team members, and sectors it invests in.
+  const who = name ? `"${name}"` : `the firm at this LinkedIn company page: ${linkedinUrl}`;
+  const prompt = `Search for and find information about ${who}, an investment organization: its official website, LinkedIn company page, key team members, and sectors it invests in.
 
 Report:
 - Its name
+- ${ORG_TYPE_INSTRUCTIONS}
 - Official website URL and LinkedIn company page URL, only if confirmed
 - Where it's headquartered (city and country)
 - A one-sentence description of the firm
 - 2-6 short sector/industry tags it focuses on (e.g. "Fintech", "AI infrastructure", "Climate tech")
 - Its current key team members - partners, principals, investment directors and similar investment-team roles (skip admin/ops staff). For each: full name, title, sector/focus if stated, country they're based in, and personal LinkedIn URL if confirmed.
 
-If you cannot confidently identify the firm, leave "name" and other fields null rather than guessing.
+If you cannot confidently identify the firm, leave "name" and other fields null rather than guessing (still pick a best-guess org_type if you can tell it's an investment organization at all).
 
 ${NEVER_GUESS}`;
 
   const data = await openRouterCall(prompt, "firm_research", RESEARCH_JSON_SCHEMA);
   data.organization = data.organization || {};
-  data.organization.org_type = orgType;
+  if (!data.organization.org_type) data.organization.org_type = "vc";
   data.people = data.people || [];
   if (data.organization.name) await backfillFromApollo(data.organization);
   return data;
@@ -502,7 +503,7 @@ async function researchPerson(name: string, companyHint: string, linkedinUrl: st
 Report:
 - Their full name, current title, sector/focus if stated, and the country they're based in
 - Their confirmed personal LinkedIn URL
-- The firm they currently work at: its name, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and 2-6 short sector/industry tags
+- The firm they currently work at: its name, ${ORG_TYPE_INSTRUCTIONS}, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and 2-6 short sector/industry tags
 
 If you cannot confidently identify this person or their current firm, leave the relevant fields null rather than guessing. Return exactly one entry in "people" (or none if you can't confirm anyone).
 
@@ -510,7 +511,7 @@ ${NEVER_GUESS}`;
 
   const data = await openRouterCall(prompt, "person_research", RESEARCH_JSON_SCHEMA);
   data.organization = data.organization || {};
-  data.organization.org_type = "vc";
+  if (!data.organization.org_type) data.organization.org_type = "vc";
   data.people = (data.people || []).slice(0, 1);
   if (data.organization.name) await backfillFromApollo(data.organization);
   return data;
@@ -594,9 +595,8 @@ Deno.serve(async (req) => {
       const body = await req.json();
       const name = (body.name ?? "").trim();
       const linkedinUrl = (body.linkedin_url ?? "").trim();
-      const orgType = body.org_type || "vc";
       if (!name && !linkedinUrl) return json({ error: "name or linkedin_url is required" }, 400);
-      return json(await researchOrganization(name, orgType, linkedinUrl));
+      return json(await researchOrganization(name, linkedinUrl));
     }
 
     if (req.method === "POST" && path === "/research-person") {

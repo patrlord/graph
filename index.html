@@ -258,12 +258,6 @@
           </div>
         </div>
         <div class="bulk-controls">
-          <select id="bulkOrgTypeInput">
-            <option value="vc">VC</option>
-            <option value="cvc">CVC</option>
-            <option value="angel">Business angel</option>
-            <option value="family_office">Family office</option>
-          </select>
           <button id="bulkOrgStartBtn">Add</button>
           <span class="status-line" id="bulkOrgStatus"></span>
         </div>
@@ -801,7 +795,6 @@ function showPeopleAddView() {
 async function startBulkOrgAdd() {
   const names = splitList(document.getElementById("bulkOrgNames").value);
   const urls = splitList(document.getElementById("bulkOrgLinkedin").value);
-  const orgType = document.getElementById("bulkOrgTypeInput").value;
   const status = document.getElementById("bulkOrgStatus");
   const btn = document.getElementById("bulkOrgStartBtn");
   const items = [
@@ -822,7 +815,7 @@ async function startBulkOrgAdd() {
     try {
       const res = await api("/research", {
         method: "POST",
-        body: JSON.stringify({ name: items[i].name, linkedin_url: items[i].linkedin_url, org_type: orgType }),
+        body: JSON.stringify({ name: items[i].name, linkedin_url: items[i].linkedin_url }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Research failed");
