@@ -26,8 +26,8 @@
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
 //   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
-//   POST   /people/find-linkedin  { person_id, name, title?, company? } -> { linkedin_url } (saved if found)
-//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url } (saved if found)
+//   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company } (saved if found; title only filled if the membership's was blank)
+//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, sectors, hq_country } (saved if found; sectors/hq_country only filled if blank)
 //   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
 //   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
 
@@ -581,10 +581,25 @@ async function listNews(entityType: string, entityId: string) {
   });
 }
 
-const FIND_LINKEDIN_SCHEMA = {
+const FIND_PERSON_LINKEDIN_SCHEMA = {
   type: "object",
-  properties: { linkedin_url: { type: ["string", "null"] } },
-  required: ["linkedin_url"],
+  properties: {
+    linkedin_url: { type: ["string", "null"] },
+    observed_title: { type: ["string", "null"] },
+    observed_company: { type: ["string", "null"] },
+  },
+  required: ["linkedin_url", "observed_title", "observed_company"],
+  additionalProperties: false,
+};
+
+const FIND_ORG_LINKEDIN_SCHEMA = {
+  type: "object",
+  properties: {
+    linkedin_url: { type: ["string", "null"] },
+    observed_industry: { type: ["string", "null"] },
+    observed_hq: { type: ["string", "null"] },
+  },
+  required: ["linkedin_url", "observed_industry", "observed_hq"],
   additionalProperties: false,
 };
 
@@ -592,9 +607,12 @@ const FIND_LINKEDIN_SCHEMA = {
 // the resulting linkedin.com/in/ candidates one at a time (in the order the
 // search ranked them) and stop at the first one that's actually verifiable
 // as this person from what the search result says about them - rather than
-// returning the top hit unconditionally. Saves directly to the person's
-// record once verified.
-async function findPersonLinkedin(personId: string, name: string, title: string, company: string) {
+// returning the top hit unconditionally. Saves the URL, and - only where
+// blank, never overwriting - the title on their membership at
+// organizationId, straight from what the same verified result stated.
+async function findPersonLinkedin(
+  personId: string, name: string, title: string, company: string, organizationId: string,
+) {
   const who = [name, title, company].filter(Boolean).join(", ");
   const prompt = `Search for: linkedin ${who}
 
@@ -602,22 +620,41 @@ This is a person named "${name}"${title ? `, whose role is "${title}"` : ""}${co
 
 From the search results, identify up to 3 candidate linkedin.com/in/... profile URLs that could belong to this specific person. Check them one at a time, in the order the search ranked them: for each, look at what the result's title/snippet says about that profile (name, job title, employer) and judge whether it genuinely matches this person - the name should match, and the role/employer should at least plausibly match. Stop at the first candidate you can confidently verify this way and return its URL.
 
-If none of the candidates confidently match, return null - never guess, and never return an unverified best-guess URL.
+If you verify a match, also report their current job title and current employer exactly as stated in that same search result/snippet (null for either if not stated there - don't guess).
+
+If none of the candidates confidently match, return null for everything - never guess, and never return an unverified best-guess URL.
 
 ${NEVER_GUESS}`;
 
-  const data = await openRouterCall(prompt, "find_linkedin", FIND_LINKEDIN_SCHEMA);
+  const data = await openRouterCall(prompt, "find_person_linkedin", FIND_PERSON_LINKEDIN_SCHEMA);
   const linkedinUrl = normalizeLinkedinUrl(data.linkedin_url);
-  if (linkedinUrl) {
-    await supabaseRequest("PATCH", "people", {
-      params: { id: `eq.${personId}` },
-      body: { linkedin_url: linkedinUrl },
+  if (!linkedinUrl) return { linkedin_url: null, title: null, observed_company: null };
+
+  await supabaseRequest("PATCH", "people", {
+    params: { id: `eq.${personId}` },
+    body: { linkedin_url: linkedinUrl },
+  });
+
+  let updatedTitle: string | null = null;
+  if (data.observed_title && organizationId) {
+    const memberships = await supabaseRequest("GET", "memberships", {
+      params: { person_id: `eq.${personId}`, organization_id: `eq.${organizationId}`, select: "id,title" },
     });
+    const membership = memberships?.[0];
+    if (membership && !membership.title) {
+      const patched = await supabaseRequest("PATCH", "memberships", {
+        params: { id: `eq.${membership.id}` },
+        body: { title: data.observed_title },
+        prefer: "return=representation",
+      });
+      updatedTitle = patched[0].title;
+    }
   }
-  return { linkedin_url: linkedinUrl };
+  return { linkedin_url: linkedinUrl, title: updatedTitle, observed_company: data.observed_company || null };
 }
 
-// Same idea as findPersonLinkedin, but for a company's LinkedIn page.
+// Same idea as findPersonLinkedin, but for a company's LinkedIn page. Fills
+// in sectors (from industry) and hq_country - only where currently blank.
 async function findOrgLinkedin(orgId: string, name: string, websiteUrl: string, country: string) {
   const who = [name, websiteUrl, country].filter(Boolean).join(", ");
   const prompt = `Search for: linkedin ${who}
@@ -626,19 +663,33 @@ This is a company named "${name}"${websiteUrl ? `, whose website is ${websiteUrl
 
 From the search results, identify up to 3 candidate linkedin.com/company/... URLs that could belong to this specific company. Check them one at a time, in the order the search ranked them: for each, look at what the result's title/snippet says about that company (name, industry, location) and judge whether it genuinely matches - the name should match, and location/industry should at least plausibly match. Stop at the first candidate you can confidently verify this way and return its URL.
 
-If none of the candidates confidently match, return null - never guess, and never return an unverified best-guess URL.
+If you verify a match, also report the company's industry/category and HQ location exactly as stated in that same search result/snippet (null for either if not stated there - don't guess).
+
+If none of the candidates confidently match, return null for everything - never guess, and never return an unverified best-guess URL.
 
 ${NEVER_GUESS}`;
 
-  const data = await openRouterCall(prompt, "find_org_linkedin", FIND_LINKEDIN_SCHEMA);
+  const data = await openRouterCall(prompt, "find_org_linkedin", FIND_ORG_LINKEDIN_SCHEMA);
   const linkedinUrl = normalizeLinkedinUrl(data.linkedin_url);
-  if (linkedinUrl) {
-    await supabaseRequest("PATCH", "organizations", {
-      params: { id: `eq.${orgId}` },
-      body: { linkedin_url: linkedinUrl },
-    });
+  if (!linkedinUrl) return { linkedin_url: null };
+
+  const existingRows = await supabaseRequest("GET", "organizations", {
+    params: { id: `eq.${orgId}`, select: "sectors,hq_country" },
+  });
+  const current = existingRows?.[0] || {};
+  const orgFields: Record<string, any> = { linkedin_url: linkedinUrl };
+  if ((!current.sectors || current.sectors.length === 0) && data.observed_industry) {
+    orgFields.sectors = [data.observed_industry];
   }
-  return { linkedin_url: linkedinUrl };
+  if (!current.hq_country && data.observed_hq) {
+    orgFields.hq_country = data.observed_hq;
+  }
+  const updated = (await supabaseRequest("PATCH", "organizations", {
+    params: { id: `eq.${orgId}` },
+    body: orgFields,
+    prefer: "return=representation",
+  }))[0];
+  return { linkedin_url: updated.linkedin_url, sectors: updated.sectors, hq_country: updated.hq_country };
 }
 
 // ---------- Routing ----------
@@ -705,7 +756,9 @@ Deno.serve(async (req) => {
       const personId = (body.person_id ?? "").trim();
       const name = (body.name ?? "").trim();
       if (!personId || !name) return json({ error: "person_id and name are required" }, 400);
-      return json(await findPersonLinkedin(personId, name, (body.title ?? "").trim(), (body.company ?? "").trim()));
+      return json(await findPersonLinkedin(
+        personId, name, (body.title ?? "").trim(), (body.company ?? "").trim(), (body.organization_id ?? "").trim(),
+      ));
     }
 
     if (req.method === "POST" && path === "/organizations/find-linkedin") {

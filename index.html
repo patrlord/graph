@@ -601,8 +601,12 @@ async function runFindOrgLinkedin(org, btnEl) {
     if (!res.ok) throw new Error(data.error || "Search failed");
     if (data.linkedin_url) {
       org.linkedin_url = data.linkedin_url;  // mutates the shared object in orgListCache too
+      if (data.sectors) org.sectors = data.sectors;
+      if (data.hq_country) org.hq_country = data.hq_country;
       if (selectedOrg && selectedOrg.id === org.id) {
         selectedOrg.linkedin_url = data.linkedin_url;
+        if (data.sectors) selectedOrg.sectors = data.sectors;
+        if (data.hq_country) selectedOrg.hq_country = data.hq_country;
         renderOrgDetail(selectedOrg);
       }
       applyOrgFilter();
@@ -754,25 +758,39 @@ function personCompanyName(p) {
   return currentPeopleMode === "org" ? (selectedOrg && selectedOrg.name) : (p.organization && p.organization.name);
 }
 
+function personOrgId(p) {
+  return currentPeopleMode === "org" ? (selectedOrg && selectedOrg.id) : (p.organization && p.organization.id);
+}
+
 async function runFindLinkedin(person, btnEl) {
   btnEl.disabled = true;
   btnEl.textContent = "Searching…";
   btnEl.title = "";
   try {
+    const companyName = personCompanyName(person);
     const res = await api("/people/find-linkedin", {
       method: "POST",
       body: JSON.stringify({
         person_id: person.id, name: person.full_name,
-        title: person.title || "", company: personCompanyName(person) || "",
+        title: person.title || "", company: companyName || "",
+        organization_id: personOrgId(person) || "",
       }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Search failed");
     if (data.linkedin_url) {
       person.linkedin_url = data.linkedin_url;
+      if (data.title) person.title = data.title;
       const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
-      if (membership) membership.people.linkedin_url = data.linkedin_url;
+      if (membership) {
+        membership.people.linkedin_url = data.linkedin_url;
+        if (data.title) membership.title = data.title;
+      }
       renderPeopleTableBody();
+      if (data.observed_company && companyName && !data.observed_company.toLowerCase().includes(companyName.toLowerCase())) {
+        const link = document.querySelector(`#peopleList tr[data-id="${person.id}"] .li-link`);
+        if (link) link.title = `LinkedIn shows: ${data.observed_company}`;
+      }
       if (selectedPersonId === person.id) showPersonDetail(person);
     } else {
       btnEl.disabled = false;
