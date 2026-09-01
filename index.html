@@ -294,8 +294,9 @@
         <div class="scroll-box">
           <div id="detOrgSectors"></div>
           <div class="entity-desc" id="detOrgDesc"></div>
-          <div style="margin-top:14px;">
-            <button class="danger" id="deleteOrgBtn">Delete</button>
+          <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
+            <button class="secondary tiny" id="enrichOrgBtn">Enrich</button>
+            <span class="status-line" id="enrichOrgStatus"></span>
           </div>
           <div class="news-section">
             <div style="display:flex;align-items:center;justify-content:space-between;">
@@ -733,6 +734,8 @@ function renderOrgDetail(org) {
   document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
   document.getElementById("detOrgDesc").textContent = org.description || "";
   document.getElementById("orgNewsList").innerHTML = "";
+  document.getElementById("enrichOrgStatus").textContent = "";
+  document.getElementById("enrichOrgStatus").className = "status-line";
 }
 
 async function loadOrgNews(org) {
@@ -822,16 +825,34 @@ async function removeOrgConnection(connId) {
   if (selectedOrg) loadOrgConnections(selectedOrg);
 }
 
-async function deleteSelectedOrg() {
-  if (!selectedOrg || !confirm("Delete this organization and its team from the database?")) return;
-  await api(`/organizations/${selectedOrg.id}`, { method: "DELETE" });
-  selectedOrg = null; selectedPersonId = null; peopleForceGlobal = false;
-  document.getElementById("orgDetailEmpty").style.display = "block";
-  document.getElementById("orgDetailContent").classList.remove("shown");
-  renderPeopleList([], "empty");
-  updatePeopleHeader();
-  showPersonDetail(null);
-  loadOrgList();
+// Re-runs the same research used when adding an organization, against its
+// existing name/LinkedIn URL, then saves the result through the normal
+// find-or-merge save path - which only fills in blank fields, so nothing
+// already on the record gets clobbered. Also picks up any newly-findable
+// team members the same way a fresh "add organization" would.
+async function enrichSelectedOrg() {
+  if (!selectedOrg) return;
+  const btn = document.getElementById("enrichOrgBtn");
+  const status = document.getElementById("enrichOrgStatus");
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
+  try {
+    const res = await apiWithRetry("/research", {
+      method: "POST",
+      body: JSON.stringify({ name: selectedOrg.name, linkedin_url: selectedOrg.linkedin_url || "" }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Research failed");
+    const saveRes = await apiWithRetry("/organizations", { method: "POST", body: JSON.stringify(data) });
+    const saveData = await saveRes.json();
+    if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
+    status.textContent = "";
+    await selectOrg(saveData.organization.id);
+    loadOrgList();
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ---------- people: list + search + detail ----------
@@ -1233,7 +1254,7 @@ document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddV
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
-document.getElementById("deleteOrgBtn").addEventListener("click", deleteSelectedOrg);
+document.getElementById("enrichOrgBtn").addEventListener("click", enrichSelectedOrg);
 document.getElementById("orgNewsSearchBtn").addEventListener("click", searchOrgNews);
 document.getElementById("connAddToggleBtn").addEventListener("click", () => {
   const form = document.getElementById("connAddForm");
