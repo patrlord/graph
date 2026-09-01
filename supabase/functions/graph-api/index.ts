@@ -30,6 +30,9 @@
 //   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, sectors, hq_country } (saved if found; sectors/hq_country only filled if blank)
 //   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
 //   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
+//   GET    /organizations/:id/connections -> [ {id, relationship_type, notes, direction, other: {id,name,org_type}}, ... ]
+//   POST   /organizations/:id/connections { relationship_type, other_org_id? | other_org_name?, notes? } -> created connection (other_org_name finds-or-creates, org_type "group" if new)
+//   DELETE /connections/:id     -> { ok: true }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -351,6 +354,70 @@ async function getOrganization(id: string) {
     },
   });
   return org;
+}
+
+// ---------- Connections (org<->org relationships: subsidiary/CVC-arm/division/other) ----------
+
+async function listOrgConnections(orgId: string) {
+  const [asA, asB] = await Promise.all([
+    supabaseRequest("GET", "connections", {
+      params: { entity_a_type: "eq.organization", entity_a_id: `eq.${orgId}`, select: "*" },
+    }),
+    supabaseRequest("GET", "connections", {
+      params: { entity_b_type: "eq.organization", entity_b_id: `eq.${orgId}`, select: "*" },
+    }),
+  ]);
+  const combined = [
+    ...(asA ?? []).map((c: any) => ({
+      id: c.id, relationship_type: c.relationship_type, notes: c.notes,
+      direction: "a", other_type: c.entity_b_type, other_id: c.entity_b_id,
+    })),
+    ...(asB ?? []).map((c: any) => ({
+      id: c.id, relationship_type: c.relationship_type, notes: c.notes,
+      direction: "b", other_type: c.entity_a_type, other_id: c.entity_a_id,
+    })),
+  ];
+  const orgIds = [...new Set(combined.filter((c) => c.other_type === "organization").map((c) => c.other_id))];
+  let orgsById: Record<string, any> = {};
+  if (orgIds.length) {
+    const orgs = await supabaseRequest("GET", "organizations", {
+      params: { id: `in.(${orgIds.join(",")})`, select: "id,name,org_type" },
+    });
+    orgsById = Object.fromEntries((orgs ?? []).map((o: any) => [o.id, o]));
+  }
+  return combined.map((c) => ({ ...c, other: c.other_type === "organization" ? orgsById[c.other_id] ?? null : null }));
+}
+
+async function createOrgConnection(
+  orgId: string, relationshipType: string, otherOrgId: string, otherOrgName: string, notes: string,
+) {
+  let targetId = (otherOrgId ?? "").trim();
+  if (!targetId) {
+    if (!otherOrgName) throw new HttpError(400, "other_org_id or other_org_name is required");
+    const existing = await findExistingOrganization(otherOrgName, null, null);
+    if (existing) {
+      targetId = existing.id;
+    } else {
+      const created = (await supabaseRequest("POST", "organizations", {
+        body: { name: otherOrgName, org_type: "group" },
+        prefer: "return=representation",
+      }))[0];
+      targetId = created.id;
+    }
+  }
+  const row = (await supabaseRequest("POST", "connections", {
+    body: {
+      entity_a_type: "organization", entity_a_id: orgId,
+      entity_b_type: "organization", entity_b_id: targetId,
+      relationship_type: relationshipType,
+      notes: notes || null,
+    },
+    prefer: "return=representation",
+  }))[0];
+  const other = (await supabaseRequest("GET", "organizations", {
+    params: { id: `eq.${targetId}`, select: "id,name,org_type" },
+  }))[0];
+  return { id: row.id, relationship_type: row.relationship_type, notes: row.notes, direction: "a", other };
 }
 
 async function searchPeopleGlobal(query: string) {
@@ -801,6 +868,26 @@ Deno.serve(async (req) => {
       const name = (body.name ?? "").trim();
       if (!orgId || !name) return json({ error: "org_id and name are required" }, 400);
       return json(await findOrgLinkedin(orgId, name, (body.website_url ?? "").trim(), (body.country ?? "").trim()));
+    }
+
+    const orgConnectionsMatch = path.match(/^\/organizations\/([^/]+)\/connections$/);
+    if (orgConnectionsMatch && req.method === "GET") {
+      return json(await listOrgConnections(orgConnectionsMatch[1]));
+    }
+    if (orgConnectionsMatch && req.method === "POST") {
+      const body = await req.json();
+      const relationshipType = (body.relationship_type ?? "").trim();
+      if (!relationshipType) return json({ error: "relationship_type is required" }, 400);
+      return json(await createOrgConnection(
+        orgConnectionsMatch[1], relationshipType,
+        (body.other_org_id ?? "").trim(), (body.other_org_name ?? "").trim(), (body.notes ?? "").trim(),
+      ));
+    }
+
+    const connectionIdMatch = path.match(/^\/connections\/([^/]+)$/);
+    if (connectionIdMatch && req.method === "DELETE") {
+      await supabaseRequest("DELETE", "connections", { params: { id: `eq.${connectionIdMatch[1]}` } });
+      return json({ ok: true });
     }
 
     const orgIdMatch = path.match(/^\/organizations\/([^/]+)$/);

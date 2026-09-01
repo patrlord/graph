@@ -176,6 +176,15 @@
   .empty-note { font-size: 12px; color: #8a877e; padding: 4px 2px; }
 
   .news-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e0dc; }
+  .form-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .form-row input[type=text] { flex: 1 1 140px; min-width: 0; }
+
+  .conn-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f2f0ec; font-size: 12.5px; }
+  .conn-item:last-child { border-bottom: none; }
+  .conn-item a { color: #1c1c1c; text-decoration: none; cursor: pointer; }
+  .conn-item a:hover { text-decoration: underline; }
+  .conn-remove { background: none; border: none; color: #b5b1a9; cursor: pointer; font-size: 13px; padding: 0 4px; }
+  .conn-remove:hover { color: #a33; }
   .news-item { padding: 8px 0; border-bottom: 1px solid #f2f0ec; font-size: 12px; }
   .news-item:last-child { border-bottom: none; }
   .news-line1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -289,6 +298,28 @@
           </div>
           <div class="news-section">
             <div style="display:flex;align-items:center;justify-content:space-between;">
+              <strong style="font-size:12.5px;">Related organizations</strong>
+              <button class="secondary tiny" id="connAddToggleBtn">+ Add</button>
+            </div>
+            <div id="connAddForm" style="display:none">
+              <div class="form-row">
+                <select id="connRelType">
+                  <option value="subsidiary_of">Subsidiary of…</option>
+                  <option value="cvc_arm_of">CVC arm of…</option>
+                  <option value="division_of">Division of…</option>
+                  <option value="other">Other relationship…</option>
+                </select>
+                <input type="text" id="connOtherName" placeholder="Organization name" list="orgNamesDatalist">
+              </div>
+              <div style="display:flex;gap:10px;align-items:center;">
+                <button class="secondary tiny" id="connSaveBtn">Save</button>
+                <span class="status-line" id="connStatus"></span>
+              </div>
+            </div>
+            <div id="connList"></div>
+          </div>
+          <div class="news-section">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
               <strong style="font-size:12.5px;">Latest news</strong>
               <button class="secondary tiny" id="orgNewsSearchBtn">Search for news</button>
             </div>
@@ -298,6 +329,7 @@
         </div>
       </div>
     </div>
+    <datalist id="orgNamesDatalist"></datalist>
 
     <!-- Bottom-left: people list -->
     <div class="card" id="peopleListCard">
@@ -381,7 +413,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_SiN9EMxBxQ-qc34l8UScYQ_EEAFW_Cp";
 const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/graph-api`;
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "Family office" };
+const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "Family office", group: "Group" };
 
 let orgListCache = [];
 let selectedOrg = null;   // full org detail incl. .people (membership rows)
@@ -533,6 +565,8 @@ async function loadOrgList() {
   if (!res.ok) { orgListCache = []; renderOrgList([]); return; }
   orgListCache = await res.json();
   applyOrgFilter();
+  document.getElementById("orgNamesDatalist").innerHTML =
+    orgListCache.map(o => `<option value="${o.name}">`).join("");
 }
 
 function applyOrgFilter() {
@@ -659,6 +693,8 @@ async function selectOrg(id) {
   updatePeopleHeader();
   showPersonDetail(null);
   loadOrgNews(selectedOrg);
+  loadOrgConnections(selectedOrg);
+  document.getElementById("connAddForm").style.display = "none";
 }
 
 function renderOrgDetail(org) {
@@ -694,6 +730,69 @@ async function searchOrgNews() {
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally { btn.disabled = false; }
+}
+
+const RELATIONSHIP_LABEL = {
+  subsidiary_of: { a: "Subsidiary of", b: "Subsidiary:" },
+  cvc_arm_of: { a: "CVC arm of", b: "CVC arm:" },
+  division_of: { a: "Division of", b: "Division:" },
+};
+
+function connectionLabel(c) {
+  const map = RELATIONSHIP_LABEL[c.relationship_type];
+  if (map) return map[c.direction];
+  return c.direction === "a" ? c.relationship_type : `${c.relationship_type} (of)`;
+}
+
+async function loadOrgConnections(org) {
+  const res = await api(`/organizations/${org.id}/connections`);
+  const listEl = document.getElementById("connList");
+  if (!res.ok) { listEl.innerHTML = ""; return; }
+  const items = await res.json();
+  if (!items.length) { listEl.innerHTML = '<div class="empty-note">None yet.</div>'; return; }
+  listEl.innerHTML = items.map(c => `
+    <div class="conn-item">
+      <span>${connectionLabel(c)} <a data-org-id="${c.other?.id || ''}">${c.other ? c.other.name : "(deleted)"}</a></span>
+      <button class="conn-remove" data-conn-id="${c.id}" title="Remove">✕</button>
+    </div>
+  `).join("");
+  [...listEl.querySelectorAll("a[data-org-id]")].forEach(a => {
+    if (a.dataset.orgId) a.addEventListener("click", () => selectOrg(a.dataset.orgId));
+  });
+  [...listEl.querySelectorAll(".conn-remove")].forEach(btn => {
+    btn.addEventListener("click", () => removeOrgConnection(btn.dataset.connId));
+  });
+}
+
+async function addOrgConnection() {
+  if (!selectedOrg) return;
+  const relType = document.getElementById("connRelType").value;
+  const otherName = document.getElementById("connOtherName").value.trim();
+  const status = document.getElementById("connStatus");
+  const btn = document.getElementById("connSaveBtn");
+  if (!otherName) { status.className = "status-line error"; status.textContent = "Enter an organization name."; return; }
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Saving…";
+  try {
+    const res = await api(`/organizations/${selectedOrg.id}/connections`, {
+      method: "POST",
+      body: JSON.stringify({ relationship_type: relType, other_org_name: otherName }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed");
+    document.getElementById("connOtherName").value = "";
+    status.textContent = "";
+    document.getElementById("connAddForm").style.display = "none";
+    loadOrgConnections(selectedOrg);
+    loadOrgList();  // in case a new "group" org was created
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally { btn.disabled = false; }
+}
+
+async function removeOrgConnection(connId) {
+  if (!confirm("Remove this relationship?")) return;
+  await api(`/connections/${connId}`, { method: "DELETE" });
+  if (selectedOrg) loadOrgConnections(selectedOrg);
 }
 
 async function deleteSelectedOrg() {
@@ -1108,6 +1207,11 @@ document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListV
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
 document.getElementById("deleteOrgBtn").addEventListener("click", deleteSelectedOrg);
 document.getElementById("orgNewsSearchBtn").addEventListener("click", searchOrgNews);
+document.getElementById("connAddToggleBtn").addEventListener("click", () => {
+  const form = document.getElementById("connAddForm");
+  form.style.display = form.style.display === "none" ? "block" : "none";
+});
+document.getElementById("connSaveBtn").addEventListener("click", addOrgConnection);
 
 document.getElementById("peopleSearchInput").addEventListener("input", applyPeopleFilter);
 document.getElementById("peopleSearchClearBtn").addEventListener("click", () => {
