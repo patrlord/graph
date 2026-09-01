@@ -402,6 +402,20 @@ async function api(path, options = {}) {
   return res;
 }
 
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+// For bulk loops specifically: a network-level failure (e.g. "Failed to
+// fetch") shouldn't permanently fail an item after dozens of sequential
+// requests - retry once after a short pause before giving up on it.
+async function apiWithRetry(path, options = {}) {
+  try {
+    return await api(path, options);
+  } catch (err) {
+    await sleep(2000);
+    return api(path, options);
+  }
+}
+
 async function signIn() {
   const email = document.getElementById("loginEmail").value.trim();
   const password = document.getElementById("loginPassword").value;
@@ -954,14 +968,14 @@ async function startBulkOrgAdd() {
     status.textContent = `Processing ${i + 1} / ${items.length}…`;
     setBulkStatus(statusEls[i], "working", "Researching…");
     try {
-      const res = await api("/research", {
+      const res = await apiWithRetry("/research", {
         method: "POST",
         body: JSON.stringify({ name: items[i].name, linkedin_url: items[i].linkedin_url }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Research failed");
       if (!data.organization.name) throw new Error("Could not identify this firm");
-      const saveRes = await api("/organizations", { method: "POST", body: JSON.stringify(data) });
+      const saveRes = await apiWithRetry("/organizations", { method: "POST", body: JSON.stringify(data) });
       const saveData = await saveRes.json();
       if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
       setBulkStatus(statusEls[i], "done", saveData.organization_existed
@@ -972,6 +986,7 @@ async function startBulkOrgAdd() {
     } catch (err) {
       setBulkStatus(statusEls[i], "failed", err.message);
     }
+    await sleep(400);  // pace requests so a long batch doesn't burst the API
   }
   btn.disabled = false;
   status.className = "status-line";
@@ -1049,14 +1064,14 @@ async function startBulkPeopleAdd() {
     status.textContent = `Processing ${i + 1} / ${items.length}…`;
     setBulkStatus(statusEls[i], "working", "Researching…");
     try {
-      const res = await api("/research-person", {
+      const res = await apiWithRetry("/research-person", {
         method: "POST",
         body: JSON.stringify({ name: items[i].name, company_hint: items[i].company, linkedin_url: "" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Research failed");
       if (!data.people.length || !data.organization.name) throw new Error("Could not identify person/firm");
-      const saveRes = await api("/organizations", { method: "POST", body: JSON.stringify(data) });
+      const saveRes = await apiWithRetry("/organizations", { method: "POST", body: JSON.stringify(data) });
       const saveData = await saveRes.json();
       if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
       setBulkStatus(statusEls[i], "done", saveData.people?.[0]?.job_changed ? "Saved (job change)" : "Saved");
@@ -1069,6 +1084,7 @@ async function startBulkPeopleAdd() {
     } catch (err) {
       setBulkStatus(statusEls[i], "failed", err.message);
     }
+    await sleep(400);  // pace requests so a long batch doesn't burst the API
   }
   btn.disabled = false;
   status.className = "status-line";

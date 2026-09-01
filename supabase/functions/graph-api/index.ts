@@ -70,15 +70,35 @@ async function authenticate(req: Request): Promise<{ ok: true } | { ok: false; s
   if (!token) return { ok: false, status: 401, error: "missing bearer token" };
   if (!ALLOWED_EMAIL) return { ok: false, status: 500, error: "ALLOWED_EMAIL is not configured on the server." };
 
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    headers: { Authorization: `Bearer ${token}`, apikey: ANON_KEY },
-  });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${token}`, apikey: ANON_KEY },
+    }, 10000);
+  } catch {
+    return { ok: false, status: 503, error: "auth check timed out or failed (network error) - please retry" };
+  }
   if (!res.ok) return { ok: false, status: 401, error: "invalid or expired session" };
   const user = await res.json();
   if ((user.email || "").toLowerCase() !== ALLOWED_EMAIL.toLowerCase()) {
     return { ok: false, status: 403, error: "this account is not authorized for this app" };
   }
   return { ok: true };
+}
+
+// ---------- fetch helpers: timeout so a hung upstream call fails fast and
+// cleanly (an uncaught abort/network error otherwise risks the platform
+// killing the whole request mid-response, which produces a truncated/
+// malformed body rather than a proper JSON error) ----------
+
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------- Supabase REST helper ----------
@@ -96,11 +116,11 @@ async function supabaseRequest(
     "Content-Type": "application/json",
   };
   if (opts.prefer) headers["Prefer"] = opts.prefer;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method,
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-  });
+  }, 20000);
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 500);
     throw new Error(`Supabase ${method} ${path} failed (${res.status}): ${detail}`);
@@ -369,9 +389,9 @@ function formatLocation(city?: string | null, state?: string | null, country?: s
 
 async function apolloEnrichByDomain(domain: string): Promise<any | null> {
   try {
-    const res = await fetch(`${APOLLO_BASE}/organizations/enrich?${new URLSearchParams({ domain })}`, {
+    const res = await fetchWithTimeout(`${APOLLO_BASE}/organizations/enrich?${new URLSearchParams({ domain })}`, {
       headers: { "x-api-key": APOLLO_API_KEY!, Accept: "application/json" },
-    });
+    }, 15000);
     if (!res.ok) return null;
     const data = await res.json();
     return data?.organization ?? null;
@@ -396,23 +416,37 @@ async function backfillFromApollo(org: Record<string, any>) {
 
 // ---------- OpenRouter ----------
 
+// Single bounded attempt, deliberately no internal retry: Supabase enforces
+// a 150s wall-clock limit per request (both plans) and this call already
+// competes with Apollo backfill + several Supabase writes for that budget -
+// retrying in-process risks blowing past it and getting killed mid-response
+// (a raw platform timeout, not our clean JSON error - which is worse, not
+// better). Retries belong at the caller, as a fresh request with its own
+// fresh 150s budget - see apiWithRetry on the frontend.
 async function openRouterCall(userContent: string, schemaName: string, jsonSchema: any): Promise<any> {
   if (!OPENROUTER_API_KEY) throw new HttpError(503, "OPENROUTER_API_KEY is not configured.");
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://patrlord.github.io/graph/",
-      "X-Title": "Graph",
-    },
-    body: JSON.stringify({
-      model: OPENROUTER_MODEL,
-      messages: [{ role: "user", content: userContent }],
-      plugins: [{ id: "web", engine: "exa", max_results: 10 }],
-      response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
-    }),
-  });
+
+  let res: Response;
+  try {
+    res = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://patrlord.github.io/graph/",
+        "X-Title": "Graph",
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [{ role: "user", content: userContent }],
+        plugins: [{ id: "web", engine: "exa", max_results: 10 }],
+        response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
+      }),
+    }, 45000);
+  } catch (err) {
+    throw new Error(`OpenRouter request timed out or failed (network error): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 500);
     throw new Error(`OpenRouter request failed (${res.status}): ${detail}`);
@@ -697,13 +731,13 @@ ${NEVER_GUESS}`;
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
 
-  const auth = await authenticate(req);
-  if (!auth.ok) return json({ error: auth.error }, auth.status);
-
-  const url = new URL(req.url);
-  const path = url.pathname.replace(/^\/graph-api/, "") || "/";
-
   try {
+    const auth = await authenticate(req);
+    if (!auth.ok) return json({ error: auth.error }, auth.status);
+
+    const url = new URL(req.url);
+    const path = url.pathname.replace(/^\/graph-api/, "") || "/";
+
     if (req.method === "POST" && path === "/research") {
       const body = await req.json();
       const name = (body.name ?? "").trim();
