@@ -23,6 +23,10 @@
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }
 //   GET    /organizations       -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at}, ... ]
 //   POST   /organizations       { organization, people } -> saved { organization, people }
+//     organization fields: name, org_type, website_url, linkedin_url, hq_country, description,
+//     sectors[]; plus investor-profile fields not touched by research (ticket_size, investment_stages[],
+//     investment_regions[], fund_type_raw) - sourced only from list-style bulk imports, merge-only-blanks
+//     like everything else here
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
 //   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
@@ -233,6 +237,14 @@ async function saveOrganization(payload: any) {
     hq_country: orgIn.hq_country || null,
     description: orgIn.description || null,
     sectors: Array.isArray(orgIn.sectors) ? orgIn.sectors.filter(Boolean) : [],
+    // Investor-profile fields sourced from list-style directories, not from
+    // OpenRouter research - present here only so a payload that does carry
+    // them (a bulk import) round-trips through the normal merge-only-blanks
+    // save path instead of being silently dropped.
+    ticket_size: orgIn.ticket_size || null,
+    investment_stages: Array.isArray(orgIn.investment_stages) ? orgIn.investment_stages.filter(Boolean) : [],
+    investment_regions: Array.isArray(orgIn.investment_regions) ? orgIn.investment_regions.filter(Boolean) : [],
+    fund_type_raw: orgIn.fund_type_raw || null,
   };
 
   const existingOrg = await findExistingOrganization(name, websiteUrl, linkedinUrl);

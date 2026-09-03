@@ -156,6 +156,8 @@
   .entity-links a { color: #8a5a2b; text-decoration: none; margin-right: 12px; }
   .entity-links a:hover { text-decoration: underline; }
   .entity-desc { font-size: 12.5px; color: #444; margin-top: 8px; line-height: 1.5; }
+  .investor-profile { font-size: 12px; color: #55524c; margin-top: 8px; line-height: 1.6; }
+  .investor-profile strong { color: #1c1c1c; font-weight: 600; }
   .none { color: #b5b1a9; }
 
   table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12.5px; }
@@ -294,6 +296,7 @@
         <div class="scroll-box">
           <div id="detOrgSectors"></div>
           <div class="entity-desc" id="detOrgDesc"></div>
+          <div class="investor-profile" id="detOrgInvestorProfile"></div>
           <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
             <button class="secondary tiny" id="enrichOrgBtn">Enrich</button>
             <span class="status-line" id="enrichOrgStatus"></span>
@@ -522,6 +525,18 @@ function sectorsHtml(sectors) {
   return sectors.map(s => `<span class="sector-tag">${s}</span>`).join("");
 }
 
+// Investor-profile fields sourced from list-style directories (ticket size,
+// stage(s), geographic focus, raw fund-type label) - blank/empty on any org
+// that hasn't been through that kind of import, in which case nothing renders.
+function investorProfileHtml(org) {
+  const lines = [];
+  if (org.ticket_size) lines.push(`<div><strong>Ticket:</strong> ${org.ticket_size}</div>`);
+  if (org.investment_stages && org.investment_stages.length) lines.push(`<div><strong>Stages:</strong> ${org.investment_stages.join(", ")}</div>`);
+  if (org.investment_regions && org.investment_regions.length) lines.push(`<div><strong>Regions:</strong> ${org.investment_regions.join(", ")}</div>`);
+  if (org.fund_type_raw) lines.push(`<div><strong>Fund type:</strong> ${org.fund_type_raw}</div>`);
+  return lines.join("");
+}
+
 function renderPeopleRows(people, getName, getTitle, getFocus, getCountry, getLinkedIn) {
   return people.map(p => `
     <tr>
@@ -733,6 +748,7 @@ function renderOrgDetail(org) {
   document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
   document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
   document.getElementById("detOrgDesc").textContent = org.description || "";
+  document.getElementById("detOrgInvestorProfile").innerHTML = investorProfileHtml(org);
   document.getElementById("orgNewsList").innerHTML = "";
   document.getElementById("enrichOrgStatus").textContent = "";
   document.getElementById("enrichOrgStatus").className = "status-line";
