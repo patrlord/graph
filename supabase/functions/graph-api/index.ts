@@ -20,7 +20,9 @@
 //
 // Routes (path is whatever follows the function name, e.g. /graph-api/research):
 //   POST   /research            { name?, linkedin_url? } -> { organization, people }  (org_type is identified by research, not supplied)
-//   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }
+//     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
+//     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
+//   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
 //   GET    /organizations       -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at}, ... ]
 //   POST   /organizations       { organization, people } -> saved { organization, people }
 //     organization fields: name, org_type, website_url, linkedin_url, hq_country, description,
@@ -493,6 +495,16 @@ async function backfillFromApollo(org: Record<string, any>) {
   }
 }
 
+// Research doesn't always surface where a firm invests (as opposed to where
+// it's headquartered) - a plausible default for a firm with no stated
+// investment region is that it invests where it's based. Run after Apollo
+// backfill so a hq_country Apollo just filled in still counts.
+function applyInvestmentRegionFallback(org: Record<string, any>) {
+  if ((!org.investment_regions || org.investment_regions.length === 0) && org.hq_country) {
+    org.investment_regions = [org.hq_country];
+  }
+}
+
 // ---------- OpenRouter ----------
 
 // Single bounded attempt, deliberately no internal retry: Supabase enforces
@@ -545,6 +557,11 @@ const ORG_TYPE_INSTRUCTIONS = `Classify the firm's type as exactly one of:
 - "family_office": a family office or private wealth investment vehicle
 If genuinely unclear, default to "vc".`;
 
+const INVESTOR_PROFILE_INSTRUCTIONS = `- Typical investment ticket size / check size it writes (e.g. "$250K-1M"), only if stated somewhere
+- Investment stage(s) it invests at (e.g. "Pre-seed", "Seed", "Series A", "Growth")
+- Geographic region(s) it focuses its investing in (e.g. "US", "Europe", "Global") - this is about where it invests, not where it's headquartered, though for a firm that only invests locally these are often the same
+- A short, more specific fund-type label than the vc/cvc/angel/family_office classification above, if one applies (e.g. "Corporate VC", "Family Office", "Accelerator", "Venture Studio", "Fund of Funds") - otherwise leave null`;
+
 const RESEARCH_JSON_SCHEMA = {
   type: "object",
   properties: {
@@ -558,8 +575,15 @@ const RESEARCH_JSON_SCHEMA = {
         hq_country: { type: ["string", "null"] },
         description: { type: ["string", "null"] },
         sectors: { type: "array", items: { type: "string" } },
+        ticket_size: { type: ["string", "null"] },
+        investment_stages: { type: "array", items: { type: "string" } },
+        investment_regions: { type: "array", items: { type: "string" } },
+        fund_type_raw: { type: ["string", "null"] },
       },
-      required: ["name", "org_type", "website_url", "linkedin_url", "hq_country", "description", "sectors"],
+      required: [
+        "name", "org_type", "website_url", "linkedin_url", "hq_country", "description", "sectors",
+        "ticket_size", "investment_stages", "investment_regions", "fund_type_raw",
+      ],
       additionalProperties: false,
     },
     people: {
@@ -594,6 +618,7 @@ Report:
 - Where it's headquartered (city and country)
 - A one-sentence description of the firm
 - 2-6 short sector/industry tags it focuses on (e.g. "Fintech", "AI infrastructure", "Climate tech")
+${INVESTOR_PROFILE_INSTRUCTIONS}
 - Its current key team members - partners, principals, investment directors and similar investment-team roles (skip admin/ops staff). For each: full name, title, sector/focus if stated, country they're based in, and personal LinkedIn URL if confirmed.
 
 If you cannot confidently identify the firm, leave "name" and other fields null rather than guessing (still pick a best-guess org_type if you can tell it's an investment organization at all).
@@ -605,6 +630,7 @@ ${NEVER_GUESS}`;
   if (!data.organization.org_type) data.organization.org_type = "vc";
   data.people = data.people || [];
   if (data.organization.name) await backfillFromApollo(data.organization);
+  applyInvestmentRegionFallback(data.organization);
   return data;
 }
 
@@ -618,7 +644,8 @@ async function researchPerson(name: string, companyHint: string, linkedinUrl: st
 Report:
 - Their full name, current title, sector/focus if stated, and the country they're based in
 - Their confirmed personal LinkedIn URL
-- The firm they currently work at: its name, ${ORG_TYPE_INSTRUCTIONS}, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and 2-6 short sector/industry tags
+- The firm they currently work at: its name, ${ORG_TYPE_INSTRUCTIONS}, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and 2-6 short sector/industry tags. Also, about that firm:
+${INVESTOR_PROFILE_INSTRUCTIONS}
 
 If you cannot confidently identify this person or their current firm, leave the relevant fields null rather than guessing. Return exactly one entry in "people" (or none if you can't confirm anyone).
 
@@ -629,6 +656,7 @@ ${NEVER_GUESS}`;
   if (!data.organization.org_type) data.organization.org_type = "vc";
   data.people = (data.people || []).slice(0, 1);
   if (data.organization.name) await backfillFromApollo(data.organization);
+  applyInvestmentRegionFallback(data.organization);
   return data;
 }
 
