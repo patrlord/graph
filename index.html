@@ -144,6 +144,23 @@
 
   .none { color: #b5b1a9; }
 
+  .org-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .org-header h3 { margin: 0; font-size: 15.5px; }
+  .type-pill {
+    display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+    background: #f0eee9; color: #6b6862; border: 1px solid #e2e0dc; text-transform: uppercase; letter-spacing: .03em;
+  }
+  .sector-tag {
+    display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; margin: 2px 3px 2px 0;
+    background: #f5ebe0; color: #8a5a2b; border: 1px solid #ecd9c3;
+  }
+  .entity-links { font-size: 12px; margin-top: 6px; }
+  .entity-links a { color: #8a5a2b; text-decoration: none; margin-right: 12px; }
+  .entity-links a:hover { text-decoration: underline; }
+  .entity-desc { font-size: 12.5px; color: #444; margin-top: 8px; line-height: 1.5; }
+  .investor-profile { font-size: 12px; color: #55524c; margin-top: 8px; line-height: 1.6; }
+  .investor-profile strong { color: #1c1c1c; font-weight: 600; }
+
   .edit-name-row { display: flex; gap: 8px; align-items: center; }
   input.name-input {
     flex: 1; min-width: 0; font-size: 15.5px; font-weight: 700; font-family: inherit; color: #1c1c1c;
@@ -296,25 +313,45 @@
       <div class="detail-empty" id="orgDetailEmpty">Select an organization from the list.</div>
       <div id="orgDetailContent" class="detail-content">
         <div class="detail-header">
-          <div class="edit-name-row">
+          <div id="orgHeaderView">
+            <div class="org-header">
+              <h3 id="detOrgName"></h3>
+              <span class="type-pill" id="detOrgType"></span>
+            </div>
+            <div class="entity-links" id="detOrgLinks"></div>
+          </div>
+          <div id="orgHeaderEdit" class="edit-name-row" style="display:none">
             <input type="text" id="editOrgName" class="name-input" placeholder="Organization name">
             <select id="editOrgType" class="type-select"></select>
           </div>
         </div>
         <div class="scroll-box">
-          <div class="edit-field"><label for="editOrgWebsite">Website</label><div class="input-with-link"><input type="text" id="editOrgWebsite" placeholder="https://…"><a id="editOrgWebsiteOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
-          <div class="edit-field"><label for="editOrgLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editOrgLinkedin" placeholder="https://www.linkedin.com/company/…"><a id="editOrgLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
-          <div class="edit-field"><label for="editOrgHqCountry">HQ location</label><input type="text" id="editOrgHqCountry" placeholder="e.g. London, UK"></div>
-          <div class="edit-field"><label for="editOrgDescription">Description</label><textarea id="editOrgDescription" rows="2"></textarea></div>
-          <div class="edit-field"><label for="editOrgSectors">Sectors</label><input type="text" id="editOrgSectors" placeholder="comma-separated, e.g. Fintech, AI"></div>
-          <div class="edit-field"><label for="editOrgTicketSize">Ticket size</label><input type="text" id="editOrgTicketSize" placeholder="e.g. $250K-1M"></div>
-          <div class="edit-field"><label for="editOrgStages">Investment stages</label><input type="text" id="editOrgStages" placeholder="comma-separated, e.g. Pre-seed, Seed"></div>
-          <div class="edit-field"><label for="editOrgRegions">Investment regions</label><input type="text" id="editOrgRegions" placeholder="comma-separated, e.g. US, Europe"></div>
-          <div class="edit-field"><label for="editOrgFundTypeRaw">Fund type</label><input type="text" id="editOrgFundTypeRaw" placeholder="e.g. Corporate VC"></div>
-          <div style="display:flex;align-items:center;gap:10px;">
-            <button id="orgSaveBtn">Save</button>
-            <button class="secondary tiny" id="enrichOrgBtn">Enrich</button>
-            <span class="status-line" id="orgSaveStatus"></span>
+          <div id="orgBodyView">
+            <div id="detOrgSectors"></div>
+            <div class="entity-desc" id="detOrgDesc"></div>
+            <div class="investor-profile" id="detOrgInvestorProfile"></div>
+            <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
+              <button class="secondary tiny" id="orgEditBtn">Edit</button>
+              <button class="secondary tiny" id="enrichOrgBtnView">Enrich</button>
+              <span class="status-line" id="enrichOrgViewStatus"></span>
+            </div>
+          </div>
+          <div id="orgBodyEdit" style="display:none">
+            <div class="edit-field"><label for="editOrgWebsite">Website</label><div class="input-with-link"><input type="text" id="editOrgWebsite" placeholder="https://…"><a id="editOrgWebsiteOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
+            <div class="edit-field"><label for="editOrgLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editOrgLinkedin" placeholder="https://www.linkedin.com/company/…"><a id="editOrgLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
+            <div class="edit-field"><label for="editOrgHqCountry">HQ location</label><input type="text" id="editOrgHqCountry" placeholder="e.g. London, UK"></div>
+            <div class="edit-field"><label for="editOrgDescription">Description</label><textarea id="editOrgDescription" rows="2"></textarea></div>
+            <div class="edit-field"><label for="editOrgSectors">Sectors</label><input type="text" id="editOrgSectors" placeholder="comma-separated, e.g. Fintech, AI"></div>
+            <div class="edit-field"><label for="editOrgTicketSize">Ticket size</label><input type="text" id="editOrgTicketSize" placeholder="e.g. $250K-1M"></div>
+            <div class="edit-field"><label for="editOrgStages">Investment stages</label><input type="text" id="editOrgStages" placeholder="comma-separated, e.g. Pre-seed, Seed"></div>
+            <div class="edit-field"><label for="editOrgRegions">Investment regions</label><input type="text" id="editOrgRegions" placeholder="comma-separated, e.g. US, Europe"></div>
+            <div class="edit-field"><label for="editOrgFundTypeRaw">Fund type</label><input type="text" id="editOrgFundTypeRaw" placeholder="e.g. Corporate VC"></div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <button id="orgSaveBtn">Save</button>
+              <button class="secondary tiny" id="orgCancelBtn">Cancel</button>
+              <button class="secondary tiny" id="enrichOrgBtnEdit">Enrich</button>
+              <span class="status-line" id="orgSaveStatus"></span>
+            </div>
           </div>
           <div class="news-section">
             <div style="display:flex;align-items:center;justify-content:space-between;">
@@ -405,16 +442,29 @@
       <div class="detail-empty" id="personDetailEmpty">Select a person from the list.</div>
       <div id="personDetailContent" class="detail-content">
         <div class="detail-header">
-          <input type="text" id="editPersonName" class="name-input" placeholder="Full name">
+          <div id="personHeaderView">
+            <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+            <div class="entity-desc" id="detPersonMeta"></div>
+            <div class="entity-links" id="detPersonLinks"></div>
+          </div>
+          <input type="text" id="editPersonName" class="name-input" placeholder="Full name" style="display:none">
         </div>
         <div class="scroll-box">
-          <div class="edit-field"><label for="editPersonTitle">Title</label><input type="text" id="editPersonTitle"></div>
-          <div class="edit-field"><label for="editPersonFocus">Focus</label><input type="text" id="editPersonFocus"></div>
-          <div class="edit-field"><label for="editPersonCountry">Country</label><input type="text" id="editPersonCountry"></div>
-          <div class="edit-field"><label for="editPersonLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editPersonLinkedin" placeholder="https://www.linkedin.com/in/…"><a id="editPersonLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
-          <div style="display:flex;align-items:center;gap:10px;">
-            <button id="personSaveBtn">Save</button>
-            <span class="status-line" id="personSaveStatus"></span>
+          <div id="personBodyView">
+            <div style="margin-top:14px;">
+              <button class="secondary tiny" id="personEditBtn">Edit</button>
+            </div>
+          </div>
+          <div id="personBodyEdit" style="display:none">
+            <div class="edit-field"><label for="editPersonTitle">Title</label><input type="text" id="editPersonTitle"></div>
+            <div class="edit-field"><label for="editPersonFocus">Focus</label><input type="text" id="editPersonFocus"></div>
+            <div class="edit-field"><label for="editPersonCountry">Country</label><input type="text" id="editPersonCountry"></div>
+            <div class="edit-field"><label for="editPersonLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editPersonLinkedin" placeholder="https://www.linkedin.com/in/…"><a id="editPersonLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <button id="personSaveBtn">Save</button>
+              <button class="secondary tiny" id="personCancelBtn">Cancel</button>
+              <span class="status-line" id="personSaveStatus"></span>
+            </div>
           </div>
           <div class="news-section">
             <div style="display:flex;align-items:center;justify-content:space-between;">
@@ -736,9 +786,47 @@ async function selectOrg(id) {
   document.getElementById("connAddForm").style.display = "none";
 }
 
+function entityLinksHtml(website_url, linkedin_url, hq_country) {
+  const links = [];
+  if (website_url) links.push(`<a href="${website_url}" target="_blank" rel="noopener">Website ↗</a>`);
+  if (linkedin_url) links.push(`<a href="${linkedin_url}" target="_blank" rel="noopener">LinkedIn ↗</a>`);
+  if (hq_country) links.push(`<span>${hq_country}</span>`);
+  return links.join("");
+}
+
+function sectorsHtml(sectors) {
+  if (!sectors || !sectors.length) return "";
+  return sectors.map(s => `<span class="sector-tag">${s}</span>`).join("");
+}
+
+// Investor-profile fields sourced from list-style directories (ticket size,
+// stage(s), geographic focus, raw fund-type label) - blank/empty on any org
+// that hasn't been through that kind of import, in which case nothing renders.
+function investorProfileHtml(org) {
+  const lines = [];
+  if (org.ticket_size) lines.push(`<div><strong>Ticket:</strong> ${org.ticket_size}</div>`);
+  if (org.investment_stages && org.investment_stages.length) lines.push(`<div><strong>Stages:</strong> ${org.investment_stages.join(", ")}</div>`);
+  if (org.investment_regions && org.investment_regions.length) lines.push(`<div><strong>Regions:</strong> ${org.investment_regions.join(", ")}</div>`);
+  if (org.fund_type_raw) lines.push(`<div><strong>Fund type:</strong> ${org.fund_type_raw}</div>`);
+  return lines.join("");
+}
+
 function renderOrgDetail(org) {
   document.getElementById("orgDetailEmpty").style.display = "none";
   document.getElementById("orgDetailContent").classList.add("shown");
+  document.getElementById("detOrgName").textContent = org.name;
+  document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
+  document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
+  document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
+  document.getElementById("detOrgDesc").textContent = org.description || "";
+  document.getElementById("detOrgInvestorProfile").innerHTML = investorProfileHtml(org);
+  document.getElementById("orgNewsList").innerHTML = "";
+  document.getElementById("enrichOrgViewStatus").textContent = "";
+  document.getElementById("enrichOrgViewStatus").className = "status-line";
+  exitOrgEditMode();
+}
+
+function populateOrgEditForm(org) {
   document.getElementById("editOrgName").value = org.name || "";
   document.getElementById("editOrgType").innerHTML = Object.entries(ORG_TYPE_LABEL)
     .map(([v, label]) => `<option value="${v}"${v === org.org_type ? " selected" : ""}>${label}</option>`).join("");
@@ -753,9 +841,26 @@ function renderOrgDetail(org) {
   document.getElementById("editOrgFundTypeRaw").value = org.fund_type_raw || "";
   syncOrgWebsiteLink();
   syncOrgLinkedinLink();
-  document.getElementById("orgNewsList").innerHTML = "";
   document.getElementById("orgSaveStatus").textContent = "";
   document.getElementById("orgSaveStatus").className = "status-line";
+}
+
+function enterOrgEditMode() {
+  if (!selectedOrg) return;
+  populateOrgEditForm(selectedOrg);
+  document.getElementById("orgHeaderView").style.display = "none";
+  document.getElementById("orgHeaderEdit").style.display = "flex";
+  document.getElementById("orgBodyView").style.display = "none";
+  document.getElementById("orgBodyEdit").style.display = "block";
+}
+
+// Also called by renderOrgDetail whenever a (possibly different) org is
+// (re)loaded, so switching orgs always lands on the view, not mid-edit.
+function exitOrgEditMode() {
+  document.getElementById("orgHeaderView").style.display = "block";
+  document.getElementById("orgHeaderEdit").style.display = "none";
+  document.getElementById("orgBodyView").style.display = "block";
+  document.getElementById("orgBodyEdit").style.display = "none";
 }
 
 // Keeps a small "open in new tab" link next to a URL input in sync with
@@ -801,7 +906,7 @@ async function saveOrgEdits() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Save failed");
     Object.assign(selectedOrg, data);
-    status.textContent = "Saved.";
+    renderOrgDetail(selectedOrg);  // back to the view, showing the saved values; also exits edit mode
     updatePeopleHeader();
     loadOrgList();
   } catch (err) {
@@ -903,10 +1008,12 @@ async function removeOrgConnection(connId) {
 // find-or-merge save path - which only fills in blank fields, so nothing
 // already on the record gets clobbered. Also picks up any newly-findable
 // team members the same way a fresh "add organization" would.
+// View-mode Enrich: researches and saves immediately (merge-only-blanks),
+// same as before there was an edit mode to worry about.
 async function enrichSelectedOrg() {
   if (!selectedOrg) return;
-  const btn = document.getElementById("enrichOrgBtn");
-  const status = document.getElementById("orgSaveStatus");
+  const btn = document.getElementById("enrichOrgBtnView");
+  const status = document.getElementById("enrichOrgViewStatus");
   btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
   try {
     const res = await apiWithRetry("/research", {
@@ -921,6 +1028,56 @@ async function enrichSelectedOrg() {
     status.textContent = "";
     await selectOrg(saveData.organization.id);
     loadOrgList();
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Edit-mode Enrich: research only, no save - fills blank fields in the edit
+// form itself (same merge-only-blanks idea, applied to the form rather than
+// the database) so Cancel can discard it along with any manual edits. Never
+// touches the type dropdown (it's never actually "blank") or team members
+// (adding people is a real, immediate write - out of place for a form whose
+// point is to stay unsaved until Save is clicked).
+async function enrichIntoEditForm() {
+  if (!selectedOrg) return;
+  const btn = document.getElementById("enrichOrgBtnEdit");
+  const status = document.getElementById("orgSaveStatus");
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
+  try {
+    const nameField = document.getElementById("editOrgName");
+    const linkedinField = document.getElementById("editOrgLinkedin");
+    const res = await apiWithRetry("/research", {
+      method: "POST",
+      body: JSON.stringify({ name: nameField.value.trim(), linkedin_url: linkedinField.value.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Research failed");
+    const org = data.organization || {};
+    const fillIfBlank = (id, value) => {
+      const el = document.getElementById(id);
+      if (!el.value.trim() && value) el.value = value;
+    };
+    fillIfBlank("editOrgWebsite", org.website_url);
+    fillIfBlank("editOrgLinkedin", org.linkedin_url);
+    fillIfBlank("editOrgHqCountry", org.hq_country);
+    fillIfBlank("editOrgDescription", org.description);
+    if (!document.getElementById("editOrgSectors").value.trim() && org.sectors?.length) {
+      document.getElementById("editOrgSectors").value = org.sectors.join(", ");
+    }
+    fillIfBlank("editOrgTicketSize", org.ticket_size);
+    if (!document.getElementById("editOrgStages").value.trim() && org.investment_stages?.length) {
+      document.getElementById("editOrgStages").value = org.investment_stages.join(", ");
+    }
+    if (!document.getElementById("editOrgRegions").value.trim() && org.investment_regions?.length) {
+      document.getElementById("editOrgRegions").value = org.investment_regions.join(", ");
+    }
+    fillIfBlank("editOrgFundTypeRaw", org.fund_type_raw);
+    syncOrgWebsiteLink();
+    syncOrgLinkedinLink();
+    status.textContent = "Filled in below - review, then Save (or Cancel to discard).";
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally {
@@ -1089,6 +1246,15 @@ function showPersonDetail(person) {
   }
   document.getElementById("personDetailEmpty").style.display = "none";
   document.getElementById("personDetailContent").classList.add("shown");
+  document.getElementById("detPersonName").textContent = person.full_name;
+  document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
+  document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
+  document.getElementById("personNewsList").innerHTML = "";
+  loadPersonNews(person);
+  exitPersonEditMode();
+}
+
+function populatePersonEditForm(person) {
   document.getElementById("editPersonName").value = person.full_name || "";
   document.getElementById("editPersonTitle").value = person.title || "";
   document.getElementById("editPersonFocus").value = person.focus || "";
@@ -1097,8 +1263,24 @@ function showPersonDetail(person) {
   syncPersonLinkedinLink();
   document.getElementById("personSaveStatus").textContent = "";
   document.getElementById("personSaveStatus").className = "status-line";
-  document.getElementById("personNewsList").innerHTML = "";
-  loadPersonNews(person);
+}
+
+function enterPersonEditMode() {
+  if (!selectedPersonObj) return;
+  populatePersonEditForm(selectedPersonObj);
+  document.getElementById("personHeaderView").style.display = "none";
+  document.getElementById("editPersonName").style.display = "block";
+  document.getElementById("personBodyView").style.display = "none";
+  document.getElementById("personBodyEdit").style.display = "block";
+}
+
+// Also called by showPersonDetail whenever a (possibly different) person is
+// (re)loaded, so switching people always lands on the view, not mid-edit.
+function exitPersonEditMode() {
+  document.getElementById("personHeaderView").style.display = "block";
+  document.getElementById("editPersonName").style.display = "none";
+  document.getElementById("personBodyView").style.display = "block";
+  document.getElementById("personBodyEdit").style.display = "none";
 }
 
 async function savePersonEdits() {
@@ -1146,7 +1328,7 @@ async function savePersonEdits() {
     if (inCurrentList && inCurrentList !== person) Object.assign(inCurrentList, person);
     renderPeopleTableBody();
 
-    status.textContent = "Saved.";
+    showPersonDetail(person);  // back to the view, showing the saved values; also exits edit mode
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally {
@@ -1419,7 +1601,10 @@ document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddV
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
-document.getElementById("enrichOrgBtn").addEventListener("click", enrichSelectedOrg);
+document.getElementById("orgEditBtn").addEventListener("click", enterOrgEditMode);
+document.getElementById("orgCancelBtn").addEventListener("click", exitOrgEditMode);
+document.getElementById("enrichOrgBtnView").addEventListener("click", enrichSelectedOrg);
+document.getElementById("enrichOrgBtnEdit").addEventListener("click", enrichIntoEditForm);
 document.getElementById("orgSaveBtn").addEventListener("click", saveOrgEdits);
 const syncOrgWebsiteLink = wireLinkField("editOrgWebsite", "editOrgWebsiteOpen");
 const syncOrgLinkedinLink = wireLinkField("editOrgLinkedin", "editOrgLinkedinOpen");
@@ -1446,6 +1631,8 @@ document.getElementById("personAddCloseBtn").addEventListener("click", showPeopl
 document.getElementById("bulkPeopleAddRowBtn").addEventListener("click", () => addBulkPeopleRow());
 document.getElementById("bulkPeopleStartBtn").addEventListener("click", startBulkPeopleAdd);
 document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
+document.getElementById("personEditBtn").addEventListener("click", enterPersonEditMode);
+document.getElementById("personCancelBtn").addEventListener("click", exitPersonEditMode);
 document.getElementById("personSaveBtn").addEventListener("click", savePersonEdits);
 const syncPersonLinkedinLink = wireLinkField("editPersonLinkedin", "editPersonLinkedinOpen");
 
