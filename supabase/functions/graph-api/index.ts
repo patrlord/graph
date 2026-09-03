@@ -31,7 +31,11 @@
 //     like everything else here
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
-//   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
+//   PATCH  /organizations/:id   { any subset of organization fields above } -> updated org (direct set, not merge-only-blanks - a
+//     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI)
+//   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, focus, membership_id, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
+//   PATCH  /people/:id          { any subset of full_name, linkedin_url, country } -> updated person (direct set, same as organizations PATCH)
+//   PATCH  /memberships/:id     { any subset of title, focus } -> updated membership (direct set, same as organizations PATCH)
 //   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company, renamed_to, merged_into_person_id }
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
@@ -198,6 +202,18 @@ function mergeFields(existing: Record<string, any>, newFields: Record<string, an
     merged[k] = isBlank(v) ? existing[k] : v;
   }
   return merged;
+}
+
+// For direct-edit PATCH endpoints: only the keys actually present in the
+// request body are included (so omitting a field leaves it untouched), but
+// unlike mergeFields, a key that IS present is taken exactly as given - null
+// or "" included - so the user can deliberately clear a field.
+function pickDefined(body: Record<string, any>, keys: string[]): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(body, k)) out[k] = body[k];
+  }
+  return out;
 }
 
 // ---------- Organizations / people / memberships ----------
@@ -439,7 +455,7 @@ async function createOrgConnection(
 
 async function searchPeopleGlobal(query: string) {
   const params: Record<string, string> = {
-    select: "*,memberships(organization_id,is_current,updated_at,title,organizations(id,name))",
+    select: "*,memberships(id,organization_id,is_current,updated_at,title,focus,organizations(id,name))",
     order: "full_name.asc",
     limit: query ? "25" : "1000",
   };
@@ -452,7 +468,10 @@ async function searchPeopleGlobal(query: string) {
     });
     const best = ms[0];
     const { memberships, ...rest } = p;
-    return { ...rest, title: best?.title || null, organization: best?.organizations || null };
+    return {
+      ...rest, title: best?.title || null, focus: best?.focus || null,
+      membership_id: best?.id || null, organization: best?.organizations || null,
+    };
   });
 }
 
@@ -1036,6 +1055,60 @@ Deno.serve(async (req) => {
     if (orgIdMatch && req.method === "DELETE") {
       await supabaseRequest("DELETE", "organizations", { params: { id: `eq.${orgIdMatch[1]}` } });
       return json({ ok: true });
+    }
+    if (orgIdMatch && req.method === "PATCH") {
+      const body = await req.json();
+      const fields = pickDefined(body, [
+        "name", "org_type", "website_url", "linkedin_url", "hq_country", "description",
+        "sectors", "ticket_size", "investment_stages", "investment_regions", "fund_type_raw",
+      ]);
+      if ("name" in fields && !String(fields.name ?? "").trim()) return json({ error: "name cannot be blank" }, 400);
+      if ("org_type" in fields && !["vc", "cvc", "angel", "family_office", "group"].includes(fields.org_type)) {
+        return json({ error: "org_type must be one of vc, cvc, angel, family_office, group" }, 400);
+      }
+      if ("website_url" in fields) fields.website_url = normalizeWebsiteUrl(fields.website_url);
+      if ("linkedin_url" in fields) fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);
+      for (const arrayField of ["sectors", "investment_stages", "investment_regions"]) {
+        if (arrayField in fields) fields[arrayField] = Array.isArray(fields[arrayField]) ? fields[arrayField].filter(Boolean) : [];
+      }
+      if (!Object.keys(fields).length) return json({ error: "no editable fields provided" }, 400);
+      const updated = await supabaseRequest("PATCH", "organizations", {
+        params: { id: `eq.${orgIdMatch[1]}` },
+        body: fields,
+        prefer: "return=representation",
+      });
+      if (!updated?.length) return json({ error: "organization not found" }, 404);
+      return json(updated[0]);
+    }
+
+    const personIdMatch = path.match(/^\/people\/([^/]+)$/);
+    if (personIdMatch && req.method === "PATCH") {
+      const body = await req.json();
+      const fields = pickDefined(body, ["full_name", "linkedin_url", "country"]);
+      if ("full_name" in fields && !String(fields.full_name ?? "").trim()) return json({ error: "full_name cannot be blank" }, 400);
+      if ("linkedin_url" in fields) fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);
+      if (!Object.keys(fields).length) return json({ error: "no editable fields provided" }, 400);
+      const updated = await supabaseRequest("PATCH", "people", {
+        params: { id: `eq.${personIdMatch[1]}` },
+        body: fields,
+        prefer: "return=representation",
+      });
+      if (!updated?.length) return json({ error: "person not found" }, 404);
+      return json(updated[0]);
+    }
+
+    const membershipIdMatch = path.match(/^\/memberships\/([^/]+)$/);
+    if (membershipIdMatch && req.method === "PATCH") {
+      const body = await req.json();
+      const fields = pickDefined(body, ["title", "focus"]);
+      if (!Object.keys(fields).length) return json({ error: "no editable fields provided" }, 400);
+      const updated = await supabaseRequest("PATCH", "memberships", {
+        params: { id: `eq.${membershipIdMatch[1]}` },
+        body: fields,
+        prefer: "return=representation",
+      });
+      if (!updated?.length) return json({ error: "membership not found" }, 404);
+      return json(updated[0]);
     }
 
     return json({ error: "not found" }, 404);

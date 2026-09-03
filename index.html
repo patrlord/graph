@@ -142,23 +142,32 @@
   .bulk-status.done { background: #e4f2e6; color: #2f7a3d; }
   .bulk-status.failed { background: #fdecec; color: #a33; }
 
-  .org-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-  .org-header h3 { margin: 0; font-size: 15.5px; }
-  .type-pill {
-    display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
-    background: #f0eee9; color: #6b6862; border: 1px solid #e2e0dc; text-transform: uppercase; letter-spacing: .03em;
-  }
-  .sector-tag {
-    display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; margin: 2px 3px 2px 0;
-    background: #f5ebe0; color: #8a5a2b; border: 1px solid #ecd9c3;
-  }
-  .entity-links { font-size: 12px; margin-top: 6px; }
-  .entity-links a { color: #8a5a2b; text-decoration: none; margin-right: 12px; }
-  .entity-links a:hover { text-decoration: underline; }
-  .entity-desc { font-size: 12.5px; color: #444; margin-top: 8px; line-height: 1.5; }
-  .investor-profile { font-size: 12px; color: #55524c; margin-top: 8px; line-height: 1.6; }
-  .investor-profile strong { color: #1c1c1c; font-weight: 600; }
   .none { color: #b5b1a9; }
+
+  .edit-name-row { display: flex; gap: 8px; align-items: center; }
+  input.name-input {
+    flex: 1; min-width: 0; font-size: 15.5px; font-weight: 700; font-family: inherit; color: #1c1c1c;
+    border: 1px solid transparent; border-radius: 5px; padding: 3px 6px; background: transparent;
+  }
+  input.name-input:hover, input.name-input:focus { border-color: #d8d5cf; background: #fff; }
+  select.type-select {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; font-weight: 600; font-family: inherit;
+    padding: 3px 6px; border-radius: 999px; border: 1px solid #e2e0dc; background: #f0eee9; color: #6b6862;
+  }
+  .edit-field { margin-bottom: 10px; }
+  .edit-field label {
+    display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em;
+    color: #8a877e; font-weight: 600; margin-bottom: 3px;
+  }
+  .edit-field input, .edit-field textarea {
+    width: 100%; box-sizing: border-box; font-size: 12.5px; font-family: inherit; color: #1c1c1c;
+    border: 1px solid #d8d5cf; border-radius: 5px; padding: 6px 8px; background: #fff;
+  }
+  .edit-field textarea { resize: vertical; }
+  .input-with-link { display: flex; gap: 6px; align-items: center; }
+  .input-with-link input { flex: 1; min-width: 0; }
+  a.open-link { flex: none; font-size: 13px; color: #8a5a2b; text-decoration: none; padding: 4px 2px; }
+  a.open-link:hover { text-decoration: underline; }
 
   table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12.5px; }
   th, td { text-align: left; padding: 6px 7px; border-bottom: 1px solid #eeece7; vertical-align: top; }
@@ -287,19 +296,25 @@
       <div class="detail-empty" id="orgDetailEmpty">Select an organization from the list.</div>
       <div id="orgDetailContent" class="detail-content">
         <div class="detail-header">
-          <div class="org-header">
-            <h3 id="detOrgName"></h3>
-            <span class="type-pill" id="detOrgType"></span>
+          <div class="edit-name-row">
+            <input type="text" id="editOrgName" class="name-input" placeholder="Organization name">
+            <select id="editOrgType" class="type-select"></select>
           </div>
-          <div class="entity-links" id="detOrgLinks"></div>
         </div>
         <div class="scroll-box">
-          <div id="detOrgSectors"></div>
-          <div class="entity-desc" id="detOrgDesc"></div>
-          <div class="investor-profile" id="detOrgInvestorProfile"></div>
-          <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
+          <div class="edit-field"><label for="editOrgWebsite">Website</label><div class="input-with-link"><input type="text" id="editOrgWebsite" placeholder="https://…"><a id="editOrgWebsiteOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
+          <div class="edit-field"><label for="editOrgLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editOrgLinkedin" placeholder="https://www.linkedin.com/company/…"><a id="editOrgLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
+          <div class="edit-field"><label for="editOrgHqCountry">HQ location</label><input type="text" id="editOrgHqCountry" placeholder="e.g. London, UK"></div>
+          <div class="edit-field"><label for="editOrgDescription">Description</label><textarea id="editOrgDescription" rows="2"></textarea></div>
+          <div class="edit-field"><label for="editOrgSectors">Sectors</label><input type="text" id="editOrgSectors" placeholder="comma-separated, e.g. Fintech, AI"></div>
+          <div class="edit-field"><label for="editOrgTicketSize">Ticket size</label><input type="text" id="editOrgTicketSize" placeholder="e.g. $250K-1M"></div>
+          <div class="edit-field"><label for="editOrgStages">Investment stages</label><input type="text" id="editOrgStages" placeholder="comma-separated, e.g. Pre-seed, Seed"></div>
+          <div class="edit-field"><label for="editOrgRegions">Investment regions</label><input type="text" id="editOrgRegions" placeholder="comma-separated, e.g. US, Europe"></div>
+          <div class="edit-field"><label for="editOrgFundTypeRaw">Fund type</label><input type="text" id="editOrgFundTypeRaw" placeholder="e.g. Corporate VC"></div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button id="orgSaveBtn">Save</button>
             <button class="secondary tiny" id="enrichOrgBtn">Enrich</button>
-            <span class="status-line" id="enrichOrgStatus"></span>
+            <span class="status-line" id="orgSaveStatus"></span>
           </div>
           <div class="news-section">
             <div style="display:flex;align-items:center;justify-content:space-between;">
@@ -390,11 +405,17 @@
       <div class="detail-empty" id="personDetailEmpty">Select a person from the list.</div>
       <div id="personDetailContent" class="detail-content">
         <div class="detail-header">
-          <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
-          <div class="entity-desc" id="detPersonMeta"></div>
-          <div class="entity-links" id="detPersonLinks"></div>
+          <input type="text" id="editPersonName" class="name-input" placeholder="Full name">
         </div>
         <div class="scroll-box">
+          <div class="edit-field"><label for="editPersonTitle">Title</label><input type="text" id="editPersonTitle"></div>
+          <div class="edit-field"><label for="editPersonFocus">Focus</label><input type="text" id="editPersonFocus"></div>
+          <div class="edit-field"><label for="editPersonCountry">Country</label><input type="text" id="editPersonCountry"></div>
+          <div class="edit-field"><label for="editPersonLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editPersonLinkedin" placeholder="https://www.linkedin.com/in/…"><a id="editPersonLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button id="personSaveBtn">Save</button>
+            <span class="status-line" id="personSaveStatus"></span>
+          </div>
           <div class="news-section">
             <div style="display:flex;align-items:center;justify-content:space-between;">
               <strong style="font-size:12.5px;">Latest news</strong>
@@ -510,31 +531,6 @@ function linkedinCellFor(entity) {
     return `<a class="li-link" href="${entity.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(entity.linkedin_url)}</a>`;
   }
   return `<button class="secondary tiny find-li-btn" data-id="${entity.id}">Find</button>`;
-}
-
-function entityLinksHtml(website_url, linkedin_url, hq_country) {
-  const links = [];
-  if (website_url) links.push(`<a href="${website_url}" target="_blank" rel="noopener">Website ↗</a>`);
-  if (linkedin_url) links.push(`<a href="${linkedin_url}" target="_blank" rel="noopener">LinkedIn ↗</a>`);
-  if (hq_country) links.push(`<span>${hq_country}</span>`);
-  return links.join("");
-}
-
-function sectorsHtml(sectors) {
-  if (!sectors || !sectors.length) return "";
-  return sectors.map(s => `<span class="sector-tag">${s}</span>`).join("");
-}
-
-// Investor-profile fields sourced from list-style directories (ticket size,
-// stage(s), geographic focus, raw fund-type label) - blank/empty on any org
-// that hasn't been through that kind of import, in which case nothing renders.
-function investorProfileHtml(org) {
-  const lines = [];
-  if (org.ticket_size) lines.push(`<div><strong>Ticket:</strong> ${org.ticket_size}</div>`);
-  if (org.investment_stages && org.investment_stages.length) lines.push(`<div><strong>Stages:</strong> ${org.investment_stages.join(", ")}</div>`);
-  if (org.investment_regions && org.investment_regions.length) lines.push(`<div><strong>Regions:</strong> ${org.investment_regions.join(", ")}</div>`);
-  if (org.fund_type_raw) lines.push(`<div><strong>Fund type:</strong> ${org.fund_type_raw}</div>`);
-  return lines.join("");
 }
 
 function renderPeopleRows(people, getName, getTitle, getFocus, getCountry, getLinkedIn) {
@@ -743,15 +739,76 @@ async function selectOrg(id) {
 function renderOrgDetail(org) {
   document.getElementById("orgDetailEmpty").style.display = "none";
   document.getElementById("orgDetailContent").classList.add("shown");
-  document.getElementById("detOrgName").textContent = org.name;
-  document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
-  document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
-  document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
-  document.getElementById("detOrgDesc").textContent = org.description || "";
-  document.getElementById("detOrgInvestorProfile").innerHTML = investorProfileHtml(org);
+  document.getElementById("editOrgName").value = org.name || "";
+  document.getElementById("editOrgType").innerHTML = Object.entries(ORG_TYPE_LABEL)
+    .map(([v, label]) => `<option value="${v}"${v === org.org_type ? " selected" : ""}>${label}</option>`).join("");
+  document.getElementById("editOrgWebsite").value = org.website_url || "";
+  document.getElementById("editOrgLinkedin").value = org.linkedin_url || "";
+  document.getElementById("editOrgHqCountry").value = org.hq_country || "";
+  document.getElementById("editOrgDescription").value = org.description || "";
+  document.getElementById("editOrgSectors").value = (org.sectors || []).join(", ");
+  document.getElementById("editOrgTicketSize").value = org.ticket_size || "";
+  document.getElementById("editOrgStages").value = (org.investment_stages || []).join(", ");
+  document.getElementById("editOrgRegions").value = (org.investment_regions || []).join(", ");
+  document.getElementById("editOrgFundTypeRaw").value = org.fund_type_raw || "";
+  syncOrgWebsiteLink();
+  syncOrgLinkedinLink();
   document.getElementById("orgNewsList").innerHTML = "";
-  document.getElementById("enrichOrgStatus").textContent = "";
-  document.getElementById("enrichOrgStatus").className = "status-line";
+  document.getElementById("orgSaveStatus").textContent = "";
+  document.getElementById("orgSaveStatus").className = "status-line";
+}
+
+// Keeps a small "open in new tab" link next to a URL input in sync with
+// whatever's currently typed there, live - not just after a save.
+function wireLinkField(inputId, linkId) {
+  const input = document.getElementById(inputId);
+  const link = document.getElementById(linkId);
+  const sync = () => {
+    const v = input.value.trim();
+    if (v) { link.href = /^https?:\/\//i.test(v) ? v : `https://${v}`; link.style.display = "inline"; }
+    else { link.style.display = "none"; }
+  };
+  input.addEventListener("input", sync);
+  return sync;
+}
+
+function splitCsv(s) {
+  return s.split(",").map(t => t.trim()).filter(Boolean);
+}
+
+async function saveOrgEdits() {
+  if (!selectedOrg) return;
+  const btn = document.getElementById("orgSaveBtn");
+  const status = document.getElementById("orgSaveStatus");
+  const name = document.getElementById("editOrgName").value.trim();
+  if (!name) { status.className = "status-line error"; status.textContent = "Name cannot be blank."; return; }
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Saving…";
+  try {
+    const fields = {
+      name,
+      org_type: document.getElementById("editOrgType").value,
+      website_url: document.getElementById("editOrgWebsite").value.trim(),
+      linkedin_url: document.getElementById("editOrgLinkedin").value.trim(),
+      hq_country: document.getElementById("editOrgHqCountry").value.trim(),
+      description: document.getElementById("editOrgDescription").value.trim(),
+      sectors: splitCsv(document.getElementById("editOrgSectors").value),
+      ticket_size: document.getElementById("editOrgTicketSize").value.trim(),
+      investment_stages: splitCsv(document.getElementById("editOrgStages").value),
+      investment_regions: splitCsv(document.getElementById("editOrgRegions").value),
+      fund_type_raw: document.getElementById("editOrgFundTypeRaw").value.trim(),
+    };
+    const res = await api(`/organizations/${selectedOrg.id}`, { method: "PATCH", body: JSON.stringify(fields) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed");
+    Object.assign(selectedOrg, data);
+    status.textContent = "Saved.";
+    updatePeopleHeader();
+    loadOrgList();
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function loadOrgNews(org) {
@@ -849,7 +906,7 @@ async function removeOrgConnection(connId) {
 async function enrichSelectedOrg() {
   if (!selectedOrg) return;
   const btn = document.getElementById("enrichOrgBtn");
-  const status = document.getElementById("enrichOrgStatus");
+  const status = document.getElementById("orgSaveStatus");
   btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
   try {
     const res = await apiWithRetry("/research", {
@@ -881,11 +938,12 @@ function normalizePeopleItems(items, mode) {
   return (items || []).map(entry => mode === "org"
     ? {
         id: entry.people.id, full_name: entry.people.full_name, linkedin_url: entry.people.linkedin_url,
-        country: entry.people.country, title: entry.title, focus: entry.focus, organization: null,
+        country: entry.people.country, title: entry.title, focus: entry.focus, membership_id: entry.id, organization: null,
       }
     : {
         id: entry.id, full_name: entry.full_name, linkedin_url: entry.linkedin_url,
-        country: entry.country, title: entry.title, focus: null, organization: entry.organization || null,
+        country: entry.country, title: entry.title, focus: entry.focus || null,
+        membership_id: entry.membership_id || null, organization: entry.organization || null,
       });
 }
 
@@ -1020,7 +1078,10 @@ async function selectPerson(p) {
   showPersonDetail(p);
 }
 
+let selectedPersonObj = null;  // the object currently shown in the person detail pane, for savePersonEdits
+
 function showPersonDetail(person) {
+  selectedPersonObj = person;
   if (!person) {
     document.getElementById("personDetailEmpty").style.display = "block";
     document.getElementById("personDetailContent").classList.remove("shown");
@@ -1028,11 +1089,69 @@ function showPersonDetail(person) {
   }
   document.getElementById("personDetailEmpty").style.display = "none";
   document.getElementById("personDetailContent").classList.add("shown");
-  document.getElementById("detPersonName").textContent = person.full_name;
-  document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
-  document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
+  document.getElementById("editPersonName").value = person.full_name || "";
+  document.getElementById("editPersonTitle").value = person.title || "";
+  document.getElementById("editPersonFocus").value = person.focus || "";
+  document.getElementById("editPersonCountry").value = person.country || "";
+  document.getElementById("editPersonLinkedin").value = person.linkedin_url || "";
+  syncPersonLinkedinLink();
+  document.getElementById("personSaveStatus").textContent = "";
+  document.getElementById("personSaveStatus").className = "status-line";
   document.getElementById("personNewsList").innerHTML = "";
   loadPersonNews(person);
+}
+
+async function savePersonEdits() {
+  const person = selectedPersonObj;
+  if (!person) return;
+  const btn = document.getElementById("personSaveBtn");
+  const status = document.getElementById("personSaveStatus");
+  const fullName = document.getElementById("editPersonName").value.trim();
+  if (!fullName) { status.className = "status-line error"; status.textContent = "Name cannot be blank."; return; }
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Saving…";
+  try {
+    const personRes = await api(`/people/${person.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        full_name: fullName,
+        country: document.getElementById("editPersonCountry").value.trim(),
+        linkedin_url: document.getElementById("editPersonLinkedin").value.trim(),
+      }),
+    });
+    const personData = await personRes.json();
+    if (!personRes.ok) throw new Error(personData.error || "Save failed");
+    Object.assign(person, personData);
+
+    const title = document.getElementById("editPersonTitle").value.trim();
+    const focus = document.getElementById("editPersonFocus").value.trim();
+    if (person.membership_id) {
+      const membershipRes = await api(`/memberships/${person.membership_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title, focus }),
+      });
+      const membershipData = await membershipRes.json();
+      if (!membershipRes.ok) throw new Error(membershipData.error || "Save failed");
+      person.title = membershipData.title;
+      person.focus = membershipData.focus;
+    }
+
+    // Keep the row(s) behind this person in sync without a full reload.
+    const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
+    if (inOrgList) {
+      Object.assign(inOrgList.people, { full_name: person.full_name, country: person.country, linkedin_url: person.linkedin_url });
+      inOrgList.title = person.title;
+      inOrgList.focus = person.focus;
+    }
+    const inCurrentList = currentPeopleItems.find(p => p.id === person.id);
+    if (inCurrentList && inCurrentList !== person) Object.assign(inCurrentList, person);
+    renderPeopleTableBody();
+
+    status.textContent = "Saved.";
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function loadPersonNews(person) {
@@ -1042,7 +1161,7 @@ async function loadPersonNews(person) {
 
 async function searchPersonNews() {
   if (!selectedPersonId) return;
-  const name = document.getElementById("detPersonName").textContent;
+  const name = document.getElementById("editPersonName").value.trim();
   const btn = document.getElementById("personNewsSearchBtn");
   const status = document.getElementById("personNewsStatus");
   btn.disabled = true; status.textContent = "Searching…"; status.className = "status-line";
@@ -1301,6 +1420,9 @@ document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindA
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
 document.getElementById("enrichOrgBtn").addEventListener("click", enrichSelectedOrg);
+document.getElementById("orgSaveBtn").addEventListener("click", saveOrgEdits);
+const syncOrgWebsiteLink = wireLinkField("editOrgWebsite", "editOrgWebsiteOpen");
+const syncOrgLinkedinLink = wireLinkField("editOrgLinkedin", "editOrgLinkedinOpen");
 document.getElementById("orgNewsSearchBtn").addEventListener("click", searchOrgNews);
 document.getElementById("connAddToggleBtn").addEventListener("click", () => {
   const form = document.getElementById("connAddForm");
@@ -1324,6 +1446,8 @@ document.getElementById("personAddCloseBtn").addEventListener("click", showPeopl
 document.getElementById("bulkPeopleAddRowBtn").addEventListener("click", () => addBulkPeopleRow());
 document.getElementById("bulkPeopleStartBtn").addEventListener("click", startBulkPeopleAdd);
 document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
+document.getElementById("personSaveBtn").addEventListener("click", savePersonEdits);
+const syncPersonLinkedinLink = wireLinkField("editPersonLinkedin", "editPersonLinkedinOpen");
 
 // ---------- draggable quadrant dividers ----------
 
