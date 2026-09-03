@@ -956,10 +956,19 @@ async function runFindLinkedin(person, btnEl) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Search failed");
     if (data.linkedin_url) {
+      if (data.merged_into_person_id) {
+        // Same real person as an existing different record (found via the
+        // surname/first-name-swapped retry) - person.id no longer exists
+        // server-side, it was merged away. Reload rather than patch in place.
+        await refreshAfterPersonMerge(data.merged_into_person_id, person.id);
+        return;
+      }
+      if (data.renamed_to) person.full_name = data.renamed_to;
       person.linkedin_url = data.linkedin_url;
       if (data.title) person.title = data.title;
       const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
       if (membership) {
+        if (data.renamed_to) membership.people.full_name = data.renamed_to;
         membership.people.linkedin_url = data.linkedin_url;
         if (data.title) membership.title = data.title;
       }
@@ -977,6 +986,27 @@ async function runFindLinkedin(person, btnEl) {
     btnEl.disabled = false;
     btnEl.textContent = "Find";
     btnEl.title = err.message;
+  }
+}
+
+// After the backend merges oldId into an existing different person record
+// (survivingId) - the old id is gone, so patching it in place won't work.
+// Reload the people list from the server instead, and re-select the
+// surviving record if the merged-away one was the one currently selected.
+async function refreshAfterPersonMerge(survivingId, oldId) {
+  const wasSelected = selectedPersonId === oldId;
+  if (currentPeopleMode === "org" && selectedOrg) {
+    await selectOrg(selectedOrg.id);
+  } else {
+    await applyPeopleFilter();
+  }
+  if (wasSelected) {
+    const survivor = currentPeopleItems.find(p => p.id === survivingId);
+    if (survivor) {
+      selectedPersonId = survivor.id;
+      highlightSelected("peopleList", selectedPersonId);
+      showPersonDetail(survivor);
+    }
   }
 }
 

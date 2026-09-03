@@ -32,7 +32,10 @@
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
 //   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
-//   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company } (saved if found; title only filled if the membership's was blank)
+//   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company, renamed_to, merged_into_person_id }
+//     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
+//     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
+//     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
 //   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, sectors, hq_country } (saved if found; sectors/hq_country only filled if blank)
 //   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
 //   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
@@ -744,16 +747,14 @@ const FIND_ORG_LINKEDIN_SCHEMA = {
   additionalProperties: false,
 };
 
-// Google-style search for "linkedin <name>, <title>, <company>", then check
-// the resulting linkedin.com/in/ candidates one at a time (in the order the
-// search ranked them) and stop at the first one that's actually verifiable
-// as this person from what the search result says about them - rather than
-// returning the top hit unconditionally. Saves the URL, and - only where
-// blank, never overwriting - the title on their membership at
-// organizationId, straight from what the same verified result stated.
-async function findPersonLinkedin(
-  personId: string, name: string, title: string, company: string, organizationId: string,
-) {
+// Pure search+verify step, no DB writes - shared by the initial attempt and
+// the name-order-swapped retry below. Google-style search for "linkedin
+// <name>, <title>, <company>", then checks the resulting linkedin.com/in/
+// candidates one at a time (in the order the search ranked them) and stops
+// at the first one that's actually verifiable as this person from what the
+// search result says about them - rather than returning the top hit
+// unconditionally.
+async function searchPersonLinkedinCandidate(name: string, title: string, company: string) {
   const who = [name, title, company].filter(Boolean).join(", ");
   const prompt = `Search for: linkedin ${who}
 
@@ -768,16 +769,66 @@ If none of the candidates confidently match, return null for everything - never 
 ${NEVER_GUESS}`;
 
   const data = await openRouterCall(prompt, "find_person_linkedin", FIND_PERSON_LINKEDIN_SCHEMA);
-  const linkedinUrl = normalizeLinkedinUrl(data.linkedin_url);
-  if (!linkedinUrl) return { linkedin_url: null, title: null, observed_company: null };
+  return {
+    linkedin_url: normalizeLinkedinUrl(data.linkedin_url),
+    observed_title: data.observed_title || null,
+    observed_company: data.observed_company || null,
+  };
+}
 
-  await supabaseRequest("PATCH", "people", {
-    params: { id: `eq.${personId}` },
-    body: { linkedin_url: linkedinUrl },
-  });
+// Saves the URL, and - only where blank, never overwriting - the title on
+// their membership at organizationId, straight from what the same verified
+// result stated.
+//
+// Some source lists give names surname-first ("Doe John"). If the name as
+// given finds nothing, retries once with the word order reversed; if that
+// verifies a real match, the reversed order is treated as this person's
+// correct name. If that corrected name (or the LinkedIn URL itself) turns
+// out to already belong to a different person row - the same real person
+// recorded twice, e.g. once correctly elsewhere and once here misordered -
+// merges into that existing record via mergePersonInto instead of renaming
+// this one into a duplicate.
+async function findPersonLinkedin(
+  personId: string, name: string, title: string, company: string, organizationId: string,
+) {
+  let result = await searchPersonLinkedinCandidate(name, title, company);
+  let renamedTo: string | null = null;
+
+  if (!result.linkedin_url) {
+    const tokens = name.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length >= 2) {
+      const swapped = [...tokens].reverse().join(" ");
+      const swappedResult = await searchPersonLinkedinCandidate(swapped, title, company);
+      if (swappedResult.linkedin_url) {
+        result = swappedResult;
+        renamedTo = swapped;
+      }
+    }
+  }
+
+  if (!result.linkedin_url) {
+    return { linkedin_url: null, title: null, observed_company: null, renamed_to: null, merged_into_person_id: null };
+  }
+  const linkedinUrl = result.linkedin_url;
+
+  if (renamedTo) {
+    const candidates = await findPeopleByNameOrLinkedin(renamedTo, linkedinUrl);
+    const other = candidates.find((c: any) => c.id !== personId);
+    if (other) {
+      await mergePersonInto(personId, other.id, organizationId, linkedinUrl, result.observed_title || title || null);
+      return {
+        linkedin_url: linkedinUrl, title: result.observed_title || null, observed_company: result.observed_company,
+        renamed_to: renamedTo, merged_into_person_id: other.id,
+      };
+    }
+  }
+
+  const patchBody: Record<string, any> = { linkedin_url: linkedinUrl };
+  if (renamedTo) patchBody.full_name = renamedTo;
+  await supabaseRequest("PATCH", "people", { params: { id: `eq.${personId}` }, body: patchBody });
 
   let updatedTitle: string | null = null;
-  if (data.observed_title && organizationId) {
+  if (result.observed_title && organizationId) {
     const memberships = await supabaseRequest("GET", "memberships", {
       params: { person_id: `eq.${personId}`, organization_id: `eq.${organizationId}`, select: "id,title" },
     });
@@ -785,13 +836,59 @@ ${NEVER_GUESS}`;
     if (membership && !membership.title) {
       const patched = await supabaseRequest("PATCH", "memberships", {
         params: { id: `eq.${membership.id}` },
-        body: { title: data.observed_title },
+        body: { title: result.observed_title },
         prefer: "return=representation",
       });
       updatedTitle = patched[0].title;
     }
   }
-  return { linkedin_url: linkedinUrl, title: updatedTitle, observed_company: data.observed_company || null };
+  return {
+    linkedin_url: linkedinUrl, title: updatedTitle, observed_company: result.observed_company || null,
+    renamed_to: renamedTo, merged_into_person_id: null,
+  };
+}
+
+// personId turned out to be the same real person as targetId (discovered via
+// the name-swap retry above matching an existing different row). Carries the
+// membership at organizationId over to targetId - same job-change semantics
+// as saveOrganization (closes out targetId's other current membership(s) if
+// it doesn't already have one here), backfills targetId's LinkedIn URL and
+// that membership's title only where blank, then deletes personId - which
+// cascades away its own now-redundant membership row(s).
+async function mergePersonInto(
+  sourceId: string, targetId: string, organizationId: string, linkedinUrl: string, bestTitle: string | null,
+) {
+  const targetRows = await supabaseRequest("GET", "people", { params: { id: `eq.${targetId}`, select: "linkedin_url" } });
+  if (!targetRows?.[0]?.linkedin_url) {
+    await supabaseRequest("PATCH", "people", { params: { id: `eq.${targetId}` }, body: { linkedin_url: linkedinUrl } });
+  }
+
+  if (organizationId) {
+    const targetMemberships = await supabaseRequest("GET", "memberships", {
+      params: { person_id: `eq.${targetId}`, organization_id: `eq.${organizationId}`, select: "id,title,is_current" },
+    });
+    const existing = targetMemberships?.[0];
+    if (existing) {
+      const patch: Record<string, any> = {};
+      if (!existing.title && bestTitle) patch.title = bestTitle;
+      if (!existing.is_current) patch.is_current = true;
+      if (Object.keys(patch).length) {
+        await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${existing.id}` }, body: patch });
+      }
+    } else {
+      const otherCurrent = await supabaseRequest("GET", "memberships", {
+        params: { person_id: `eq.${targetId}`, is_current: "eq.true", select: "id" },
+      });
+      for (const m of otherCurrent ?? []) {
+        await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${m.id}` }, body: { is_current: false } });
+      }
+      await supabaseRequest("POST", "memberships", {
+        body: { person_id: targetId, organization_id: organizationId, title: bestTitle, is_current: true },
+      });
+    }
+  }
+
+  await supabaseRequest("DELETE", "people", { params: { id: `eq.${sourceId}` } });
 }
 
 // Same idea as findPersonLinkedin, but for a company's LinkedIn page. Fills
