@@ -451,8 +451,11 @@
         </div>
         <div class="scroll-box">
           <div id="personBodyView">
-            <div style="margin-top:14px;">
+            <div id="detPersonLinkedinProfile"></div>
+            <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
               <button class="secondary tiny" id="personEditBtn">Edit</button>
+              <button class="secondary tiny" id="personApifyBtn" style="display:none">Fetch LinkedIn profile</button>
+              <span class="status-line" id="personApifyStatus"></span>
             </div>
           </div>
           <div id="personBodyEdit" style="display:none">
@@ -1091,17 +1094,15 @@ let peopleSort = { field: "full_name", dir: "asc" };
 let currentPeopleMode = "empty";
 let currentPeopleItems = [];  // normalized: {id, full_name, country, title, focus, linkedin_url, organization}
 
+// Spreads the underlying person row (org mode: entry.people, already
+// including the li_* LinkedIn-profile fields since the backend now selects
+// people(*) for this; global mode: entry itself, same reason) so every
+// person field - present or future - carries through, then layers the
+// membership-derived fields (title/focus/membership_id) on top.
 function normalizePeopleItems(items, mode) {
   return (items || []).map(entry => mode === "org"
-    ? {
-        id: entry.people.id, full_name: entry.people.full_name, linkedin_url: entry.people.linkedin_url,
-        country: entry.people.country, title: entry.title, focus: entry.focus, membership_id: entry.id, organization: null,
-      }
-    : {
-        id: entry.id, full_name: entry.full_name, linkedin_url: entry.linkedin_url,
-        country: entry.country, title: entry.title, focus: entry.focus || null,
-        membership_id: entry.membership_id || null, organization: entry.organization || null,
-      });
+    ? { ...entry.people, title: entry.title, focus: entry.focus, membership_id: entry.id, organization: null }
+    : { ...entry, membership_id: entry.membership_id || null, organization: entry.organization || null });
 }
 
 function renderPeopleList(items, mode) {
@@ -1249,9 +1250,67 @@ function showPersonDetail(person) {
   document.getElementById("detPersonName").textContent = person.full_name;
   document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
   document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
+  document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
+  document.getElementById("personApifyBtn").style.display = person.linkedin_url ? "inline-block" : "none";
+  document.getElementById("personApifyStatus").textContent = "";
+  document.getElementById("personApifyStatus").className = "status-line";
   document.getElementById("personNewsList").innerHTML = "";
   loadPersonNews(person);
   exitPersonEditMode();
+}
+
+// Renders the subset of the Apify-fetched LinkedIn profile (see
+// fetchApifyProfile) worth showing inline: headline/current company/network
+// size, about, top skills, then experience and education as short lists.
+// Certifications/languages/projects/publications/recommendations are stored
+// (li_* columns) but not rendered here - not worth the space in this pane
+// for how often they'd actually get read.
+function linkedinProfileHtml(person) {
+  const parts = [];
+  if (person.li_headline) parts.push(`<div class="entity-desc">${person.li_headline}</div>`);
+  const meta = [];
+  if (person.li_current_position) meta.push(`Currently at ${person.li_current_position}`);
+  if (typeof person.li_connections_count === "number") meta.push(`${person.li_connections_count} connections`);
+  if (typeof person.li_follower_count === "number") meta.push(`${person.li_follower_count} followers`);
+  if (person.li_open_to_work) meta.push("Open to work");
+  if (meta.length) parts.push(`<div class="li-meta">${meta.join(" · ")}</div>`);
+  if (person.li_about) parts.push(`<div class="entity-desc">${person.li_about}</div>`);
+  if (person.li_top_skills) parts.push(`<div class="entity-desc"><strong>Top skills:</strong> ${person.li_top_skills}</div>`);
+  if (person.li_experience && person.li_experience.length) {
+    parts.push(`<div style="margin-top:10px;"><strong style="font-size:12.5px;">Experience</strong>` +
+      person.li_experience.map(e => `<div class="li-meta">${[e.position, e.companyName].filter(Boolean).join(" — ")}${e.duration ? ` (${e.duration})` : ""}</div>`).join("") +
+      `</div>`);
+  }
+  if (person.li_education && person.li_education.length) {
+    parts.push(`<div style="margin-top:10px;"><strong style="font-size:12.5px;">Education</strong>` +
+      person.li_education.map(e => `<div class="li-meta">${[e.title, e.degree].filter(Boolean).join(" — ")}${e.period ? ` (${e.period})` : ""}</div>`).join("") +
+      `</div>`);
+  }
+  return parts.join("");
+}
+
+async function fetchApifyProfile() {
+  const person = selectedPersonObj;
+  if (!person || !person.linkedin_url) return;
+  const btn = document.getElementById("personApifyBtn");
+  const status = document.getElementById("personApifyStatus");
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Fetching LinkedIn profile…";
+  try {
+    const res = await apiWithRetry(`/people/${person.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Fetch failed");
+    Object.assign(person, data);
+    const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
+    if (inOrgList) Object.assign(inOrgList.people, data);
+    const inCurrentList = currentPeopleItems.find(p => p.id === person.id);
+    if (inCurrentList && inCurrentList !== person) Object.assign(inCurrentList, data);
+    showPersonDetail(person);
+    status.textContent = "Updated.";
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function populatePersonEditForm(person) {
@@ -1658,6 +1717,7 @@ document.getElementById("bulkPeopleStartBtn").addEventListener("click", startBul
 document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
 document.getElementById("personEditBtn").addEventListener("click", enterPersonEditMode);
 document.getElementById("personCancelBtn").addEventListener("click", exitPersonEditMode);
+document.getElementById("personApifyBtn").addEventListener("click", fetchApifyProfile);
 document.getElementById("personSaveBtn").addEventListener("click", savePersonEdits);
 const syncPersonLinkedinLink = wireLinkField("editPersonLinkedin", "editPersonLinkedinOpen");
 

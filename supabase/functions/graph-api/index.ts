@@ -39,6 +39,9 @@
 //   POST   /people/:id/enrich-from-linkedin  { linkedin_url, name?, organization_id? } -> { country, title, observed_company }
 //     (for a hand-entered LinkedIn URL, not one found via search - looks up what else that profile says and
 //     fills in country/title, only where currently blank; organization_id needed to know which membership's title to fill)
+//   POST   /people/:id/enrich-from-apify  {} -> updated person (full row, including the li_* fields below)
+//     (requires the person to already have a linkedin_url; runs the harvestapi LinkedIn Profile Scraper Apify actor
+//     against it and overwrites all li_* fields with the fresh result - country is filled only if currently blank)
 //   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company, renamed_to, merged_into_person_id }
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
@@ -55,6 +58,7 @@ const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
 const APOLLO_API_KEY = Deno.env.get("APOLLO_API_KEY");
+const APIFY_API_TOKEN = Deno.env.get("APIFY_API_TOKEN");
 const ALLOWED_EMAIL = Deno.env.get("ALLOWED_EMAIL");
 
 const OPENROUTER_MODEL = "openai/gpt-5-nano";
@@ -386,7 +390,7 @@ async function getOrganization(id: string) {
   org.people = await supabaseRequest("GET", "memberships", {
     params: {
       organization_id: `eq.${id}`,
-      select: "id,title,focus,is_current,people(id,full_name,linkedin_url,country)",
+      select: "id,title,focus,is_current,people(*)",
     },
   });
   return org;
@@ -518,6 +522,91 @@ async function backfillFromApollo(org: Record<string, any>) {
     const loc = formatLocation(apolloOrg.city, apolloOrg.state, apolloOrg.country);
     if (loc) org.hq_country = loc;
   }
+}
+
+// ---------- Apify (LinkedIn Profile Scraper actor, https://console.apify.com/actors/LpVuK3Zozwuipa5bp) ----------
+
+const APIFY_LINKEDIN_PROFILE_ACTOR = "LpVuK3Zozwuipa5bp";
+
+// Runs the actor synchronously and returns its one dataset item's "element"
+// (the actual profile - the actor also returns query/status/requestId
+// alongside it, which we don't need). Actor input just wants one of
+// url/publicIdentifier/profileId; we always have the URL. Returns null if
+// the actor found nothing for this URL (rather than throwing) so the caller
+// can distinguish "ran fine, no profile" from a real request failure.
+async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record<string, any> | null> {
+  if (!APIFY_API_TOKEN) throw new HttpError(503, "APIFY_API_TOKEN is not configured.");
+  const res = await fetchWithTimeout(
+    `https://api.apify.com/v2/acts/${APIFY_LINKEDIN_PROFILE_ACTOR}/run-sync-get-dataset-items?token=${APIFY_API_TOKEN}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: linkedinUrl }),
+    },
+    60000,
+  );
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 500);
+    throw new Error(`Apify request failed (${res.status}): ${detail}`);
+  }
+  const items = await res.json();
+  const item = Array.isArray(items) ? items[0] : null;
+  return item?.element ?? null;
+}
+
+// Maps the actor's profile shape onto our li_* columns. Nested sections
+// (experience, education, ...) are kept as-is rather than reshaped - they're
+// stored as jsonb and there's no need to normalize them for how they're used.
+function mapApifyProfileToLiFields(profile: Record<string, any>): Record<string, any> {
+  return {
+    li_headline: profile.headline || null,
+    li_about: profile.about || null,
+    li_photo_url: profile.photo || null,
+    li_location_text: profile.location?.linkedinText || null,
+    li_top_skills: profile.topSkills || null,
+    li_connections_count: typeof profile.connectionsCount === "number" ? profile.connectionsCount : null,
+    li_follower_count: typeof profile.followerCount === "number" ? profile.followerCount : null,
+    li_open_to_work: typeof profile.openToWork === "boolean" ? profile.openToWork : null,
+    li_hiring: typeof profile.hiring === "boolean" ? profile.hiring : null,
+    li_verified: typeof profile.verified === "boolean" ? profile.verified : null,
+    li_registered_at: profile.registeredAt || null,
+    li_current_position: profile.currentPosition?.[0]?.companyName || null,
+    li_experience: profile.experience || [],
+    li_education: profile.education || [],
+    li_certifications: profile.certifications || [],
+    li_skills: profile.skills || [],
+    li_languages: profile.languages || [],
+    li_projects: profile.projects || [],
+    li_publications: profile.publications || [],
+    li_recommendations: profile.receivedRecommendations || [],
+    li_profile_fetched_at: new Date().toISOString(),
+  };
+}
+
+// Unlike the merge-only-blanks fields elsewhere, li_* fields are always
+// overwritten with the fresh result - they only ever come from this one
+// source, so there's nothing more-trusted to protect by not overwriting.
+// country is the exception: it's a general field other flows also fill, so
+// it keeps the usual only-if-blank treatment.
+async function enrichPersonFromApify(personId: string) {
+  const rows = await supabaseRequest("GET", "people", { params: { id: `eq.${personId}`, select: "linkedin_url,country" } });
+  const person = rows?.[0];
+  if (!person) throw new HttpError(404, "person not found");
+  if (!person.linkedin_url) throw new HttpError(400, "This person has no LinkedIn URL yet.");
+
+  const profile = await fetchLinkedinProfileViaApify(person.linkedin_url);
+  if (!profile) throw new HttpError(502, "Apify found no profile data for this LinkedIn URL.");
+
+  const fields = mapApifyProfileToLiFields(profile);
+  const countryFromProfile = profile.location?.parsed?.country;
+  if (!person.country && countryFromProfile) fields.country = countryFromProfile;
+
+  const updated = (await supabaseRequest("PATCH", "people", {
+    params: { id: `eq.${personId}` },
+    body: fields,
+    prefer: "return=representation",
+  }))[0];
+  return updated;
 }
 
 // Research doesn't always surface where a firm invests (as opposed to where
@@ -1184,6 +1273,11 @@ Deno.serve(async (req) => {
       return json(await enrichPersonFromLinkedinUrl(
         personEnrichMatch[1], linkedinUrl, (body.name ?? "").trim(), (body.organization_id ?? "").trim(),
       ));
+    }
+
+    const personApifyMatch = path.match(/^\/people\/([^/]+)\/enrich-from-apify$/);
+    if (personApifyMatch && req.method === "POST") {
+      return json(await enrichPersonFromApify(personApifyMatch[1]));
     }
 
     const membershipIdMatch = path.match(/^\/memberships\/([^/]+)$/);
