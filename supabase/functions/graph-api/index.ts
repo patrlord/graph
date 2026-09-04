@@ -563,16 +563,24 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
   }
   if (!run.defaultDatasetId) throw new Error(`Apify run succeeded but has no dataset (run ${run.id})`);
 
-  const itemsRes = await fetchWithTimeout(
-    `https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?token=${APIFY_API_TOKEN}&format=json`, {}, 15000,
-  );
-  if (!itemsRes.ok) {
-    const detail = (await itemsRes.text()).slice(0, 500);
-    throw new Error(`Apify dataset fetch failed (${itemsRes.status}): ${detail}`);
+  // The run object flipping to SUCCEEDED doesn't guarantee the dataset write
+  // it just made is visible to a read a moment later - retry the items fetch
+  // a couple times on an empty result before concluding it's genuinely empty,
+  // rather than reporting that on what might just be a read-after-write race.
+  let item: any = null;
+  for (let attempt = 0; attempt < 3 && !item; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1500));
+    const itemsRes = await fetchWithTimeout(
+      `https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?token=${APIFY_API_TOKEN}&format=json`, {}, 15000,
+    );
+    if (!itemsRes.ok) {
+      const detail = (await itemsRes.text()).slice(0, 500);
+      throw new Error(`Apify dataset fetch failed (${itemsRes.status}): ${detail}`);
+    }
+    const items = await itemsRes.json();
+    item = Array.isArray(items) ? items[0] : null;
   }
-  const items = await itemsRes.json();
-  const item = Array.isArray(items) ? items[0] : null;
-  if (!item) return null;  // run succeeded but genuinely pushed nothing
+  if (!item) throw new Error(`Apify run ${run.id} succeeded but its dataset (${run.defaultDatasetId}) had no items after retrying`);
   if (!item.element) {
     // The actor's own code (see console.apify.com/actors/LpVuK3Zozwuipa5bp source)
     // pushes harvest-api's error payload as-is - no "element" key - when the
