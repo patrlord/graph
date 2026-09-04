@@ -536,10 +536,23 @@ const APIFY_LINKEDIN_PROFILE_ACTOR = "LpVuK3Zozwuipa5bp";
 async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record<string, any> | null> {
   if (!APIFY_API_TOKEN) throw new HttpError(503, "APIFY_API_TOKEN is not configured.");
 
+  // This does a start + several polls + a dataset read (with its own
+  // retries) - each phase previously had its own generous independent
+  // timeout, and those stacked up past Supabase's 150s per-request kill
+  // switch (the wall-clock limit documented on openRouterCall above; the
+  // same platform ceiling, hit here for the first time by a multi-phase
+  // call instead of a slow single one). One shared 90s budget for the whole
+  // function keeps every phase's timeout bounded by what's actually left,
+  // so the total can't blow the platform limit - and it fails with a clear
+  // timeout error well before that limit would kill it uncleanly.
+  const overallDeadline = Date.now() + 90000;
+  const remaining = () => overallDeadline - Date.now();
+  const phaseTimeout = (capMs: number) => Math.max(1000, Math.min(capMs, remaining()));
+
   const startRes = await fetchWithTimeout(
     `https://api.apify.com/v2/acts/${APIFY_LINKEDIN_PROFILE_ACTOR}/runs?token=${APIFY_API_TOKEN}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: linkedinUrl }) },
-    20000,
+    phaseTimeout(15000),
   );
   if (!startRes.ok) {
     const detail = (await startRes.text()).slice(0, 500);
@@ -548,12 +561,9 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
   let run = (await startRes.json())?.data;
   if (!run?.id) throw new Error(`Apify run start returned no run id: ${JSON.stringify(run).slice(0, 300)}`);
 
-  // The actor's README claims results in seconds; give it up to ~40s of
-  // polling before giving up rather than trusting that claim blindly.
-  const deadline = Date.now() + 40000;
-  while ((run.status === "READY" || run.status === "RUNNING") && Date.now() < deadline) {
+  while ((run.status === "READY" || run.status === "RUNNING") && remaining() > 5000) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    const pollRes = await fetchWithTimeout(`https://api.apify.com/v2/actor-runs/${run.id}?token=${APIFY_API_TOKEN}`, {}, 15000);
+    const pollRes = await fetchWithTimeout(`https://api.apify.com/v2/actor-runs/${run.id}?token=${APIFY_API_TOKEN}`, {}, phaseTimeout(10000));
     if (!pollRes.ok) break;  // keep the last known run state rather than erroring on a transient poll failure
     run = (await pollRes.json())?.data ?? run;
   }
@@ -565,13 +575,12 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
 
   // The run object flipping to SUCCEEDED doesn't guarantee the dataset write
   // it just made is visible to a read a moment later - retry the items fetch
-  // a couple times on an empty result before concluding it's genuinely empty,
-  // rather than reporting that on what might just be a read-after-write race.
+  // on an empty result before concluding it's genuinely empty, rather than
+  // reporting that on what might just be a read-after-write race.
   let item: any = null;
-  for (let attempt = 0; attempt < 3 && !item; attempt++) {
-    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1500));
+  while (!item && remaining() > 2000) {
     const itemsRes = await fetchWithTimeout(
-      `https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?token=${APIFY_API_TOKEN}&format=json`, {}, 15000,
+      `https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?token=${APIFY_API_TOKEN}&format=json`, {}, phaseTimeout(10000),
     );
     if (!itemsRes.ok) {
       const detail = (await itemsRes.text()).slice(0, 500);
@@ -579,6 +588,7 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
     }
     const items = await itemsRes.json();
     item = Array.isArray(items) ? items[0] : null;
+    if (!item && remaining() > 2000) await new Promise((resolve) => setTimeout(resolve, 1500));
   }
   if (!item) throw new Error(`Apify run ${run.id} succeeded but its dataset (${run.defaultDatasetId}) had no items after retrying`);
   if (!item.element) {

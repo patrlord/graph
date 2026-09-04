@@ -1296,7 +1296,7 @@ async function fetchApifyProfile() {
   const status = document.getElementById("personApifyStatus");
   btn.disabled = true; status.className = "status-line"; status.textContent = "Fetching LinkedIn profile…";
   try {
-    const res = await apiWithRetry(`/people/${person.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
+    const res = await api(`/people/${person.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Fetch failed");
     Object.assign(person, data);
