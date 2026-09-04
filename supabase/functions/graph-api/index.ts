@@ -528,30 +528,51 @@ async function backfillFromApollo(org: Record<string, any>) {
 
 const APIFY_LINKEDIN_PROFILE_ACTOR = "LpVuK3Zozwuipa5bp";
 
-// Runs the actor synchronously and returns its one dataset item's "element"
-// (the actual profile - the actor also returns query/status/requestId
-// alongside it, which we don't need). Actor input just wants one of
-// url/publicIdentifier/profileId; we always have the URL. Returns null if
-// the actor found nothing for this URL (rather than throwing) so the caller
-// can distinguish "ran fine, no profile" from a real request failure.
+// Starts the run and polls it directly (rather than the run-sync-get-
+// dataset-items shortcut) specifically so a failed/aborted/timed-out run
+// surfaces its real status and statusMessage - the shortcut endpoint can
+// return "200 OK, zero items" for a run that didn't actually succeed,
+// with nothing in the response to say why.
 async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record<string, any> | null> {
   if (!APIFY_API_TOKEN) throw new HttpError(503, "APIFY_API_TOKEN is not configured.");
-  const res = await fetchWithTimeout(
-    `https://api.apify.com/v2/acts/${APIFY_LINKEDIN_PROFILE_ACTOR}/run-sync-get-dataset-items?token=${APIFY_API_TOKEN}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: linkedinUrl }),
-    },
-    60000,
+
+  const startRes = await fetchWithTimeout(
+    `https://api.apify.com/v2/acts/${APIFY_LINKEDIN_PROFILE_ACTOR}/runs?token=${APIFY_API_TOKEN}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: linkedinUrl }) },
+    20000,
   );
-  if (!res.ok) {
-    const detail = (await res.text()).slice(0, 500);
-    throw new Error(`Apify request failed (${res.status}): ${detail}`);
+  if (!startRes.ok) {
+    const detail = (await startRes.text()).slice(0, 500);
+    throw new Error(`Apify run start failed (${startRes.status}): ${detail}`);
   }
-  const items = await res.json();
+  let run = (await startRes.json())?.data;
+  if (!run?.id) throw new Error(`Apify run start returned no run id: ${JSON.stringify(run).slice(0, 300)}`);
+
+  // The actor's README claims results in seconds; give it up to ~40s of
+  // polling before giving up rather than trusting that claim blindly.
+  const deadline = Date.now() + 40000;
+  while ((run.status === "READY" || run.status === "RUNNING") && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const pollRes = await fetchWithTimeout(`https://api.apify.com/v2/actor-runs/${run.id}?token=${APIFY_API_TOKEN}`, {}, 15000);
+    if (!pollRes.ok) break;  // keep the last known run state rather than erroring on a transient poll failure
+    run = (await pollRes.json())?.data ?? run;
+  }
+
+  if (run.status !== "SUCCEEDED") {
+    throw new Error(`Apify run ended with status ${run.status}${run.statusMessage ? `: ${run.statusMessage}` : ""} (run ${run.id})`);
+  }
+  if (!run.defaultDatasetId) throw new Error(`Apify run succeeded but has no dataset (run ${run.id})`);
+
+  const itemsRes = await fetchWithTimeout(
+    `https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?token=${APIFY_API_TOKEN}&format=json`, {}, 15000,
+  );
+  if (!itemsRes.ok) {
+    const detail = (await itemsRes.text()).slice(0, 500);
+    throw new Error(`Apify dataset fetch failed (${itemsRes.status}): ${detail}`);
+  }
+  const items = await itemsRes.json();
   const item = Array.isArray(items) ? items[0] : null;
-  if (!item) return null;  // genuinely empty dataset - actor ran, found nothing at all
+  if (!item) return null;  // run succeeded but genuinely pushed nothing
   if (!item.element) {
     // The actor's own code (see console.apify.com/actors/LpVuK3Zozwuipa5bp source)
     // pushes harvest-api's error payload as-is - no "element" key - when the
