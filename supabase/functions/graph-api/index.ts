@@ -549,9 +549,19 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
   const remaining = () => overallDeadline - Date.now();
   const phaseTimeout = (capMs: number) => Math.max(1000, Math.min(capMs, remaining()));
 
+  // The actor's input schema (confirmed against its current Console UI form -
+  // the .actor/input_schema.json fetched from its source at integration time
+  // showed a flat {url|publicIdentifier|profileId} shape, but the actor has
+  // since been rebuilt to take a batch-oriented {profileScraperMode, queries[]}
+  // shape instead, which is why every API-triggered run "succeeded" while
+  // silently processing zero queries).
   const startRes = await fetchWithTimeout(
     `https://api.apify.com/v2/acts/${APIFY_LINKEDIN_PROFILE_ACTOR}/runs?token=${APIFY_API_TOKEN}`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: linkedinUrl }) },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profileScraperMode: "Profile details no email ($4 per 1k)", queries: [linkedinUrl] }),
+    },
     phaseTimeout(15000),
   );
   if (!startRes.ok) {
@@ -611,15 +621,15 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
       `Apify run ${run.id} succeeded but its dataset (${run.defaultDatasetId}) had no items after retrying. Recorded input: ${recordedInput}`,
     );
   }
-  if (!item.element) {
-    // The actor's own code (see console.apify.com/actors/LpVuK3Zozwuipa5bp source)
-    // pushes harvest-api's error payload as-is - no "element" key - when the
-    // underlying lookup itself failed, instead of the usual {element, query,
-    // status} shape. Surface whatever it says rather than reporting a plain
-    // "no data" that hides the real reason.
-    throw new Error(`Apify/harvest-api returned no profile: ${JSON.stringify(item).slice(0, 400)}`);
+  // The dataset item shape at integration time was {element: {...profile},
+  // query, status, ...}, but the actor's rewrite to the batch queries[] input
+  // (see above) may have changed this too - fall back to treating the item
+  // itself as the profile if it looks like one (has fields a profile would).
+  const profile = item.element ?? ((item.linkedinUrl || item.publicIdentifier) ? item : null);
+  if (!profile) {
+    throw new Error(`Apify returned an item with no recognizable profile shape: ${JSON.stringify(item).slice(0, 400)}`);
   }
-  return item.element;
+  return profile;
 }
 
 // Maps the actor's profile shape onto our li_* columns. Nested sections
