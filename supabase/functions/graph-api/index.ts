@@ -551,7 +551,16 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
   }
   const items = await res.json();
   const item = Array.isArray(items) ? items[0] : null;
-  return item?.element ?? null;
+  if (!item) return null;  // genuinely empty dataset - actor ran, found nothing at all
+  if (!item.element) {
+    // The actor's own code (see console.apify.com/actors/LpVuK3Zozwuipa5bp source)
+    // pushes harvest-api's error payload as-is - no "element" key - when the
+    // underlying lookup itself failed, instead of the usual {element, query,
+    // status} shape. Surface whatever it says rather than reporting a plain
+    // "no data" that hides the real reason.
+    throw new Error(`Apify/harvest-api returned no profile: ${JSON.stringify(item).slice(0, 400)}`);
+  }
+  return item.element;
 }
 
 // Maps the actor's profile shape onto our li_* columns. Nested sections
