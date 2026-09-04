@@ -532,14 +532,17 @@ function applyInvestmentRegionFallback(org: Record<string, any>) {
 
 // ---------- OpenRouter ----------
 
-// Single bounded attempt, deliberately no internal retry: Supabase enforces
-// a 150s wall-clock limit per request (both plans) and this call already
-// competes with Apollo backfill + several Supabase writes for that budget -
-// retrying in-process risks blowing past it and getting killed mid-response
-// (a raw platform timeout, not our clean JSON error - which is worse, not
-// better). Retries belong at the caller, as a fresh request with its own
-// fresh 150s budget - see apiWithRetry on the frontend.
-async function openRouterCall(userContent: string, schemaName: string, jsonSchema: any): Promise<any> {
+// Single bounded attempt, deliberately no internal retry by default: Supabase
+// enforces a 150s wall-clock limit per request (both plans) and this call
+// already competes with Apollo backfill + several Supabase writes for that
+// budget - retrying in-process risks blowing past it and getting killed
+// mid-response (a raw platform timeout, not our clean JSON error - which is
+// worse, not better). Retries belong at the caller, as a fresh request with
+// its own fresh 150s budget - see apiWithRetry on the frontend.
+// The one exception is findPersonLinkedin's own name-order-swap retry, which
+// passes a shorter timeoutMs specifically so two sequential calls still fit
+// safely inside the 150s budget - see there for why that one case is worth it.
+async function openRouterCall(userContent: string, schemaName: string, jsonSchema: any, timeoutMs = 45000): Promise<any> {
   if (!OPENROUTER_API_KEY) throw new HttpError(503, "OPENROUTER_API_KEY is not configured.");
 
   let res: Response;
@@ -558,7 +561,7 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
         plugins: [{ id: "web", engine: "exa", max_results: 10 }],
         response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
       }),
-    }, 45000);
+    }, timeoutMs);
   } catch (err) {
     throw new Error(`OpenRouter request timed out or failed (network error): ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -787,7 +790,7 @@ const FIND_ORG_LINKEDIN_SCHEMA = {
 // at the first one that's actually verifiable as this person from what the
 // search result says about them - rather than returning the top hit
 // unconditionally.
-async function searchPersonLinkedinCandidate(name: string, title: string, company: string) {
+async function searchPersonLinkedinCandidate(name: string, title: string, company: string, timeoutMs: number) {
   const who = [name, title, company].filter(Boolean).join(", ");
   const prompt = `Search for: linkedin ${who}
 
@@ -801,7 +804,7 @@ If none of the candidates confidently match, return null for everything - never 
 
 ${NEVER_GUESS}`;
 
-  const data = await openRouterCall(prompt, "find_person_linkedin", FIND_PERSON_LINKEDIN_SCHEMA);
+  const data = await openRouterCall(prompt, "find_person_linkedin", FIND_PERSON_LINKEDIN_SCHEMA, timeoutMs);
   return {
     linkedin_url: normalizeLinkedinUrl(data.linkedin_url),
     observed_title: data.observed_title || null,
@@ -821,20 +824,37 @@ ${NEVER_GUESS}`;
 // recorded twice, e.g. once correctly elsewhere and once here misordered -
 // merges into that existing record via mergePersonInto instead of renaming
 // this one into a duplicate.
+//
+// This is the one place that makes two sequential OpenRouter calls (see the
+// comment on openRouterCall), so each gets a shorter 25s timeout rather than
+// the usual 45s default - worst case both attempts run the full duration,
+// ~50s total, comfortably inside the 150s platform limit. Either attempt
+// timing out or otherwise erroring is treated as "found nothing" rather than
+// left to propagate - a slow miss should end as "Not found", not a crash.
 async function findPersonLinkedin(
   personId: string, name: string, title: string, company: string, organizationId: string,
 ) {
-  let result = await searchPersonLinkedinCandidate(name, title, company);
+  const PERSON_SEARCH_TIMEOUT_MS = 25000;
+  let result;
+  try {
+    result = await searchPersonLinkedinCandidate(name, title, company, PERSON_SEARCH_TIMEOUT_MS);
+  } catch {
+    result = { linkedin_url: null, observed_title: null, observed_company: null };
+  }
   let renamedTo: string | null = null;
 
   if (!result.linkedin_url) {
     const tokens = name.trim().split(/\s+/).filter(Boolean);
     if (tokens.length >= 2) {
       const swapped = [...tokens].reverse().join(" ");
-      const swappedResult = await searchPersonLinkedinCandidate(swapped, title, company);
-      if (swappedResult.linkedin_url) {
-        result = swappedResult;
-        renamedTo = swapped;
+      try {
+        const swappedResult = await searchPersonLinkedinCandidate(swapped, title, company, PERSON_SEARCH_TIMEOUT_MS);
+        if (swappedResult.linkedin_url) {
+          result = swappedResult;
+          renamedTo = swapped;
+        }
+      } catch {
+        // best-effort retry - if it also fails, fall through to "not found" below
       }
     }
   }
