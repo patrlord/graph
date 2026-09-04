@@ -590,7 +590,27 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
     item = Array.isArray(items) ? items[0] : null;
     if (!item && remaining() > 2000) await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  if (!item) throw new Error(`Apify run ${run.id} succeeded but its dataset (${run.defaultDatasetId}) had no items after retrying`);
+  if (!item) {
+    // A run this consistently produces zero items (confirmed reproducible,
+    // not a one-off) points at the input the actor actually received, not
+    // at timing - fetch it directly instead of asking to go check the Apify
+    // console by hand.
+    let recordedInput = "(couldn't fetch)";
+    try {
+      if (run.defaultKeyValueStoreId) {
+        const inputRes = await fetchWithTimeout(
+          `https://api.apify.com/v2/key-value-stores/${run.defaultKeyValueStoreId}/records/INPUT?token=${APIFY_API_TOKEN}`,
+          {}, phaseTimeout(8000),
+        );
+        if (inputRes.ok) recordedInput = (await inputRes.text()).slice(0, 300);
+      }
+    } catch {
+      // best-effort diagnostic only - don't let it mask the real error below
+    }
+    throw new Error(
+      `Apify run ${run.id} succeeded but its dataset (${run.defaultDatasetId}) had no items after retrying. Recorded input: ${recordedInput}`,
+    );
+  }
   if (!item.element) {
     // The actor's own code (see console.apify.com/actors/LpVuK3Zozwuipa5bp source)
     // pushes harvest-api's error payload as-is - no "element" key - when the
