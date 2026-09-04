@@ -558,7 +558,7 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
       body: JSON.stringify({
         model: OPENROUTER_MODEL,
         messages: [{ role: "user", content: userContent }],
-        plugins: [{ id: "web", engine: "exa", max_results: 10 }],
+        plugins: [{ id: "web", engine: "native", max_results: 10 }],
         response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
       }),
     }, timeoutMs);
