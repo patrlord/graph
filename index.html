@@ -1290,6 +1290,8 @@ async function savePersonEdits() {
   const status = document.getElementById("personSaveStatus");
   const fullName = document.getElementById("editPersonName").value.trim();
   if (!fullName) { status.className = "status-line error"; status.textContent = "Name cannot be blank."; return; }
+  const previousLinkedin = person.linkedin_url || "";
+  const newLinkedin = document.getElementById("editPersonLinkedin").value.trim();
   btn.disabled = true; status.className = "status-line"; status.textContent = "Saving…";
   try {
     const personRes = await api(`/people/${person.id}`, {
@@ -1297,7 +1299,7 @@ async function savePersonEdits() {
       body: JSON.stringify({
         full_name: fullName,
         country: document.getElementById("editPersonCountry").value.trim(),
-        linkedin_url: document.getElementById("editPersonLinkedin").value.trim(),
+        linkedin_url: newLinkedin,
       }),
     });
     const personData = await personRes.json();
@@ -1315,6 +1317,29 @@ async function savePersonEdits() {
       if (!membershipRes.ok) throw new Error(membershipData.error || "Save failed");
       person.title = membershipData.title;
       person.focus = membershipData.focus;
+    }
+
+    // A newly added or changed LinkedIn URL is a lead worth following: look
+    // up what else that profile says and fill in country/title where blank.
+    // Best-effort - the save above already succeeded, so a failure here
+    // shouldn't read as the save having failed.
+    if (person.linkedin_url && person.linkedin_url !== previousLinkedin) {
+      status.textContent = "Saved — checking that LinkedIn profile for more…";
+      try {
+        const enrichRes = await api(`/people/${person.id}/enrich-from-linkedin`, {
+          method: "POST",
+          body: JSON.stringify({
+            linkedin_url: person.linkedin_url, name: person.full_name, organization_id: personOrgId(person) || "",
+          }),
+        });
+        const enrichData = await enrichRes.json();
+        if (enrichRes.ok) {
+          if (enrichData.country) person.country = enrichData.country;
+          if (enrichData.title) person.title = enrichData.title;
+        }
+      } catch (err) {
+        // network hiccup on the best-effort lookup - not worth surfacing
+      }
     }
 
     // Keep the row(s) behind this person in sync without a full reload.

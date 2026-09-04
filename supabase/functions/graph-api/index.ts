@@ -36,6 +36,9 @@
 //   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, focus, membership_id, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
 //   PATCH  /people/:id          { any subset of full_name, linkedin_url, country } -> updated person (direct set, same as organizations PATCH)
 //   PATCH  /memberships/:id     { any subset of title, focus } -> updated membership (direct set, same as organizations PATCH)
+//   POST   /people/:id/enrich-from-linkedin  { linkedin_url, name?, organization_id? } -> { country, title, observed_company }
+//     (for a hand-entered LinkedIn URL, not one found via search - looks up what else that profile says and
+//     fills in country/title, only where currently blank; organization_id needed to know which membership's title to fill)
 //   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company, renamed_to, merged_into_person_id }
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
@@ -755,6 +758,17 @@ const FIND_PERSON_LINKEDIN_SCHEMA = {
   additionalProperties: false,
 };
 
+const PERSON_FROM_LINKEDIN_SCHEMA = {
+  type: "object",
+  properties: {
+    observed_title: { type: ["string", "null"] },
+    observed_company: { type: ["string", "null"] },
+    observed_country: { type: ["string", "null"] },
+  },
+  required: ["observed_title", "observed_company", "observed_country"],
+  additionalProperties: false,
+};
+
 const FIND_ORG_LINKEDIN_SCHEMA = {
   type: "object",
   properties: {
@@ -908,6 +922,51 @@ async function mergePersonInto(
   }
 
   await supabaseRequest("DELETE", "people", { params: { id: `eq.${sourceId}` } });
+}
+
+// For when a LinkedIn URL is hand-entered (not found via findPersonLinkedin's
+// own search) - the URL is already known and trusted, so this just looks up
+// what else that profile says and fills in country/title, only where
+// currently blank. Same merge-only-blanks idea as findPersonLinkedin's title
+// backfill, just triggered by a save instead of a search.
+async function enrichPersonFromLinkedinUrl(personId: string, linkedinUrl: string, name: string, organizationId: string) {
+  const prompt = `Search for this LinkedIn profile: ${linkedinUrl}${name ? ` (belongs to "${name}")` : ""}
+
+Report their current job title, current employer/company name, and the country they're based in, exactly as stated on that profile or in search results about it.
+
+${NEVER_GUESS}`;
+
+  const data = await openRouterCall(prompt, "person_from_linkedin", PERSON_FROM_LINKEDIN_SCHEMA);
+
+  let updatedCountry: string | null = null;
+  if (data.observed_country) {
+    const rows = await supabaseRequest("GET", "people", { params: { id: `eq.${personId}`, select: "country" } });
+    if (!rows?.[0]?.country) {
+      const patched = await supabaseRequest("PATCH", "people", {
+        params: { id: `eq.${personId}` },
+        body: { country: data.observed_country },
+        prefer: "return=representation",
+      });
+      updatedCountry = patched[0].country;
+    }
+  }
+
+  let updatedTitle: string | null = null;
+  if (data.observed_title && organizationId) {
+    const memberships = await supabaseRequest("GET", "memberships", {
+      params: { person_id: `eq.${personId}`, organization_id: `eq.${organizationId}`, select: "id,title" },
+    });
+    const membership = memberships?.[0];
+    if (membership && !membership.title) {
+      const patched = await supabaseRequest("PATCH", "memberships", {
+        params: { id: `eq.${membership.id}` },
+        body: { title: data.observed_title },
+        prefer: "return=representation",
+      });
+      updatedTitle = patched[0].title;
+    }
+  }
+  return { country: updatedCountry, title: updatedTitle, observed_company: data.observed_company || null };
 }
 
 // Same idea as findPersonLinkedin, but for a company's LinkedIn page. Fills
@@ -1095,6 +1154,16 @@ Deno.serve(async (req) => {
       });
       if (!updated?.length) return json({ error: "person not found" }, 404);
       return json(updated[0]);
+    }
+
+    const personEnrichMatch = path.match(/^\/people\/([^/]+)\/enrich-from-linkedin$/);
+    if (personEnrichMatch && req.method === "POST") {
+      const body = await req.json();
+      const linkedinUrl = (body.linkedin_url ?? "").trim();
+      if (!linkedinUrl) return json({ error: "linkedin_url is required" }, 400);
+      return json(await enrichPersonFromLinkedinUrl(
+        personEnrichMatch[1], linkedinUrl, (body.name ?? "").trim(), (body.organization_id ?? "").trim(),
+      ));
     }
 
     const membershipIdMatch = path.match(/^\/memberships\/([^/]+)$/);
