@@ -34,7 +34,9 @@
 //   DELETE /organizations/:id   -> { ok: true }
 //   PATCH  /organizations/:id   { any subset of organization fields above } -> updated org (direct set, not merge-only-blanks - a
 //     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI)
-//   GET    /people?q=term       -> [ {id, full_name, linkedin_url, country, title, focus, membership_id, organization}, ... ] (q omitted/empty -> all people, capped at 1000)
+//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, title, focus, is_current, start_date, end_date, membership_id, organization}, ... ]
+//     (q omitted/empty -> all people, capped at 1000; include_past=true returns one row per membership - e.g. two past
+//     roles at the same company both show - instead of the default one row per person, their best/current membership only)
 //   PATCH  /people/:id          { any subset of full_name, linkedin_url, country } -> updated person (direct set, same as organizations PATCH)
 //   PATCH  /memberships/:id     { any subset of title, focus } -> updated membership (direct set, same as organizations PATCH)
 //   POST   /people/:id/enrich-from-linkedin  { linkedin_url, name?, organization_id? } -> { country, title, observed_company }
@@ -410,7 +412,7 @@ async function getOrganization(id: string) {
   org.people = await supabaseRequest("GET", "memberships", {
     params: {
       organization_id: `eq.${id}`,
-      select: "id,title,focus,is_current,people(*)",
+      select: "id,title,focus,is_current,start_date,end_date,people(*)",
     },
   });
   return org;
@@ -480,26 +482,38 @@ async function createOrgConnection(
   return { id: row.id, relationship_type: row.relationship_type, notes: row.notes, direction: "a", other };
 }
 
-async function searchPeopleGlobal(query: string) {
+// includePast=false (default): one row per person, their best/most-current
+// membership only - the existing behavior. includePast=true: one row per
+// membership instead, so someone with several past roles (e.g. two stints
+// at the same company) shows all of them rather than just the best.
+async function searchPeopleGlobal(query: string, includePast: boolean) {
   const params: Record<string, string> = {
-    select: "*,memberships(id,organization_id,is_current,updated_at,title,focus,organizations(id,name))",
+    select: "*,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
     order: "full_name.asc",
     limit: query ? "25" : "1000",
   };
   if (query) params.full_name = `ilike.*${query}*`;
   const people = await supabaseRequest("GET", "people", { params });
-  return (people ?? []).map((p: any) => {
+  const rows: any[] = [];
+  for (const p of people ?? []) {
     const ms = [...(p.memberships || [])].sort((a: any, b: any) => {
       if (a.is_current !== b.is_current) return a.is_current ? -1 : 1;
       return (b.updated_at || "").localeCompare(a.updated_at || "");
     });
-    const best = ms[0];
     const { memberships, ...rest } = p;
-    return {
-      ...rest, title: best?.title || null, focus: best?.focus || null,
-      membership_id: best?.id || null, organization: best?.organizations || null,
-    };
-  });
+    const toRow = (m: any) => ({
+      ...rest, title: m?.title || null, focus: m?.focus || null, membership_id: m?.id || null,
+      is_current: m?.is_current ?? null, start_date: m?.start_date || null, end_date: m?.end_date || null,
+      organization: m?.organizations || null,
+    });
+    if (includePast) {
+      if (ms.length) ms.forEach((m: any) => rows.push(toRow(m)));
+      else rows.push(toRow(null));
+    } else {
+      rows.push(toRow(ms[0]));
+    }
+  }
+  return rows;
 }
 
 // ---------- Apollo (free organizations/enrich backfill only) ----------
@@ -1435,7 +1449,7 @@ Deno.serve(async (req) => {
 
     if (req.method === "GET" && path === "/people") {
       const q = (url.searchParams.get("q") ?? "").trim();
-      return json(await searchPeopleGlobal(q));
+      return json(await searchPeopleGlobal(q, url.searchParams.get("include_past") === "true"));
     }
 
     if (req.method === "GET" && path === "/news") {

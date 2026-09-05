@@ -97,10 +97,14 @@
   button.tiny { padding: 4px 8px; font-size: 11.5px; }
   button.find-li-btn { padding: 0 7px; font-size: 10.5px; line-height: 1.1; }
   #orgFindAllBtn { text-transform: none; letter-spacing: normal; margin-left: 6px; padding: 2px 7px; font-size: 10.5px; cursor: pointer; }
-  .include-employers-toggle {
+  .list-toggle {
     display: block; font-size: 11px; color: #8a877e; margin: -6px 0 10px; cursor: pointer; user-select: none;
   }
-  .include-employers-toggle input { vertical-align: middle; margin-right: 4px; }
+  .list-toggle input { vertical-align: middle; margin-right: 4px; }
+  .ex-tag {
+    display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .02em; color: #fff;
+    background: #3b6ea5; padding: 1px 5px; border-radius: 4px; margin-right: 5px; vertical-align: middle;
+  }
 
   .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
   .status-line.error { color: #a33; }
@@ -405,6 +409,7 @@
           <button class="tiny" id="personAddToggleBtn">+ Add</button>
         </div>
       </div>
+      <label class="include-employers-toggle"><input type="checkbox" id="includePastRolesToggle"> Include past roles</label>
 
       <div id="peopleListView" class="list-view">
         <div class="scroll-box">
@@ -1113,13 +1118,41 @@ let currentPeopleItems = [];  // normalized: {id, full_name, country, title, foc
 // membership-derived fields (title/focus/membership_id) on top.
 function normalizePeopleItems(items, mode) {
   return (items || []).map(entry => mode === "org"
-    ? { ...entry.people, title: entry.title, focus: entry.focus, membership_id: entry.id, organization: null }
+    ? {
+        ...entry.people, title: entry.title, focus: entry.focus, membership_id: entry.id, organization: null,
+        is_current: entry.is_current, start_date: entry.start_date || null, end_date: entry.end_date || null,
+      }
     : { ...entry, membership_id: entry.membership_id || null, organization: entry.organization || null });
+}
+
+let includePastRoles = false;  // "Include past roles" toggle next to the people search box
+
+// Best-effort recency from free-text dates ("Jan 2024", "2018", ...) - the
+// only real signal we have for ranking two past roles against each other.
+function roleRecency(item) {
+  const match = String(item.end_date || item.start_date || "").match(/(\d{4})/);
+  return match ? parseInt(match[1], 10) : -Infinity;
+}
+
+// Collapses multiple rows for the same person (e.g. two past roles at the
+// same company, each its own membership) down to just their current role if
+// they have one, else their most recent past one - keeps first-seen order.
+function dedupeToCurrentRole(items) {
+  const byId = new Map();
+  for (const item of items) {
+    const prev = byId.get(item.id);
+    if (!prev) { byId.set(item.id, item); continue; }
+    const prevScore = prev.is_current ? Infinity : roleRecency(prev);
+    const curScore = item.is_current ? Infinity : roleRecency(item);
+    if (curScore > prevScore) byId.set(item.id, item);
+  }
+  return [...byId.values()];
 }
 
 function renderPeopleList(items, mode) {
   currentPeopleMode = mode;
-  currentPeopleItems = normalizePeopleItems(items, mode);
+  const normalized = normalizePeopleItems(items, mode);
+  currentPeopleItems = includePastRoles ? normalized : dedupeToCurrentRole(normalized);
   wireSortHeaders("peopleTable", peopleSort, () => {
     currentPeopleItems.sort(makeComparator(peopleSort));
     renderPeopleTableBody();
@@ -1142,7 +1175,7 @@ function renderPeopleTableBody() {
     <tr data-id="${p.id}">
       <td class="li-name">${p.full_name}</td>
       <td>${p.country || '<span class="none">—</span>'}</td>
-      <td>${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}</td>
+      <td>${p.is_current === false ? '<span class="ex-tag">ex</span>' : ""}${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}</td>
       <td>${linkedinCellFor(p)}</td>
     </tr>
   `).join("");
@@ -1534,7 +1567,7 @@ async function applyPeopleFilter() {
     );
     renderPeopleList(filtered, "org");
   } else if (peopleForceGlobal || q) {
-    const res = await api(`/people?q=${encodeURIComponent(q)}`);
+    const res = await api(`/people?q=${encodeURIComponent(q)}${includePastRoles ? "&include_past=true" : ""}`);
     renderPeopleList(res.ok ? await res.json() : [], "global");
   } else {
     renderPeopleList([], "empty");
@@ -1758,6 +1791,7 @@ document.getElementById("signOutBtn").addEventListener("click", signOut);
 document.getElementById("orgSearchInput").addEventListener("input", applyOrgFilter);
 document.getElementById("orgSearchClearBtn").addEventListener("click", () => { document.getElementById("orgSearchInput").value = ""; applyOrgFilter(); });
 document.getElementById("includeEmployersToggle").addEventListener("change", e => { includeEmployers = e.target.checked; loadOrgList(); });
+document.getElementById("includePastRolesToggle").addEventListener("change", e => { includePastRoles = e.target.checked; applyPeopleFilter(); });
 document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);
