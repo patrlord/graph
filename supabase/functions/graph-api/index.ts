@@ -399,7 +399,7 @@ async function listOrganizations(includeEmployers: boolean) {
   // hide newly-discovered-but-not-yet-classified orgs from the list they're
   // specifically meant to show up in for classification. Include NULL
   // explicitly instead of relying on neq alone.
-  if (!includeEmployers) params.or = "org_type.is.null,org_type.neq.employer";
+  if (!includeEmployers) params.or = "(org_type.is.null,org_type.neq.employer)";
   return await supabaseRequest("GET", "organizations", { params });
 }
 
