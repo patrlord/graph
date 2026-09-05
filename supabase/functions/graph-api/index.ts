@@ -47,7 +47,8 @@
 //     organizations (org_type "employer" if not already a known org) + memberships (is_current: false), and
 //     syncs the person's current membership(s) to match LinkedIn's current role(s) exactly (always, not merge-
 //     only-blanks - closes out any other membership LinkedIn's current data no longer backs up; supports more
-//     than one concurrent current role))
+//     than one concurrent current role; a brand-new org found this way gets org_type left blank, not "employer",
+//     for a human to classify - unlike past jobs, this is likely an org the tool actually cares about))
 //   GET    /people/:id/education          -> [ {id, degree, period, start_date, end_date, schools: {id, name, linkedin_url}}, ... ]
 //   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, organizations: {id, name, org_type}}, ... ]
 //   GET    /schools/:id/people            -> [ {id, full_name, linkedin_url, country, degree, period}, ... ]
@@ -393,7 +394,12 @@ async function listOrganizations(includeEmployers: boolean) {
     select: "id,name,org_type,website_url,linkedin_url,hq_country,sectors,updated_at",
     order: "name.asc",
   };
-  if (!includeEmployers) params.org_type = "neq.employer";
+  // org_type <> 'employer' would silently also exclude NULL org_type rows -
+  // SQL comparisons against NULL are never true, not false - which would
+  // hide newly-discovered-but-not-yet-classified orgs from the list they're
+  // specifically meant to show up in for classification. Include NULL
+  // explicitly instead of relying on neq alone.
+  if (!includeEmployers) params.or = "org_type.is.null,org_type.neq.employer";
   return await supabaseRequest("GET", "organizations", { params });
 }
 
@@ -839,13 +845,13 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     if (!companyName) continue;
     const linkedinUrl = normalizeLinkedinUrl(entry.companyLinkedinUrl || null);
     // Unlike importPastEmploymentForPerson, a brand-new org discovered here
-    // defaults to "vc" (the same fallback saveOrganization/research use),
-    // not "employer" - a tracked investor's *current* company is very
-    // likely to be an investment org this tool actually cares about, not
-    // incidental career history to hide.
+    // is left with org_type blank rather than tagged "employer" - a tracked
+    // investor's *current* company is likely relevant to this tool, not
+    // incidental career history to hide, but its actual type shouldn't be
+    // guessed either; it's left for a human to classify via the edit form.
     let org = await findExistingOrganization(companyName, null, linkedinUrl);
     if (!org) {
-      org = (await supabaseRequest("POST", "organizations", { body: { name: companyName, org_type: "vc" }, prefer: "return=representation" }))[0];
+      org = (await supabaseRequest("POST", "organizations", { body: { name: companyName, org_type: null }, prefer: "return=representation" }))[0];
     }
     syncedOrgIds.add(org.id);
     const title = entry.position || null;
@@ -1503,8 +1509,11 @@ Deno.serve(async (req) => {
         "sectors", "ticket_size", "investment_stages", "investment_regions", "fund_type_raw",
       ]);
       if ("name" in fields && !String(fields.name ?? "").trim()) return json({ error: "name cannot be blank" }, 400);
-      if ("org_type" in fields && !["vc", "cvc", "angel", "family_office", "group", "employer"].includes(fields.org_type)) {
-        return json({ error: "org_type must be one of vc, cvc, angel, family_office, group, employer" }, 400);
+      if ("org_type" in fields) {
+        if (fields.org_type && !["vc", "cvc", "angel", "family_office", "group", "employer"].includes(fields.org_type)) {
+          return json({ error: "org_type must be blank or one of vc, cvc, angel, family_office, group, employer" }, 400);
+        }
+        fields.org_type = fields.org_type || null;  // "" is not a valid value for the check constraint - blank means null
       }
       if ("website_url" in fields) fields.website_url = normalizeWebsiteUrl(fields.website_url);
       if ("linkedin_url" in fields) fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);

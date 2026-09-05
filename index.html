@@ -695,7 +695,7 @@ function renderOrgList(orgs) {
     <tr data-id="${o.id}">
       <td class="li-name">${o.name}</td>
       <td>${o.hq_country || '<span class="none">—</span>'}</td>
-      <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type}</td>
+      <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
       <td>${linkedinCellFor(o)}</td>
     </tr>
   `).join("");
@@ -829,7 +829,7 @@ function renderOrgDetail(org) {
   document.getElementById("orgDetailEmpty").style.display = "none";
   document.getElementById("orgDetailContent").classList.add("shown");
   document.getElementById("detOrgName").textContent = org.name;
-  document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type;
+  document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type || "Unclassified";
   document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
   document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
   document.getElementById("detOrgDesc").textContent = org.description || "";
@@ -842,8 +842,9 @@ function renderOrgDetail(org) {
 
 function populateOrgEditForm(org) {
   document.getElementById("editOrgName").value = org.name || "";
-  document.getElementById("editOrgType").innerHTML = Object.entries(ORG_TYPE_LABEL)
-    .map(([v, label]) => `<option value="${v}"${v === org.org_type ? " selected" : ""}>${label}</option>`).join("");
+  document.getElementById("editOrgType").innerHTML =
+    `<option value=""${org.org_type ? "" : " selected"}>Unclassified</option>` +
+    Object.entries(ORG_TYPE_LABEL).map(([v, label]) => `<option value="${v}"${v === org.org_type ? " selected" : ""}>${label}</option>`).join("");
   document.getElementById("editOrgWebsite").value = org.website_url || "";
   document.getElementById("editOrgLinkedin").value = org.linkedin_url || "";
   document.getElementById("editOrgHqCountry").value = org.hq_country || "";
