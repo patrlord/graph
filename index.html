@@ -97,6 +97,10 @@
   button.tiny { padding: 4px 8px; font-size: 11.5px; }
   button.find-li-btn { padding: 0 7px; font-size: 10.5px; line-height: 1.1; }
   #orgFindAllBtn { text-transform: none; letter-spacing: normal; margin-left: 6px; padding: 2px 7px; font-size: 10.5px; cursor: pointer; }
+  .include-employers-toggle {
+    display: block; font-size: 11px; color: #8a877e; margin: -6px 0 10px; cursor: pointer; user-select: none;
+  }
+  .include-employers-toggle input { vertical-align: middle; margin-right: 4px; }
 
   .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
   .status-line.error { color: #a33; }
@@ -202,6 +206,8 @@
   table.sortable-table tbody tr.selected { background: #fbf3ea; }
   table.sortable-table td.li-name { font-weight: 500; color: #1c1c1c; }
   .li-meta { font-size: 10.5px; color: #8a877e; }
+  .career-link { color: #8a5a2b; text-decoration: none; }
+  .career-link:hover { text-decoration: underline; }
   .empty-note { font-size: 12px; color: #8a877e; padding: 4px 2px; }
 
   .news-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e0dc; }
@@ -266,6 +272,7 @@
           <button class="tiny" id="orgAddToggleBtn">+ Add</button>
         </div>
       </div>
+      <label class="include-employers-toggle"><input type="checkbox" id="includeEmployersToggle"> Include past employers</label>
 
       <div id="orgListView" class="list-view">
         <div class="scroll-box">
@@ -452,6 +459,8 @@
         <div class="scroll-box">
           <div id="personBodyView">
             <div id="detPersonLinkedinProfile"></div>
+            <div id="detPersonExperience"></div>
+            <div id="detPersonEducation"></div>
             <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
               <button class="secondary tiny" id="personEditBtn">Edit</button>
               <button class="secondary tiny" id="personApifyBtn" style="display:none">Fetch LinkedIn profile</button>
@@ -492,7 +501,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_SiN9EMxBxQ-qc34l8UScYQ_EEAFW_Cp";
 const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/graph-api`;
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "Family office", group: "Group" };
+const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "Family office", group: "Group", employer: "Past employer" };
 
 let orgListCache = [];
 let orgViewCache = [];   // currently filtered+sorted org list (what's actually rendered)
@@ -627,8 +636,10 @@ function renderNewsList(containerId, items) {
 
 let orgSort = { field: "name", dir: "asc" };
 
+let includeEmployers = false;  // "Include past employers" toggle next to the org search box
+
 async function loadOrgList() {
-  const res = await api("/organizations");
+  const res = await api(`/organizations${includeEmployers ? "?include_employers=true" : ""}`);
   if (!res.ok) { orgListCache = []; renderOrgList([]); return; }
   orgListCache = await res.json();
   applyOrgFilter();
@@ -1251,6 +1262,7 @@ function showPersonDetail(person) {
   document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
   document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
   document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
+  loadPersonCareerSections(person);
   document.getElementById("personApifyBtn").style.display = person.linkedin_url ? "inline-block" : "none";
   document.getElementById("personApifyStatus").textContent = "";
   document.getElementById("personApifyStatus").className = "status-line";
@@ -1276,17 +1288,65 @@ function linkedinProfileHtml(person) {
   if (meta.length) parts.push(`<div class="li-meta">${meta.join(" · ")}</div>`);
   if (person.li_about) parts.push(`<div class="entity-desc">${person.li_about}</div>`);
   if (person.li_top_skills) parts.push(`<div class="entity-desc"><strong>Top skills:</strong> ${person.li_top_skills}</div>`);
-  if (person.li_experience && person.li_experience.length) {
-    parts.push(`<div style="margin-top:10px;"><strong style="font-size:12.5px;">Experience</strong>` +
-      person.li_experience.map(e => `<div class="li-meta">${[e.position, e.companyName].filter(Boolean).join(" — ")}${e.duration ? ` (${e.duration})` : ""}</div>`).join("") +
-      `</div>`);
-  }
-  if (person.li_education && person.li_education.length) {
-    parts.push(`<div style="margin-top:10px;"><strong style="font-size:12.5px;">Education</strong>` +
-      person.li_education.map(e => `<div class="li-meta">${[e.title, e.degree].filter(Boolean).join(" — ")}${e.period ? ` (${e.period})` : ""}</div>`).join("") +
-      `</div>`);
-  }
   return parts.join("");
+}
+
+// Experience/education render as clickable links into the normalized
+// organizations/schools tables (loadPersonCareerSections), not from the raw
+// li_experience/li_education JSON - only the normalized data has an id to
+// link to, and it's also what stays in sync with manual edits/re-fetches.
+async function loadPersonCareerSections(person) {
+  const expBox = document.getElementById("detPersonExperience");
+  const eduBox = document.getElementById("detPersonEducation");
+  expBox.innerHTML = "";
+  eduBox.innerHTML = "";
+  if (!person.linkedin_url) return;  // nothing normalized yet if they've never been through Fetch LinkedIn profile
+
+  const [expRes, eduRes] = await Promise.all([
+    api(`/people/${person.id}/employment-history`),
+    api(`/people/${person.id}/education`),
+  ]);
+
+  if (expRes.ok) {
+    const rows = (await expRes.json()).filter(r => !r.is_current && r.organizations);
+    if (rows.length) {
+      expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Experience</strong>` +
+        rows.map(r => `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
+          `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}</div>`).join("") +
+        `</div>`;
+      expBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
+        e.preventDefault();
+        selectOrg(e.currentTarget.dataset.orgId);
+      }));
+    }
+  }
+
+  if (eduRes.ok) {
+    const rows = await eduRes.json();
+    if (rows.length) {
+      eduBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Education</strong>` +
+        rows.map(r => `<div class="li-meta"><a href="#" class="career-link" data-school-id="${r.schools.id}" data-school-name="${r.schools.name}">${r.schools.name}</a>` +
+          `${r.degree ? ` — ${r.degree}` : ""}${r.period ? ` (${r.period})` : ""}</div>`).join("") +
+        `</div>`;
+      eduBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
+        e.preventDefault();
+        showSchoolPeople(e.currentTarget.dataset.schoolId, e.currentTarget.dataset.schoolName);
+      }));
+    }
+  }
+}
+
+// Shows everyone on record who attended a given school, in the people
+// panel - reuses the "global" list rendering, just sourced from
+// /schools/:id/people instead of /people?q=.
+async function showSchoolPeople(schoolId, schoolName) {
+  const res = await api(`/schools/${schoolId}/people`);
+  if (!res.ok) return;
+  const people = (await res.json()).map(p => ({ ...p, title: p.degree || null }));  // show degree in the Role column
+  peopleForceGlobal = true;
+  document.getElementById("peopleSearchInput").value = "";
+  renderPeopleList(people, "global");
+  document.getElementById("peopleListTitle").textContent = `People who went to ${schoolName}`;
 }
 
 async function fetchApifyProfile() {
@@ -1681,6 +1741,7 @@ document.getElementById("signOutBtn").addEventListener("click", signOut);
 
 document.getElementById("orgSearchInput").addEventListener("input", applyOrgFilter);
 document.getElementById("orgSearchClearBtn").addEventListener("click", () => { document.getElementById("orgSearchInput").value = ""; applyOrgFilter(); });
+document.getElementById("includeEmployersToggle").addEventListener("change", e => { includeEmployers = e.target.checked; loadOrgList(); });
 document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);

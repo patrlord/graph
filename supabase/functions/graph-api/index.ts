@@ -23,7 +23,8 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations       -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at}, ... ]
+//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at}, ... ]
+//     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true)
 //   POST   /organizations       { organization, people } -> saved { organization, people }
 //     organization fields: name, org_type, website_url, linkedin_url, hq_country, description,
 //     sectors[]; plus investor-profile fields not touched by research (ticket_size, investment_stages[],
@@ -41,7 +42,12 @@
 //     fills in country/title, only where currently blank; organization_id needed to know which membership's title to fill)
 //   POST   /people/:id/enrich-from-apify  {} -> updated person (full row, including the li_* fields below)
 //     (requires the person to already have a linkedin_url; runs the harvestapi LinkedIn Profile Scraper Apify actor
-//     against it and overwrites all li_* fields with the fresh result - country is filled only if currently blank)
+//     against it and overwrites all li_* fields with the fresh result - country is filled only if currently blank.
+//     Also normalizes profile.education into schools/education and profile.experience into organizations
+//     (org_type "employer" if not already a known org) + memberships (is_current: false, skips the current role))
+//   GET    /people/:id/education          -> [ {id, degree, period, start_date, end_date, schools: {id, name, linkedin_url}}, ... ]
+//   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, organizations: {id, name, org_type}}, ... ]
+//   GET    /schools/:id/people            -> [ {id, full_name, linkedin_url, country, degree, period}, ... ]
 //   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company, renamed_to, merged_into_person_id }
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
@@ -374,13 +380,18 @@ async function saveOrganization(payload: any) {
   return { organization: org, people: savedPeople, organization_existed: orgExisted };
 }
 
-async function listOrganizations() {
-  return await supabaseRequest("GET", "organizations", {
-    params: {
-      select: "id,name,org_type,website_url,linkedin_url,hq_country,sectors,updated_at",
-      order: "name.asc",
-    },
-  });
+// Past employers (org_type "employer", pulled from LinkedIn experience
+// history via enrichPersonFromApify) are excluded by default - they aren't
+// investment organizations and would otherwise flood the primary list this
+// tool is actually about. includeEmployers is the escape hatch for browsing
+// them directly when wanted.
+async function listOrganizations(includeEmployers: boolean) {
+  const params: Record<string, string> = {
+    select: "id,name,org_type,website_url,linkedin_url,hq_country,sectors,updated_at",
+    order: "name.asc",
+  };
+  if (!includeEmployers) params.org_type = "neq.employer";
+  return await supabaseRequest("GET", "organizations", { params });
 }
 
 async function getOrganization(id: string) {
@@ -687,7 +698,129 @@ async function enrichPersonFromApify(personId: string) {
     body: fields,
     prefer: "return=representation",
   }))[0];
+  await importEducationForPerson(personId, profile.education);
+  await importPastEmploymentForPerson(personId, profile.experience);
   return updated;
+}
+
+// ---------- Schools / education (normalized from profile.education) ----------
+
+async function findOrCreateSchool(name: string, linkedinUrl: string | null) {
+  const orParts = [`name.ilike.${orValue(name)}`];
+  if (linkedinUrl) orParts.push(`linkedin_url.eq.${orValue(linkedinUrl)}`);
+  const existing = await supabaseRequest("GET", "schools", { params: { or: `(${orParts.join(",")})`, select: "*", limit: "1" } });
+  if (existing?.[0]) {
+    if (linkedinUrl && !existing[0].linkedin_url) {
+      const patched = await supabaseRequest("PATCH", "schools", {
+        params: { id: `eq.${existing[0].id}` },
+        body: { linkedin_url: linkedinUrl },
+        prefer: "return=representation",
+      });
+      return patched[0];
+    }
+    return existing[0];
+  }
+  const created = await supabaseRequest("POST", "schools", { body: { name, linkedin_url: linkedinUrl }, prefer: "return=representation" });
+  return created[0];
+}
+
+// Matches on (person, school, degree) in application code rather than a DB
+// unique constraint - degree can be null, and NULL never equals NULL in a
+// unique index, so a constraint alone wouldn't stop duplicates piling up
+// across repeated fetches of the same profile.
+async function upsertEducationEntry(
+  personId: string, schoolId: string, degree: string | null, period: string | null,
+  startDate: string | null, endDate: string | null,
+) {
+  const existingRows = await supabaseRequest("GET", "education", {
+    params: { person_id: `eq.${personId}`, school_id: `eq.${schoolId}`, select: "id,degree" },
+  });
+  const match = (existingRows ?? []).find((r: any) => (r.degree || null) === (degree || null));
+  const fields = { degree, period, start_date: startDate, end_date: endDate };
+  if (match) {
+    await supabaseRequest("PATCH", "education", { params: { id: `eq.${match.id}` }, body: fields });
+  } else {
+    await supabaseRequest("POST", "education", { body: { person_id: personId, school_id: schoolId, ...fields } });
+  }
+}
+
+async function importEducationForPerson(personId: string, educationArr: any[] | undefined) {
+  for (const e of educationArr ?? []) {
+    const name = (e.title || "").trim();
+    if (!name) continue;  // no institution name to key a school on - stays in the raw li_education JSON only
+    const linkedinUrl = normalizeLinkedinUrl(e.link || null);
+    const school = await findOrCreateSchool(name, linkedinUrl);
+    await upsertEducationEntry(personId, school.id, e.degree || null, e.period || null, e.startDate?.text || null, e.endDate?.text || null);
+  }
+}
+
+async function listPeopleAtSchool(schoolId: string) {
+  const rows = await supabaseRequest("GET", "education", {
+    params: { school_id: `eq.${schoolId}`, select: "degree,period,people(id,full_name,linkedin_url,country)" },
+  });
+  return (rows ?? []).map((r: any) => ({ ...r.people, degree: r.degree, period: r.period }));
+}
+
+async function listEducationForPerson(personId: string) {
+  return await supabaseRequest("GET", "education", {
+    params: {
+      person_id: `eq.${personId}`,
+      select: "id,degree,period,start_date,end_date,schools(id,name,linkedin_url)",
+      order: "created_at.asc",
+    },
+  });
+}
+
+// ---------- Past employment (normalized from profile.experience) ----------
+
+// LinkedIn's experience list includes the person's current role too - that's
+// already tracked via their normal org membership, so importing it again
+// here would create a near-duplicate. Anything still "Present" (no end
+// date) is treated as current and skipped.
+function isCurrentExperienceEntry(e: any): boolean {
+  return !e.endDate || e.endDate.text === "Present";
+}
+
+async function importPastEmploymentForPerson(personId: string, experienceArr: any[] | undefined) {
+  for (const e of experienceArr ?? []) {
+    if (isCurrentExperienceEntry(e)) continue;
+    const name = (e.companyName || "").trim();
+    if (!name) continue;
+    const linkedinUrl = normalizeLinkedinUrl(e.companyLinkedinUrl || null);
+    // Checked regardless of type: if this company is already a real vc/cvc/
+    // angel/family_office/group org, link to that instead of creating an
+    // "employer" duplicate of an org this tool already actually cares about.
+    let org = await findExistingOrganization(name, null, linkedinUrl);
+    if (!org) {
+      org = (await supabaseRequest("POST", "organizations", { body: { name, org_type: "employer" }, prefer: "return=representation" }))[0];
+    }
+    const title = e.position || null;
+    const existingMemberships = await supabaseRequest("GET", "memberships", {
+      params: {
+        person_id: `eq.${personId}`, organization_id: `eq.${org.id}`,
+        title: title ? `eq.${orValue(title)}` : "is.null",
+        select: "id",
+      },
+    });
+    const fields = { start_date: e.startDate?.text || null, end_date: e.endDate?.text || null };
+    if (existingMemberships?.[0]) {
+      await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${existingMemberships[0].id}` }, body: fields });
+    } else {
+      await supabaseRequest("POST", "memberships", {
+        body: { person_id: personId, organization_id: org.id, title, is_current: false, ...fields },
+      });
+    }
+  }
+}
+
+async function listEmploymentHistoryForPerson(personId: string) {
+  return await supabaseRequest("GET", "memberships", {
+    params: {
+      person_id: `eq.${personId}`,
+      select: "id,title,focus,is_current,start_date,end_date,organizations(id,name,org_type)",
+      order: "is_current.desc",
+    },
+  });
 }
 
 // Research doesn't always surface where a firm invests (as opposed to where
@@ -1228,7 +1361,7 @@ Deno.serve(async (req) => {
     }
 
     if (req.method === "GET" && path === "/organizations") {
-      return json(await listOrganizations());
+      return json(await listOrganizations(url.searchParams.get("include_employers") === "true"));
     }
 
     if (req.method === "POST" && path === "/organizations") {
@@ -1312,8 +1445,8 @@ Deno.serve(async (req) => {
         "sectors", "ticket_size", "investment_stages", "investment_regions", "fund_type_raw",
       ]);
       if ("name" in fields && !String(fields.name ?? "").trim()) return json({ error: "name cannot be blank" }, 400);
-      if ("org_type" in fields && !["vc", "cvc", "angel", "family_office", "group"].includes(fields.org_type)) {
-        return json({ error: "org_type must be one of vc, cvc, angel, family_office, group" }, 400);
+      if ("org_type" in fields && !["vc", "cvc", "angel", "family_office", "group", "employer"].includes(fields.org_type)) {
+        return json({ error: "org_type must be one of vc, cvc, angel, family_office, group, employer" }, 400);
       }
       if ("website_url" in fields) fields.website_url = normalizeWebsiteUrl(fields.website_url);
       if ("linkedin_url" in fields) fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);
@@ -1359,6 +1492,21 @@ Deno.serve(async (req) => {
     const personApifyMatch = path.match(/^\/people\/([^/]+)\/enrich-from-apify$/);
     if (personApifyMatch && req.method === "POST") {
       return json(await enrichPersonFromApify(personApifyMatch[1]));
+    }
+
+    const personEducationMatch = path.match(/^\/people\/([^/]+)\/education$/);
+    if (personEducationMatch && req.method === "GET") {
+      return json(await listEducationForPerson(personEducationMatch[1]));
+    }
+
+    const personEmploymentMatch = path.match(/^\/people\/([^/]+)\/employment-history$/);
+    if (personEmploymentMatch && req.method === "GET") {
+      return json(await listEmploymentHistoryForPerson(personEmploymentMatch[1]));
+    }
+
+    const schoolPeopleMatch = path.match(/^\/schools\/([^/]+)\/people$/);
+    if (schoolPeopleMatch && req.method === "GET") {
+      return json(await listPeopleAtSchool(schoolPeopleMatch[1]));
     }
 
     const membershipIdMatch = path.match(/^\/memberships\/([^/]+)$/);
