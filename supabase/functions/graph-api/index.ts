@@ -641,7 +641,10 @@ function mapApifyProfileToLiFields(profile: Record<string, any>): Record<string,
     li_about: profile.about || null,
     li_photo_url: profile.photo || null,
     li_location_text: profile.location?.linkedinText || null,
-    li_top_skills: profile.topSkills || null,
+    // The sample response at integration time had topSkills as a single
+    // "A • B" string, but (consistent with the input-shape rebuild found
+    // above) it can also come back as an array - handle both.
+    li_top_skills: Array.isArray(profile.topSkills) ? (profile.topSkills.join(", ") || null) : (profile.topSkills || null),
     li_connections_count: typeof profile.connectionsCount === "number" ? profile.connectionsCount : null,
     li_follower_count: typeof profile.followerCount === "number" ? profile.followerCount : null,
     li_open_to_work: typeof profile.openToWork === "boolean" ? profile.openToWork : null,
