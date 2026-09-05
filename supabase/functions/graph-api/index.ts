@@ -43,8 +43,11 @@
 //   POST   /people/:id/enrich-from-apify  {} -> updated person (full row, including the li_* fields below)
 //     (requires the person to already have a linkedin_url; runs the harvestapi LinkedIn Profile Scraper Apify actor
 //     against it and overwrites all li_* fields with the fresh result - country is filled only if currently blank.
-//     Also normalizes profile.education into schools/education and profile.experience into organizations
-//     (org_type "employer" if not already a known org) + memberships (is_current: false, skips the current role))
+//     Also normalizes profile.education into schools/education, profile.experience's non-current entries into
+//     organizations (org_type "employer" if not already a known org) + memberships (is_current: false), and
+//     syncs the person's current membership(s) to match LinkedIn's current role(s) exactly (always, not merge-
+//     only-blanks - closes out any other membership LinkedIn's current data no longer backs up; supports more
+//     than one concurrent current role))
 //   GET    /people/:id/education          -> [ {id, degree, period, start_date, end_date, schools: {id, name, linkedin_url}}, ... ]
 //   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, organizations: {id, name, org_type}}, ... ]
 //   GET    /schools/:id/people            -> [ {id, full_name, linkedin_url, country, degree, period}, ... ]
@@ -700,6 +703,7 @@ async function enrichPersonFromApify(personId: string) {
   }))[0];
   await importEducationForPerson(personId, profile.education);
   await importPastEmploymentForPerson(personId, profile.experience);
+  await syncCurrentRolesForPerson(personId, profile.experience, profile.currentPosition);
   return updated;
 }
 
@@ -809,6 +813,60 @@ async function importPastEmploymentForPerson(personId: string, experienceArr: an
       await supabaseRequest("POST", "memberships", {
         body: { person_id: personId, organization_id: org.id, title, is_current: false, ...fields },
       });
+    }
+  }
+}
+
+// LinkedIn's stated current role(s)/company(ies) are treated as authoritative
+// for this person's current membership(s) - always synced, not merge-only-
+// blanks like most enrichment here, per explicit instruction that this
+// should always match what LinkedIn says. Someone can have more than one
+// concurrent current role (e.g. partner at a fund and an advisor/board seat
+// elsewhere), so every entry isCurrentExperienceEntry accepts gets synced as
+// its own is_current membership, not just the first - only a membership at
+// an org that LinkedIn's current-role data no longer backs up gets closed
+// out. Falls back to profile.currentPosition (company name only, no title)
+// if experience has nothing marked current.
+async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] | undefined, currentPositionArr: any[] | undefined) {
+  const currentEntries = (experienceArr ?? []).filter(isCurrentExperienceEntry);
+  const sources = currentEntries.length
+    ? currentEntries
+    : (currentPositionArr ?? []).map((p: any) => ({ companyName: p.companyName, companyLinkedinUrl: p.companyLinkedinUrl, position: null }));
+
+  const syncedOrgIds = new Set<string>();
+  for (const entry of sources) {
+    const companyName = (entry.companyName || "").trim();
+    if (!companyName) continue;
+    const linkedinUrl = normalizeLinkedinUrl(entry.companyLinkedinUrl || null);
+    // Unlike importPastEmploymentForPerson, a brand-new org discovered here
+    // defaults to "vc" (the same fallback saveOrganization/research use),
+    // not "employer" - a tracked investor's *current* company is very
+    // likely to be an investment org this tool actually cares about, not
+    // incidental career history to hide.
+    let org = await findExistingOrganization(companyName, null, linkedinUrl);
+    if (!org) {
+      org = (await supabaseRequest("POST", "organizations", { body: { name: companyName, org_type: "vc" }, prefer: "return=representation" }))[0];
+    }
+    syncedOrgIds.add(org.id);
+    const title = entry.position || null;
+    const existingMemberships = await supabaseRequest("GET", "memberships", {
+      params: { person_id: `eq.${personId}`, organization_id: `eq.${org.id}`, select: "id" },
+    });
+    if (existingMemberships?.[0]) {
+      await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${existingMemberships[0].id}` }, body: { title, is_current: true } });
+    } else {
+      await supabaseRequest("POST", "memberships", { body: { person_id: personId, organization_id: org.id, title, is_current: true } });
+    }
+  }
+
+  if (!syncedOrgIds.size) return;  // LinkedIn gave nothing usable - leave existing current membership(s) alone
+
+  const stillCurrent = await supabaseRequest("GET", "memberships", {
+    params: { person_id: `eq.${personId}`, is_current: "eq.true", select: "id,organization_id" },
+  });
+  for (const m of stillCurrent ?? []) {
+    if (!syncedOrgIds.has(m.organization_id)) {
+      await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${m.id}` }, body: { is_current: false } });
     }
   }
 }

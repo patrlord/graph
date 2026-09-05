@@ -1308,7 +1308,22 @@ async function loadPersonCareerSections(person) {
   ]);
 
   if (expRes.ok) {
-    const rows = (await expRes.json()).filter(r => !r.is_current && r.organizations);
+    const allRows = await expRes.json();
+    // A "Fetch LinkedIn profile" run can change which membership is
+    // current (job change) - refresh the header line from this same
+    // response rather than leaving it showing whatever was current when
+    // the person was first loaded.
+    const currentRows = allRows.filter(r => r.is_current && r.organizations);
+    if (currentRows.length) {
+      person.title = currentRows.map(r => r.title).filter(Boolean).join(" · ") || null;
+      document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
+      const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
+      if (inOrgList) inOrgList.title = person.title;
+      const inCurrentList = currentPeopleItems.find(p => p.id === person.id);
+      if (inCurrentList && inCurrentList !== person) inCurrentList.title = person.title;
+      renderPeopleTableBody();
+    }
+    const rows = allRows.filter(r => !r.is_current && r.organizations);
     if (rows.length) {
       expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Experience</strong>` +
         rows.map(r => `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
