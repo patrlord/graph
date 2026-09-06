@@ -482,10 +482,17 @@ async function createOrgConnection(
   return { id: row.id, relationship_type: row.relationship_type, notes: row.notes, direction: "a", other };
 }
 
-// includePast=false (default): one row per person, their best/most-current
-// membership only - the existing behavior. includePast=true: one row per
-// membership instead, so someone with several past roles (e.g. two stints
-// at the same company) shows all of them rather than just the best.
+// includePast=false (default): one row per CURRENT membership - someone
+// with two concurrent current roles (e.g. partner at a fund plus a board
+// seat elsewhere) shows both, not just one "best" row picked between them
+// (an earlier version of this function did that, which is what made a
+// second current role look like it was only visible with "Include ex-
+// employees" checked - it doesn't need that checkbox, it's current). A
+// person with no current membership at all doesn't appear, matching the
+// same strict current-only filter the org-scoped list already applies
+// client-side. includePast=true: one row per membership regardless of
+// is_current, so past roles show too (e.g. two past stints at the same
+// company).
 async function searchPeopleGlobal(query: string, includePast: boolean) {
   const params: Record<string, string> = {
     select: "*,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
@@ -496,11 +503,8 @@ async function searchPeopleGlobal(query: string, includePast: boolean) {
   const people = await supabaseRequest("GET", "people", { params });
   const rows: any[] = [];
   for (const p of people ?? []) {
-    const ms = [...(p.memberships || [])].sort((a: any, b: any) => {
-      if (a.is_current !== b.is_current) return a.is_current ? -1 : 1;
-      return (b.updated_at || "").localeCompare(a.updated_at || "");
-    });
     const { memberships, ...rest } = p;
+    const ms = memberships || [];
     const toRow = (m: any) => ({
       ...rest, title: m?.title || null, focus: m?.focus || null, membership_id: m?.id || null,
       is_current: m?.is_current ?? null, start_date: m?.start_date || null, end_date: m?.end_date || null,
@@ -510,7 +514,7 @@ async function searchPeopleGlobal(query: string, includePast: boolean) {
       if (ms.length) ms.forEach((m: any) => rows.push(toRow(m)));
       else rows.push(toRow(null));
     } else {
-      rows.push(toRow(ms[0]));
+      ms.filter((m: any) => m.is_current).forEach((m: any) => rows.push(toRow(m)));
     }
   }
   return rows;
