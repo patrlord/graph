@@ -98,7 +98,7 @@
   button.find-li-btn { padding: 0 7px; font-size: 10.5px; line-height: 1.1; }
   #orgFindAllBtn { text-transform: none; letter-spacing: normal; margin-left: 6px; padding: 2px 7px; font-size: 10.5px; cursor: pointer; }
   .list-toggle {
-    display: block; font-size: 11px; color: #8a877e; margin: -6px 0 10px; cursor: pointer; user-select: none;
+    display: block; font-size: 10.5px; color: #8a877e; margin: -6px 0 10px; cursor: pointer; user-select: none;
   }
   .list-toggle input { vertical-align: middle; margin-right: 4px; }
   .ex-tag {
@@ -276,7 +276,7 @@
           <button class="tiny" id="orgAddToggleBtn">+ Add</button>
         </div>
       </div>
-      <label class="include-employers-toggle"><input type="checkbox" id="includeEmployersToggle"> Include past employers</label>
+      <label class="list-toggle" id="includeEmployersRow"><input type="checkbox" id="includeEmployersToggle"> Include past employers</label>
 
       <div id="orgListView" class="list-view">
         <div class="scroll-box">
@@ -409,7 +409,7 @@
           <button class="tiny" id="personAddToggleBtn">+ Add</button>
         </div>
       </div>
-      <label class="include-employers-toggle"><input type="checkbox" id="includePastRolesToggle"> Include past roles</label>
+      <label class="list-toggle" id="includePastRolesRow"><input type="checkbox" id="includePastRolesToggle"> Include ex-employees</label>
 
       <div id="peopleListView" class="list-view">
         <div class="scroll-box">
@@ -788,7 +788,7 @@ function updatePeopleHeader() {
     (selectedOrg && !peopleForceGlobal) ? `People at ${selectedOrg.name}` : "People";
 }
 
-async function selectOrg(id) {
+async function selectOrg(id, forceIncludePast) {
   const res = await api(`/organizations/${id}`);
   if (!res.ok) return;
   selectedOrg = await res.json();
@@ -797,7 +797,7 @@ async function selectOrg(id) {
   renderOrgDetail(selectedOrg);
   highlightSelected("orgList", id);
   document.getElementById("peopleSearchInput").value = "";
-  renderPeopleList(selectedOrg.people, "org");
+  renderPeopleList(selectedOrg.people, "org", forceIncludePast);
   updatePeopleHeader();
   showPersonDetail(null);
   loadOrgNews(selectedOrg);
@@ -1125,14 +1125,7 @@ function normalizePeopleItems(items, mode) {
     : { ...entry, membership_id: entry.membership_id || null, organization: entry.organization || null });
 }
 
-let includePastRoles = false;  // "Include past roles" toggle next to the people search box
-
-// Best-effort recency from free-text dates ("Jan 2024", "2018", ...) - the
-// only real signal we have for ranking two past roles against each other.
-function roleRecency(item) {
-  const match = String(item.end_date || item.start_date || "").match(/(\d{4})/);
-  return match ? parseInt(match[1], 10) : -Infinity;
-}
+let includePastRoles = false;  // "Include ex-employees" toggle next to the people search box
 
 // The blue "ex" tag shown for a past (non-current) role, with the year they
 // left where we have one to parse out of the free-text end_date (falling
@@ -1143,25 +1136,18 @@ function exTagHtml(item) {
   return `<span class="ex-tag">ex${year ? " " + year[1] : ""}</span>`;
 }
 
-// Collapses multiple rows for the same person (e.g. two past roles at the
-// same company, each its own membership) down to just their current role if
-// they have one, else their most recent past one - keeps first-seen order.
-function dedupeToCurrentRole(items) {
-  const byId = new Map();
-  for (const item of items) {
-    const prev = byId.get(item.id);
-    if (!prev) { byId.set(item.id, item); continue; }
-    const prevScore = prev.is_current ? Infinity : roleRecency(prev);
-    const curScore = item.is_current ? Infinity : roleRecency(item);
-    if (curScore > prevScore) byId.set(item.id, item);
-  }
-  return [...byId.values()];
-}
-
-function renderPeopleList(items, mode) {
+// forceIncludePast shows past roles for this one render regardless of the
+// checkbox - used when navigating to an org from within a person's own
+// profile (their Experience list), where hiding past roles could hide the
+// very person you clicked through from. It's a one-off override, not a
+// change to includePastRoles itself: the checkbox stays exactly as it was,
+// and the next normal render (search, Clear, a different org via the org
+// list) goes back to respecting it.
+function renderPeopleList(items, mode, forceIncludePast) {
   currentPeopleMode = mode;
   const normalized = normalizePeopleItems(items, mode);
-  currentPeopleItems = includePastRoles ? normalized : dedupeToCurrentRole(normalized);
+  const showPast = forceIncludePast || includePastRoles;
+  currentPeopleItems = showPast ? normalized : normalized.filter(item => item.is_current !== false);
   wireSortHeaders("peopleTable", peopleSort, () => {
     currentPeopleItems.sort(makeComparator(peopleSort));
     renderPeopleTableBody();
@@ -1380,7 +1366,10 @@ async function loadPersonCareerSections(person) {
       `</div>`;
     expBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
       e.preventDefault();
-      selectOrg(e.currentTarget.dataset.orgId);
+      // Force past roles on for this one navigation - the person you just
+      // clicked through from only worked here in the past, so hiding past
+      // roles by default would hide them from the very list you're opening.
+      selectOrg(e.currentTarget.dataset.orgId, true);
     }));
   }
 
@@ -1622,24 +1611,28 @@ function makeBulkRowClickable(statusEl, onClick) {
 
 function showOrgListView() {
   document.getElementById("orgListHeader").style.display = "flex";
+  document.getElementById("includeEmployersRow").style.display = "block";
   document.getElementById("orgListView").style.display = "flex";
   document.getElementById("orgAddView").style.display = "none";
 }
 
 function showOrgAddView() {
   document.getElementById("orgListHeader").style.display = "none";
+  document.getElementById("includeEmployersRow").style.display = "none";
   document.getElementById("orgListView").style.display = "none";
   document.getElementById("orgAddView").style.display = "flex";
 }
 
 function showPeopleListView() {
   document.getElementById("peopleListHeader").style.display = "flex";
+  document.getElementById("includePastRolesRow").style.display = "block";
   document.getElementById("peopleListView").style.display = "flex";
   document.getElementById("peopleAddView").style.display = "none";
 }
 
 function showPeopleAddView() {
   document.getElementById("peopleListHeader").style.display = "none";
+  document.getElementById("includePastRolesRow").style.display = "none";
   document.getElementById("peopleListView").style.display = "none";
   document.getElementById("peopleAddView").style.display = "flex";
   if (!document.querySelector("#bulkPeopleRows tr")) {
