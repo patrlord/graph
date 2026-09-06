@@ -109,6 +109,12 @@
   .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
   .status-line.error { color: #a33; }
 
+  .about-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .about-clamp.expanded { -webkit-line-clamp: unset; overflow: visible; }
+  .about-more { text-align: right; margin-top: 2px; }
+  .about-more a { color: #8a5a2b; text-decoration: none; font-size: 11.5px; }
+  .about-more a:hover { text-decoration: underline; }
+
   .list-view, .add-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 
   .view-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex: 0 0 auto; }
@@ -788,18 +794,27 @@ function updatePeopleHeader() {
     (selectedOrg && !peopleForceGlobal) ? `People at ${selectedOrg.name}` : "People";
 }
 
-async function selectOrg(id, forceIncludePast) {
+// fromPersonProfile is set when navigating here by clicking a company
+// inside a person's own detail pane (their current-role summary or Past
+// roles list): forces past roles on for this render (the person you just
+// clicked through from may only have a past role here - the default filter
+// would otherwise hide them from the very roster you're opening), and
+// leaves the person detail pane exactly as it was instead of clearing it -
+// you didn't ask to stop looking at them, just to see where they worked.
+async function selectOrg(id, fromPersonProfile) {
   const res = await api(`/organizations/${id}`);
   if (!res.ok) return;
   selectedOrg = await res.json();
-  selectedPersonId = null;
   peopleForceGlobal = false;
   renderOrgDetail(selectedOrg);
   highlightSelected("orgList", id);
   document.getElementById("peopleSearchInput").value = "";
-  renderPeopleList(selectedOrg.people, "org", forceIncludePast);
+  renderPeopleList(selectedOrg.people, "org", fromPersonProfile);
   updatePeopleHeader();
-  showPersonDetail(null);
+  if (!fromPersonProfile) {
+    selectedPersonId = null;
+    showPersonDetail(null);
+  }
   loadOrgNews(selectedOrg);
   loadOrgConnections(selectedOrg);
   document.getElementById("connAddForm").style.display = "none";
@@ -1315,8 +1330,10 @@ function showPersonDetail(person) {
   // it as if it were their role at all; always resolved (as HTML, "Company
   // — Title" per current role) by loadPersonCareerSections below.
   document.getElementById("detPersonMeta").innerHTML = "";
-  document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
+  document.getElementById("detPersonLinks").innerHTML =
+    entityLinksHtml(null, person.linkedin_url, person.country) + personNetworkStatsHtml(person);
   document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
+  setupAboutClamp();
   loadPersonCareerSections(person);
   document.getElementById("personApifyBtn").style.display = person.linkedin_url ? "inline-block" : "none";
   document.getElementById("personApifyStatus").textContent = "";
@@ -1326,24 +1343,48 @@ function showPersonDetail(person) {
   exitPersonEditMode();
 }
 
-// Renders the subset of the Apify-fetched LinkedIn profile (see
-// fetchApifyProfile) worth showing inline: headline/current company/network
-// size, about, top skills, then experience and education as short lists.
-// Certifications/languages/projects/publications/recommendations are stored
-// (li_* columns) but not rendered here - not worth the space in this pane
-// for how often they'd actually get read.
+// Renders the subset of the Apify-fetched LinkedIn profile worth showing
+// inline: headline, open-to-work, about (clamped to 3 lines - see
+// setupAboutClamp), top skills. Past roles and education render separately,
+// in loadPersonCareerSections below. Certifications/languages/projects/
+// publications/recommendations are stored (li_* columns) but not rendered
+// here - not worth the space in this pane for how often they'd actually get
+// read. Connections/followers render on the links line (next to LinkedIn/
+// country) via personNetworkStatsHtml, not here; "Currently at" is
+// redundant with the bold current-role summary above this block.
 function linkedinProfileHtml(person) {
   const parts = [];
   if (person.li_headline) parts.push(`<div class="entity-desc">${person.li_headline}</div>`);
-  const meta = [];
-  if (person.li_current_position) meta.push(`Currently at ${person.li_current_position}`);
-  if (typeof person.li_connections_count === "number") meta.push(`${person.li_connections_count} connections`);
-  if (typeof person.li_follower_count === "number") meta.push(`${person.li_follower_count} followers`);
-  if (person.li_open_to_work) meta.push("Open to work");
-  if (meta.length) parts.push(`<div class="li-meta">${meta.join(" · ")}</div>`);
-  if (person.li_about) parts.push(`<div class="entity-desc">${person.li_about}</div>`);
+  if (person.li_open_to_work) parts.push(`<div class="li-meta">Open to work</div>`);
+  if (person.li_about) {
+    parts.push(`<div class="entity-desc about-clamp" id="detPersonAbout">${person.li_about}</div>` +
+      `<div class="about-more" id="detPersonAboutMoreWrap" style="display:none"><a href="#" id="detPersonAboutMoreLink">Read more</a></div>`);
+  }
   if (person.li_top_skills) parts.push(`<div class="entity-desc"><strong>Top skills:</strong> ${person.li_top_skills}</div>`);
   return parts.join("");
+}
+
+function personNetworkStatsHtml(person) {
+  const stats = [];
+  if (typeof person.li_connections_count === "number") stats.push(`${person.li_connections_count} connections`);
+  if (typeof person.li_follower_count === "number") stats.push(`${person.li_follower_count} followers`);
+  return stats.length ? `<span style="margin-left:12px;">${stats.join(" · ")}</span>` : "";
+}
+
+// Shows "Read more" only if the about text actually overflows its 3-line
+// clamp - toggles to "Read less" and back rather than being a one-way door.
+function setupAboutClamp() {
+  const box = document.getElementById("detPersonAbout");
+  const moreWrap = document.getElementById("detPersonAboutMoreWrap");
+  if (!box || !moreWrap) return;
+  if (box.scrollHeight <= box.clientHeight + 1) return;
+  moreWrap.style.display = "block";
+  const link = document.getElementById("detPersonAboutMoreLink");
+  link.addEventListener("click", e => {
+    e.preventDefault();
+    const expanded = box.classList.toggle("expanded");
+    link.textContent = expanded ? "Read less" : "Read more";
+  });
 }
 
 // Experience/education render as clickable links into the normalized
@@ -1377,7 +1418,7 @@ async function loadPersonCareerSections(person) {
       `${r.title ? ` — ${r.title}` : ""}</div>`).join("");
     metaBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
       e.preventDefault();
-      selectOrg(e.currentTarget.dataset.orgId);
+      selectOrg(e.currentTarget.dataset.orgId, true);
     }));
     // Deliberately doesn't touch any people-list row for this person: a row
     // in an org's roster shows their role AT THAT ORG (current or "ex" -
@@ -1392,7 +1433,7 @@ async function loadPersonCareerSections(person) {
   const rows = allRows.filter(r => !r.is_current && r.organizations)
     .sort((a, b) => roleRecencyYear(b) - roleRecencyYear(a));
   if (rows.length) {
-    expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Experience</strong>` +
+    expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Past roles</strong>` +
       rows.map(r => `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
         `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}</div>`).join("") +
       `</div>`;
