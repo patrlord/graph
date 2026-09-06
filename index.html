@@ -1293,7 +1293,12 @@ function showPersonDetail(person) {
   document.getElementById("personDetailEmpty").style.display = "none";
   document.getElementById("personDetailContent").classList.add("shown");
   document.getElementById("detPersonName").textContent = person.full_name;
-  document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
+  // A row clicked from a people list can be a specific past membership (the
+  // "ex" tag case) rather than this person's real current role - don't show
+  // it as if it were their role at all; leave it blank until
+  // loadPersonCareerSections resolves their actual current membership(s).
+  document.getElementById("detPersonMeta").textContent =
+    person.is_current === false ? "" : [person.title, person.focus].filter(Boolean).join(" — ");
   document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
   document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
   loadPersonCareerSections(person);
@@ -1334,42 +1339,42 @@ async function loadPersonCareerSections(person) {
   const eduBox = document.getElementById("detPersonEducation");
   expBox.innerHTML = "";
   eduBox.innerHTML = "";
-  if (!person.linkedin_url) return;  // nothing normalized yet if they've never been through Fetch LinkedIn profile
 
-  const [expRes, eduRes] = await Promise.all([
-    api(`/people/${person.id}/employment-history`),
-    api(`/people/${person.id}/education`),
-  ]);
-
+  // Always resolve the header from this person's actual current
+  // membership(s), never from whatever specific row was clicked to get
+  // here - a people list can show a past role (the "ex" tag case), and
+  // that row's title/focus belong to that membership, not to the person in
+  // general. Runs regardless of linkedin_url - memberships exist for every
+  // person, LinkedIn-imported or not.
+  const expRes = await api(`/people/${person.id}/employment-history`);
+  const allRows = expRes.ok ? await expRes.json() : [];
   if (expRes.ok) {
-    const allRows = await expRes.json();
-    // A "Fetch LinkedIn profile" run can change which membership is
-    // current (job change) - refresh the header line from this same
-    // response rather than leaving it showing whatever was current when
-    // the person was first loaded.
     const currentRows = allRows.filter(r => r.is_current && r.organizations);
-    if (currentRows.length) {
-      person.title = currentRows.map(r => r.title).filter(Boolean).join(" · ") || null;
-      document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
-      const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
-      if (inOrgList) inOrgList.title = person.title;
-      const inCurrentList = currentPeopleItems.find(p => p.id === person.id);
-      if (inCurrentList && inCurrentList !== person) inCurrentList.title = person.title;
-      renderPeopleTableBody();
-    }
-    const rows = allRows.filter(r => !r.is_current && r.organizations);
-    if (rows.length) {
-      expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Experience</strong>` +
-        rows.map(r => `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
-          `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}</div>`).join("") +
-        `</div>`;
-      expBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
-        e.preventDefault();
-        selectOrg(e.currentTarget.dataset.orgId);
-      }));
-    }
+    person.title = currentRows.map(r => r.title).filter(Boolean).join(" · ") || null;
+    person.focus = currentRows.map(r => r.focus).filter(Boolean).join(" · ") || null;
+    document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
+    const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
+    if (inOrgList) { inOrgList.title = person.title; inOrgList.focus = person.focus; }
+    const inCurrentList = currentPeopleItems.find(p => p.id === person.id);
+    if (inCurrentList && inCurrentList !== person) { inCurrentList.title = person.title; inCurrentList.focus = person.focus; }
+    renderPeopleTableBody();
   }
 
+  if (!person.linkedin_url) return;  // nothing normalized yet if they've never been through Fetch LinkedIn profile
+
+  const rows = allRows.filter(r => !r.is_current && r.organizations);
+  if (rows.length) {
+    expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Experience</strong>` +
+      rows.map(r => `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
+        `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}</div>`).join("") +
+      `</div>`;
+    expBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
+      e.preventDefault();
+      selectOrg(e.currentTarget.dataset.orgId);
+    }));
+  }
+
+  const eduRes = await api(`/people/${person.id}/education`);
   if (eduRes.ok) {
     const rows = await eduRes.json();
     if (rows.length) {
