@@ -159,10 +159,9 @@
 
   .none { color: #b5b1a9; }
 
-  .org-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .org-header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .org-header h3 { margin: 0; font-size: 15.5px; }
-  .org-header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .org-header-right .entity-links { margin-top: 0; }
+  .org-header .entity-links { margin-top: 0; }
   .type-pill {
     display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
     background: #f0eee9; color: #6b6862; border: 1px solid #e2e0dc; text-transform: uppercase; letter-spacing: .03em;
@@ -337,10 +336,8 @@
           <div id="orgHeaderView">
             <div class="org-header">
               <h3 id="detOrgName"></h3>
-              <div class="org-header-right">
-                <span class="type-pill" id="detOrgType"></span>
-                <div class="entity-links" id="detOrgLinks"></div>
-              </div>
+              <span class="type-pill" id="detOrgType"></span>
+              <div class="entity-links" id="detOrgLinks"></div>
             </div>
           </div>
           <div id="orgHeaderEdit" class="edit-name-row" style="display:none">
@@ -467,15 +464,15 @@
       <div id="personDetailContent" class="detail-content">
         <div class="detail-header">
           <div id="personHeaderView">
-            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-              <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
-              <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                  <span class="status-line" id="personApifyStatus" style="margin:0;min-height:0;"></span>
-                  <button class="secondary tiny" id="personApifyBtn" style="display:none">Fetch LinkedIn profile</button>
-                  <button class="secondary tiny" id="personEditBtn">Edit</button>
-                </div>
-                <div class="entity-links" id="detPersonLinks" style="margin-top:0;text-align:right;"></div>
+            <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+              <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+                <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+                <div class="entity-links" id="detPersonLinks" style="margin-top:0;"></div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="status-line" id="personApifyStatus" style="margin:0;min-height:0;"></span>
+                <button class="secondary tiny" id="personApifyBtn" style="display:none">Fetch LinkedIn profile</button>
+                <button class="secondary tiny" id="personEditBtn">Edit</button>
               </div>
             </div>
             <div class="entity-desc" id="detPersonMeta"></div>
