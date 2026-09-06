@@ -805,8 +805,12 @@ async function listEducationForPerson(personId: string) {
 // already tracked via their normal org membership, so importing it again
 // here would create a near-duplicate. Anything still "Present" (no end
 // date) is treated as current and skipped.
+// Only an explicit "Present" end date means current - a missing endDate is
+// ambiguous (most often a past role whose end date just wasn't captured)
+// and must NOT be treated as current, or someone with no current role at
+// all gets one of their old jobs misclassified as their current one.
 function isCurrentExperienceEntry(e: any): boolean {
-  return !e.endDate || e.endDate.text === "Present";
+  return e.endDate?.text === "Present";
 }
 
 async function importPastEmploymentForPerson(personId: string, experienceArr: any[] | undefined) {
@@ -883,7 +887,14 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     }
   }
 
-  if (!syncedOrgIds.size) return;  // LinkedIn gave nothing usable - leave existing current membership(s) alone
+  // Distinguishes "LinkedIn clearly shows no current role" from "we got no
+  // usable data at all" (a technical hiccup shouldn't wipe known-good data):
+  // real, non-empty experience/currentPosition data with nothing synced
+  // means genuinely no current role, so fall through and close out
+  // whatever's still marked current below. Only bail out here if both were
+  // empty/missing entirely.
+  const hadUsableData = (experienceArr?.length ?? 0) > 0 || (currentPositionArr?.length ?? 0) > 0;
+  if (!syncedOrgIds.size && !hadUsableData) return;
 
   const stillCurrent = await supabaseRequest("GET", "memberships", {
     params: { person_id: `eq.${personId}`, is_current: "eq.true", select: "id,organization_id" },
