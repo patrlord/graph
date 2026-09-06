@@ -1127,13 +1127,35 @@ function normalizePeopleItems(items, mode) {
 
 let includePastRoles = false;  // "Include ex-employees" toggle next to the people search box
 
+// Best-effort recency from free-text dates ("Jan 2024", "2018", ...) - the
+// only real signal we have for ranking two past roles against each other.
+// Falls back to start_date only if there's truly no end_date at all.
+function roleRecencyYear(item) {
+  const match = String(item.end_date || item.start_date || "").match(/(\d{4})/);
+  return match ? parseInt(match[1], 10) : -Infinity;
+}
+
 // The blue "ex" tag shown for a past (non-current) role, with the year they
-// left where we have one to parse out of the free-text end_date (falling
-// back to start_date only if there's truly no end_date at all).
+// left where we have one to parse out.
 function exTagHtml(item) {
   if (item.is_current !== false) return "";
-  const year = String(item.end_date || item.start_date || "").match(/(\d{4})/);
-  return `<span class="ex-tag">ex${year ? " " + year[1] : ""}</span>`;
+  const year = roleRecencyYear(item);
+  return `<span class="ex-tag">ex${year > -Infinity ? " " + year : ""}</span>`;
+}
+
+// When sorting by name, breaks ties (multiple rows for the same person -
+// their current role(s), then past ones) by recency: current first, then
+// most-recently-departed first, oldest last.
+function peopleComparator() {
+  const base = makeComparator(peopleSort);
+  if (peopleSort.field !== "full_name") return base;
+  return (a, b) => {
+    const primary = base(a, b);
+    if (primary !== 0) return primary;
+    const scoreA = a.is_current ? Infinity : roleRecencyYear(a);
+    const scoreB = b.is_current ? Infinity : roleRecencyYear(b);
+    return scoreB - scoreA;
+  };
 }
 
 // forceIncludePast shows past roles for this one render regardless of the
@@ -1149,10 +1171,10 @@ function renderPeopleList(items, mode, forceIncludePast) {
   const showPast = forceIncludePast || includePastRoles;
   currentPeopleItems = showPast ? normalized : normalized.filter(item => item.is_current !== false);
   wireSortHeaders("peopleTable", peopleSort, () => {
-    currentPeopleItems.sort(makeComparator(peopleSort));
+    currentPeopleItems.sort(peopleComparator());
     renderPeopleTableBody();
   });
-  currentPeopleItems.sort(makeComparator(peopleSort));
+  currentPeopleItems.sort(peopleComparator());
   renderPeopleTableBody();
 }
 
@@ -1289,11 +1311,10 @@ function showPersonDetail(person) {
   document.getElementById("personDetailContent").classList.add("shown");
   document.getElementById("detPersonName").textContent = person.full_name;
   // A row clicked from a people list can be a specific past membership (the
-  // "ex" tag case) rather than this person's real current role - don't show
-  // it as if it were their role at all; leave it blank until
-  // loadPersonCareerSections resolves their actual current membership(s).
-  document.getElementById("detPersonMeta").textContent =
-    person.is_current === false ? "" : [person.title, person.focus].filter(Boolean).join(" — ");
+  // "ex" tag case) rather than this person's real current role - never show
+  // it as if it were their role at all; always resolved (as HTML, "Company
+  // — Title" per current role) by loadPersonCareerSections below.
+  document.getElementById("detPersonMeta").innerHTML = "";
   document.getElementById("detPersonLinks").innerHTML = entityLinksHtml(null, person.linkedin_url, person.country);
   document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
   loadPersonCareerSections(person);
@@ -1347,7 +1368,17 @@ async function loadPersonCareerSections(person) {
     const currentRows = allRows.filter(r => r.is_current && r.organizations);
     person.title = currentRows.map(r => r.title).filter(Boolean).join(" · ") || null;
     person.focus = currentRows.map(r => r.focus).filter(Boolean).join(" · ") || null;
-    document.getElementById("detPersonMeta").textContent = [person.title, person.focus].filter(Boolean).join(" — ");
+    // Same "Company — Title" format as the Experience list below, just bold
+    // and sized to match the "Person" pane's own title - one line per
+    // current role (someone can have more than one at once).
+    const metaBox = document.getElementById("detPersonMeta");
+    metaBox.innerHTML = currentRows.map(r => `<div style="font-size:13.5px;font-weight:700;">` +
+      `<a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
+      `${r.title ? ` — ${r.title}` : ""}</div>`).join("");
+    metaBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
+      e.preventDefault();
+      selectOrg(e.currentTarget.dataset.orgId);
+    }));
     // Deliberately doesn't touch any people-list row for this person: a row
     // in an org's roster shows their role AT THAT ORG (current or "ex" -
     // correct and historical either way), which has nothing to do with
@@ -1358,7 +1389,8 @@ async function loadPersonCareerSections(person) {
 
   if (!person.linkedin_url) return;  // nothing normalized yet if they've never been through Fetch LinkedIn profile
 
-  const rows = allRows.filter(r => !r.is_current && r.organizations);
+  const rows = allRows.filter(r => !r.is_current && r.organizations)
+    .sort((a, b) => roleRecencyYear(b) - roleRecencyYear(a));
   if (rows.length) {
     expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Experience</strong>` +
       rows.map(r => `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
