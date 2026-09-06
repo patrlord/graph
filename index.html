@@ -354,6 +354,7 @@
             <div class="investor-profile" id="detOrgInvestorProfile"></div>
             <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
               <button class="secondary tiny" id="orgEditBtn">Edit</button>
+              <button class="danger tiny" id="orgDeleteBtn">Delete</button>
               <button class="secondary tiny" id="enrichOrgBtnView">Enrich</button>
               <span class="status-line" id="enrichOrgViewStatus"></span>
             </div>
@@ -1046,6 +1047,33 @@ async function removeOrgConnection(connId) {
   if (!confirm("Remove this relationship?")) return;
   await api(`/connections/${connId}`, { method: "DELETE" });
   if (selectedOrg) loadOrgConnections(selectedOrg);
+}
+
+// Deletes the organization outright (memberships cascade via the DB FK;
+// team members themselves are untouched, they just lose this role). Resets
+// the org/people panes back to their no-selection state, same as pressing
+// the people-search "Clear" button, since there's no longer an org to show.
+async function deleteSelectedOrg() {
+  if (!selectedOrg) return;
+  if (!confirm(`Delete ${selectedOrg.name}? This can't be undone.`)) return;
+  const btn = document.getElementById("orgDeleteBtn");
+  btn.disabled = true;
+  try {
+    const res = await api(`/organizations/${selectedOrg.id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
+    selectedOrg = null;
+    document.getElementById("orgDetailEmpty").style.display = "block";
+    document.getElementById("orgDetailContent").classList.remove("shown");
+    highlightSelected("orgList", null);
+    loadOrgList();
+    peopleForceGlobal = true;
+    updatePeopleHeader();
+    applyPeopleFilter();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Re-runs the same research used when adding an organization, against its
@@ -1920,6 +1948,7 @@ document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindA
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
 document.getElementById("orgEditBtn").addEventListener("click", enterOrgEditMode);
+document.getElementById("orgDeleteBtn").addEventListener("click", deleteSelectedOrg);
 document.getElementById("orgCancelBtn").addEventListener("click", exitOrgEditMode);
 document.getElementById("enrichOrgBtnView").addEventListener("click", enrichSelectedOrg);
 document.getElementById("enrichOrgBtnEdit").addEventListener("click", enrichIntoEditForm);
