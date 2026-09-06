@@ -109,10 +109,11 @@
   .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
   .status-line.error { color: #a33; }
 
+  .about-wrap { position: relative; }
   .about-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .about-clamp.expanded { -webkit-line-clamp: unset; overflow: visible; }
-  .about-more { text-align: right; margin-top: 2px; }
-  .about-more a { color: #8a5a2b; text-decoration: none; font-size: 11.5px; }
+  .about-more { position: absolute; right: 0; bottom: 0; padding-left: 24px; background: linear-gradient(to right, transparent, #fff 16px); }
+  .about-more a { color: #8a5a2b; text-decoration: none; font-size: 11.5px; background: #fff; }
   .about-more a:hover { text-decoration: underline; }
 
   .list-view, .add-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
@@ -461,7 +462,14 @@
       <div id="personDetailContent" class="detail-content">
         <div class="detail-header">
           <div id="personHeaderView">
-            <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+              <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="status-line" id="personApifyStatus" style="margin:0;min-height:0;"></span>
+                <button class="secondary tiny" id="personApifyBtn" style="display:none">Fetch LinkedIn profile</button>
+                <button class="secondary tiny" id="personEditBtn">Edit</button>
+              </div>
+            </div>
             <div class="entity-desc" id="detPersonMeta"></div>
             <div class="entity-links" id="detPersonLinks"></div>
           </div>
@@ -472,11 +480,6 @@
             <div id="detPersonLinkedinProfile"></div>
             <div id="detPersonExperience"></div>
             <div id="detPersonEducation"></div>
-            <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
-              <button class="secondary tiny" id="personEditBtn">Edit</button>
-              <button class="secondary tiny" id="personApifyBtn" style="display:none">Fetch LinkedIn profile</button>
-              <span class="status-line" id="personApifyStatus"></span>
-            </div>
           </div>
           <div id="personBodyEdit" style="display:none">
             <div class="edit-field"><label for="editPersonTitle">Title</label><input type="text" id="editPersonTitle"></div>
@@ -1158,6 +1161,14 @@ function exTagHtml(item) {
   return `<span class="ex-tag">ex${year > -Infinity ? " " + year : ""}</span>`;
 }
 
+// The small "Company — Title (dates)" line used for a Past roles entry, and
+// reused for any current role after the first (see loadPersonCareerSections) -
+// only the top current role gets the bold headline treatment.
+function careerRowHtml(r) {
+  return `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
+    `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}</div>`;
+}
+
 // When sorting by name, breaks ties (multiple rows for the same person -
 // their current role(s), then past ones) by recency: current first, then
 // most-recently-departed first, oldest last.
@@ -1335,9 +1346,7 @@ function showPersonDetail(person) {
   document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
   setupAboutClamp();
   loadPersonCareerSections(person);
-  document.getElementById("personApifyBtn").style.display = person.linkedin_url ? "inline-block" : "none";
-  document.getElementById("personApifyStatus").textContent = "";
-  document.getElementById("personApifyStatus").className = "status-line";
+  updateApifyControls(person);
   document.getElementById("personNewsList").innerHTML = "";
   loadPersonNews(person);
   exitPersonEditMode();
@@ -1354,11 +1363,13 @@ function showPersonDetail(person) {
 // redundant with the bold current-role summary above this block.
 function linkedinProfileHtml(person) {
   const parts = [];
-  if (person.li_headline) parts.push(`<div class="entity-desc">${person.li_headline}</div>`);
+  if (person.li_headline) parts.push(`<div class="entity-desc" style="font-weight:700;">${person.li_headline}</div>`);
   if (person.li_open_to_work) parts.push(`<div class="li-meta">Open to work</div>`);
   if (person.li_about) {
-    parts.push(`<div class="entity-desc about-clamp" id="detPersonAbout">${person.li_about}</div>` +
-      `<div class="about-more" id="detPersonAboutMoreWrap" style="display:none"><a href="#" id="detPersonAboutMoreLink">Read more</a></div>`);
+    parts.push(`<div class="about-wrap">` +
+      `<div class="entity-desc about-clamp" id="detPersonAbout">${person.li_about}</div>` +
+      `<div class="about-more" id="detPersonAboutMoreWrap" style="display:none"><a href="#" id="detPersonAboutMoreLink">Read more</a></div>` +
+      `</div>`);
   }
   if (person.li_top_skills) parts.push(`<div class="entity-desc"><strong>Top skills:</strong> ${person.li_top_skills}</div>`);
   return parts.join("");
@@ -1409,13 +1420,17 @@ async function loadPersonCareerSections(person) {
     const currentRows = allRows.filter(r => r.is_current && r.organizations);
     person.title = currentRows.map(r => r.title).filter(Boolean).join(" · ") || null;
     person.focus = currentRows.map(r => r.focus).filter(Boolean).join(" · ") || null;
-    // Same "Company — Title" format as the Experience list below, just bold
-    // and sized to match the "Person" pane's own title - one line per
-    // current role (someone can have more than one at once).
+    // Only the top current role gets the bold "Company — Title" headline
+    // treatment; anyone with more than one current role (e.g. a fund
+    // partnership plus a board seat) sees the rest in the same small format
+    // as a Past roles entry, not a second headline.
+    const [topRole, ...otherCurrentRoles] = currentRows;
     const metaBox = document.getElementById("detPersonMeta");
-    metaBox.innerHTML = currentRows.map(r => `<div style="font-size:13.5px;font-weight:700;">` +
-      `<a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
-      `${r.title ? ` — ${r.title}` : ""}</div>`).join("");
+    metaBox.innerHTML =
+      (topRole ? `<div style="font-size:13.5px;font-weight:700;">` +
+        `<a href="#" class="career-link" data-org-id="${topRole.organizations.id}">${topRole.organizations.name}</a>` +
+        `${topRole.title ? ` — ${topRole.title}` : ""}</div>` : "") +
+      otherCurrentRoles.map(careerRowHtml).join("");
     metaBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
       e.preventDefault();
       selectOrg(e.currentTarget.dataset.orgId, true);
@@ -1434,8 +1449,7 @@ async function loadPersonCareerSections(person) {
     .sort((a, b) => roleRecencyYear(b) - roleRecencyYear(a));
   if (rows.length) {
     expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Past roles</strong>` +
-      rows.map(r => `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
-        `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}</div>`).join("") +
+      rows.map(careerRowHtml).join("") +
       `</div>`;
     expBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
       e.preventDefault();
@@ -1475,6 +1489,23 @@ async function showSchoolPeople(schoolId, schoolName) {
   document.getElementById("peopleListTitle").textContent = `People who went to ${schoolName}`;
 }
 
+function formatFetchedDate(iso) {
+  if (!iso) return "";
+  return `Fetched ${new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
+}
+
+// Label switches to "Update" once there's a previous fetch on record;
+// the date/status line normally shows when that fetch happened, standing
+// in for a transient "Fetching…"/error message while one is in progress.
+function updateApifyControls(person) {
+  const btn = document.getElementById("personApifyBtn");
+  const status = document.getElementById("personApifyStatus");
+  btn.style.display = person.linkedin_url ? "inline-block" : "none";
+  btn.textContent = person.li_profile_fetched_at ? "Update LinkedIn profile" : "Fetch LinkedIn profile";
+  status.className = "status-line";
+  status.textContent = formatFetchedDate(person.li_profile_fetched_at);
+}
+
 async function fetchApifyProfile() {
   const person = selectedPersonObj;
   if (!person || !person.linkedin_url) return;
@@ -1490,8 +1521,7 @@ async function fetchApifyProfile() {
     if (inOrgList) Object.assign(inOrgList.people, data);
     const inCurrentList = currentPeopleItems.find(p => p.id === person.id);
     if (inCurrentList && inCurrentList !== person) Object.assign(inCurrentList, data);
-    showPersonDetail(person);
-    status.textContent = "Updated.";
+    showPersonDetail(person);  // also restores the date/label via updateApifyControls
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally {
