@@ -1166,9 +1166,13 @@ function exTagHtml(item) {
 // The small "Company — Title (dates)" line used for a Past roles entry, and
 // reused for any current role after the first (see loadPersonCareerSections) -
 // only the top current role gets the bold headline treatment.
+function careerRowInner(r) {
+  return `<a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
+    `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}`;
+}
+
 function careerRowHtml(r) {
-  return `<div class="li-meta"><a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
-    `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}</div>`;
+  return `<div class="li-meta">${careerRowInner(r)}</div>`;
 }
 
 // When sorting by name, breaks ties (multiple rows for the same person -
@@ -1424,15 +1428,16 @@ async function loadPersonCareerSections(person) {
     person.focus = currentRows.map(r => r.focus).filter(Boolean).join(" · ") || null;
     // Only the top current role gets the bold "Company — Title" headline
     // treatment; anyone with more than one current role (e.g. a fund
-    // partnership plus a board seat) sees the rest in the same small format
-    // as a Past roles entry, not a second headline.
+    // partnership plus a board seat) sees the rest dot-separated on one
+    // small line, same format as a Past roles entry, rather than a second
+    // headline or one line each (which got tall fast with several of them).
     const [topRole, ...otherCurrentRoles] = currentRows;
     const metaBox = document.getElementById("detPersonMeta");
     metaBox.innerHTML =
       (topRole ? `<div style="font-size:13.5px;font-weight:700;">` +
         `<a href="#" class="career-link" data-org-id="${topRole.organizations.id}">${topRole.organizations.name}</a>` +
         `${topRole.title ? ` — ${topRole.title}` : ""}</div>` : "") +
-      otherCurrentRoles.map(careerRowHtml).join("");
+      (otherCurrentRoles.length ? `<div class="li-meta">${otherCurrentRoles.map(careerRowInner).join(" · ")}</div>` : "");
     metaBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
       e.preventDefault();
       selectOrg(e.currentTarget.dataset.orgId, true);
