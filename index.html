@@ -159,6 +159,14 @@
 
   .none { color: #b5b1a9; }
 
+  /* "Connected" list column - a lone dot rather than text, so it doesn't
+     compete with the row's real content; title attribute carries the label. */
+  .connected-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2f7a3d; }
+  .user-badge {
+    display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+    background: #2f7a3d; color: #fff; text-transform: uppercase; letter-spacing: .03em;
+  }
+
   .org-header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .org-header h3 { margin: 0; font-size: 15.5px; }
   .org-header .entity-links { margin-top: 0; }
@@ -297,6 +305,7 @@
                 <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
                 <th>LinkedIn <button class="secondary tiny" id="orgFindAllBtn" title="Find LinkedIn URLs for every organization below that's missing one">Find all</button></th>
+                <th title="Has a team member connected to a flagged user">Connected</th>
               </tr>
             </thead>
             <tbody id="orgList"></tbody>
@@ -432,6 +441,7 @@
                 <th data-sort="country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="title">Role <span class="sort-arrow"></span></th>
                 <th>LinkedIn</th>
+                <th title="Connected to a flagged user">Connected</th>
               </tr>
             </thead>
             <tbody id="peopleList"></tbody>
@@ -470,6 +480,7 @@
             <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;">
               <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
                 <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+                <span class="user-badge" id="detPersonUserBadge" style="display:none">User</span>
                 <div class="entity-links" id="detPersonLinks" style="margin-top:0;"></div>
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -494,6 +505,7 @@
             <div class="edit-field"><label for="editPersonFocus">Focus</label><input type="text" id="editPersonFocus"></div>
             <div class="edit-field"><label for="editPersonCountry">Country</label><input type="text" id="editPersonCountry"></div>
             <div class="edit-field"><label for="editPersonLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editPersonLinkedin" placeholder="https://www.linkedin.com/in/…"><a id="editPersonLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
+            <label class="list-toggle" id="editPersonIsUserRow" style="margin:0 0 12px;"><input type="checkbox" id="editPersonIsUser"> This is a user - people and orgs connected to them show a "Connected" flag</label>
             <div style="display:flex;align-items:center;gap:10px;">
               <button id="personSaveBtn">Save</button>
               <button class="secondary tiny" id="personCancelBtn">Cancel</button>
@@ -707,6 +719,11 @@ function wireSortHeaders(tableId, sortState, onSort) {
   });
 }
 
+// Lone dot, not text, so it doesn't compete with the row's real content.
+function connectedCellHtml(item) {
+  return item.connected_to_user ? '<span class="connected-dot" title="Connected to a flagged user"></span>' : "";
+}
+
 function renderOrgList(orgs) {
   const listEl = document.getElementById("orgList");
   const emptyEl = document.getElementById("emptyOrgList");
@@ -719,6 +736,7 @@ function renderOrgList(orgs) {
       <td>${o.hq_country || '<span class="none">—</span>'}</td>
       <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
       <td>${linkedinCellFor(o)}</td>
+      <td>${connectedCellHtml(o)}</td>
     </tr>
   `).join("");
   [...listEl.children].forEach((tr, i) => {
@@ -1259,6 +1277,7 @@ function renderPeopleTableBody() {
       <td>${p.country || '<span class="none">—</span>'}</td>
       <td>${exTagHtml(p)}${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}</td>
       <td>${linkedinCellFor(p)}</td>
+      <td>${connectedCellHtml(p)}</td>
     </tr>
   `).join("");
   [...listEl.children].forEach((tr, i) => {
@@ -1375,6 +1394,7 @@ function showPersonDetail(person) {
   document.getElementById("personDetailEmpty").style.display = "none";
   document.getElementById("personDetailContent").classList.add("shown");
   document.getElementById("detPersonName").textContent = person.full_name;
+  document.getElementById("detPersonUserBadge").style.display = person.is_user ? "inline-block" : "none";
   // A row clicked from a people list can be a specific past membership (the
   // "ex" tag case) rather than this person's real current role - never show
   // it as if it were their role at all; always resolved (as HTML, "Company
@@ -1575,6 +1595,7 @@ function populatePersonEditForm(person) {
   document.getElementById("editPersonFocus").value = person.focus || "";
   document.getElementById("editPersonCountry").value = person.country || "";
   document.getElementById("editPersonLinkedin").value = person.linkedin_url || "";
+  document.getElementById("editPersonIsUser").checked = !!person.is_user;
   syncPersonLinkedinLink();
   document.getElementById("personSaveStatus").textContent = "";
   document.getElementById("personSaveStatus").className = "status-line";
@@ -1615,6 +1636,7 @@ async function savePersonEdits() {
         full_name: fullName,
         country: document.getElementById("editPersonCountry").value.trim(),
         linkedin_url: newLinkedin,
+        is_user: document.getElementById("editPersonIsUser").checked,
       }),
     });
     const personData = await personRes.json();
@@ -1660,7 +1682,7 @@ async function savePersonEdits() {
     // Keep the row(s) behind this person in sync without a full reload.
     const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
     if (inOrgList) {
-      Object.assign(inOrgList.people, { full_name: person.full_name, country: person.country, linkedin_url: person.linkedin_url });
+      Object.assign(inOrgList.people, { full_name: person.full_name, country: person.country, linkedin_url: person.linkedin_url, is_user: person.is_user });
       inOrgList.title = person.title;
       inOrgList.focus = person.focus;
     }

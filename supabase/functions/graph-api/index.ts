@@ -23,8 +23,10 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at}, ... ]
-//     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true)
+//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at, connected_to_user}, ... ]
+//     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true.
+//     connected_to_user: true if any person with a membership at this org - past or current - is themselves flagged
+//     is_user, or is connected to one via a person<->person row in `connections`; see getUserConnectedPersonIds)
 //   POST   /organizations       { organization, people } -> saved { organization, people }
 //     organization fields: name, org_type, website_url, linkedin_url, hq_country, description,
 //     sectors[]; plus investor-profile fields not touched by research (ticket_size, investment_stages[],
@@ -34,10 +36,12 @@
 //   DELETE /organizations/:id   -> { ok: true }
 //   PATCH  /organizations/:id   { any subset of organization fields above } -> updated org (direct set, not merge-only-blanks - a
 //     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI)
-//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, title, focus, is_current, start_date, end_date, membership_id, organization}, ... ]
+//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user}, ... ]
 //     (q omitted/empty -> all people, capped at 1000; include_past=true returns one row per membership - e.g. two past
-//     roles at the same company both show - instead of the default one row per person, their best/current membership only)
-//   PATCH  /people/:id          { any subset of full_name, linkedin_url, country } -> updated person (direct set, same as organizations PATCH)
+//     roles at the same company both show - instead of the default one row per person, their best/current membership only.
+//     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
+//     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds)
+//   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, is_user } -> updated person (direct set, same as organizations PATCH)
 //   PATCH  /memberships/:id     { any subset of title, focus } -> updated membership (direct set, same as organizations PATCH)
 //   POST   /people/:id/enrich-from-linkedin  { linkedin_url, name?, organization_id? } -> { country, title, observed_company }
 //     (for a hand-entered LinkedIn URL, not one found via search - looks up what else that profile says and
@@ -386,6 +390,32 @@ async function saveOrganization(payload: any) {
   return { organization: org, people: savedPeople, organization_existed: orgExisted };
 }
 
+// Person ids "in the user's network": everyone flagged is_user themselves,
+// plus everyone reachable from one of them by a single person<->person row
+// in `connections` (either direction - a LinkedIn-connection import only
+// ever writes the user as entity_a, but this stays correct regardless of
+// which side an edge was written from, and for any future non-LinkedIn
+// source of person<->person connections too). Backs the connected_to_user
+// flag on both people and organizations rows.
+async function getUserConnectedPersonIds(): Promise<Set<string>> {
+  const users = await supabaseRequest("GET", "people", { params: { is_user: "eq.true", select: "id" } });
+  const userIds: string[] = (users ?? []).map((u: any) => u.id);
+  const result = new Set<string>(userIds);
+  if (!userIds.length) return result;
+  const idList = `(${userIds.join(",")})`;
+  const [asA, asB] = await Promise.all([
+    supabaseRequest("GET", "connections", {
+      params: { entity_a_type: "eq.person", entity_a_id: `in.${idList}`, entity_b_type: "eq.person", select: "entity_b_id" },
+    }),
+    supabaseRequest("GET", "connections", {
+      params: { entity_b_type: "eq.person", entity_b_id: `in.${idList}`, entity_a_type: "eq.person", select: "entity_a_id" },
+    }),
+  ]);
+  (asA ?? []).forEach((c: any) => result.add(c.entity_b_id));
+  (asB ?? []).forEach((c: any) => result.add(c.entity_a_id));
+  return result;
+}
+
 // Past employers (org_type "employer", pulled from LinkedIn experience
 // history via enrichPersonFromApify) are excluded by default - they aren't
 // investment organizations and would otherwise flood the primary list this
@@ -402,7 +432,22 @@ async function listOrganizations(includeEmployers: boolean) {
   // specifically meant to show up in for classification. Include NULL
   // explicitly instead of relying on neq alone.
   if (!includeEmployers) params.or = "(org_type.is.null,org_type.neq.employer)";
-  return await supabaseRequest("GET", "organizations", { params });
+  const orgs = await supabaseRequest("GET", "organizations", { params });
+  if (!orgs?.length) return orgs;
+
+  const connectedIds = await getUserConnectedPersonIds();
+  const connectedOrgIds = new Set<string>();
+  if (connectedIds.size) {
+    // Unfiltered on purpose: filtering by this page's org ids would mean an
+    // `in.(...)` list of up to ~1500 UUIDs in the query string. A flat scan
+    // of (organization_id, person_id) pairs is cheap either way.
+    const memberships = await supabaseRequest("GET", "memberships", { params: { select: "organization_id,person_id" } });
+    for (const m of memberships ?? []) {
+      if (connectedIds.has(m.person_id)) connectedOrgIds.add(m.organization_id);
+    }
+  }
+  for (const o of orgs) o.connected_to_user = connectedOrgIds.has(o.id);
+  return orgs;
 }
 
 async function getOrganization(id: string) {
@@ -415,6 +460,10 @@ async function getOrganization(id: string) {
       select: "id,title,focus,is_current,start_date,end_date,people(*)",
     },
   });
+  const connectedIds = await getUserConnectedPersonIds();
+  for (const m of org.people ?? []) {
+    if (m.people) m.people.connected_to_user = connectedIds.has(m.people.id);
+  }
   return org;
 }
 
@@ -500,10 +549,14 @@ async function searchPeopleGlobal(query: string, includePast: boolean) {
     limit: query ? "25" : "1000",
   };
   if (query) params.full_name = `ilike.*${query}*`;
-  const people = await supabaseRequest("GET", "people", { params });
+  const [people, connectedIds] = await Promise.all([
+    supabaseRequest("GET", "people", { params }),
+    getUserConnectedPersonIds(),
+  ]);
   const rows: any[] = [];
   for (const p of people ?? []) {
     const { memberships, ...rest } = p;
+    rest.connected_to_user = connectedIds.has(p.id);
     const ms = memberships || [];
     const toRow = (m: any) => ({
       ...rest, title: m?.title || null, focus: m?.focus || null, membership_id: m?.id || null,
@@ -1562,7 +1615,7 @@ Deno.serve(async (req) => {
     const personIdMatch = path.match(/^\/people\/([^/]+)$/);
     if (personIdMatch && req.method === "PATCH") {
       const body = await req.json();
-      const fields = pickDefined(body, ["full_name", "linkedin_url", "country"]);
+      const fields = pickDefined(body, ["full_name", "linkedin_url", "country", "is_user"]);
       if ("full_name" in fields && !String(fields.full_name ?? "").trim()) return json({ error: "full_name cannot be blank" }, 400);
       if ("linkedin_url" in fields) fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);
       if (!Object.keys(fields).length) return json({ error: "no editable fields provided" }, 400);
