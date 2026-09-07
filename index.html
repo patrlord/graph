@@ -364,11 +364,9 @@
             <div id="detOrgLinkedinProfile"></div>
             <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
               <button class="secondary tiny" id="orgEditBtn">Edit</button>
-              <button class="danger tiny" id="orgDeleteBtn">Delete</button>
               <button class="secondary tiny" id="enrichOrgBtnView">Enrich</button>
-              <button class="secondary tiny" id="orgApifyBtn" style="display:none">Fetch LinkedIn profile</button>
               <span class="status-line" id="enrichOrgViewStatus"></span>
-              <span class="status-line" id="orgApifyStatus"></span>
+              <button class="danger tiny" id="orgDeleteBtn" style="margin-left:auto">Delete</button>
             </div>
           </div>
           <div id="orgBodyEdit" style="display:none">
@@ -881,10 +879,27 @@ function investorProfileHtml(org) {
 // recently found, mirroring linkedinProfileHtml for people - same idea,
 // company-shaped fields. li_industries entries are objects (id + name) per
 // the actor's docs; extracted defensively in case a plain string sneaks in.
+// Funding round shape confirmed live: {fundingType, moneyRaised: {amount,
+// currencyCode}, announcedOn: {year, month, day}} - falls back to a couple
+// of flatter shapes too, in case a differently-shaped actor result ever
+// lands here again (see mapApifyCompanyToLiFields).
+function fundingRoundText(f) {
+  if (!f) return null;
+  const type = f.fundingType || f.type || null;
+  const money = f.moneyRaised;
+  const amount = typeof money?.amount === "number"
+    ? `${money.amount.toLocaleString()}${money.currencyCode ? " " + money.currencyCode : ""}`
+    : (money?.amount || f.amount || null);
+  const d = f.announcedOn;
+  const date = (d && typeof d === "object") ? [d.year, d.month, d.day].filter(Boolean).join("-") : (f.announcementDate || f.announcedDate || null);
+  return [type, amount, date].filter(Boolean).join(" · ") || null;
+}
+
 function linkedinCompanyHtml(org) {
   const parts = [];
   if (org.li_tagline) parts.push(`<div class="entity-desc" style="font-weight:700;">${org.li_tagline}</div>`);
   const stats = [];
+  if (org.li_company_type) stats.push(org.li_company_type);
   if (typeof org.li_employee_count === "number") stats.push(`${org.li_employee_count} employees`);
   else if (org.li_employee_count_range) stats.push(`${org.li_employee_count_range} employees`);
   if (typeof org.li_follower_count === "number") stats.push(`${org.li_follower_count} followers`);
@@ -895,11 +910,9 @@ function linkedinCompanyHtml(org) {
     if (names.length) parts.push(`<div class="entity-desc"><strong>Industries:</strong> ${names.join(", ")}</div>`);
   }
   if (org.li_specialities && org.li_specialities.length) parts.push(`<div class="entity-desc"><strong>Specialities:</strong> ${org.li_specialities.join(", ")}</div>`);
-  if (org.li_last_funding_round) {
-    const f = org.li_last_funding_round;
-    const bits = [f.type, f.amount, f.announcementDate || f.announcedDate].filter(Boolean).join(" · ");
-    if (bits) parts.push(`<div class="entity-desc"><strong>Last funding round:</strong> ${bits}</div>`);
-  }
+  const fundingBits = fundingRoundText(org.li_last_funding_round);
+  if (fundingBits) parts.push(`<div class="entity-desc"><strong>Last funding round:</strong> ${fundingBits}</div>`);
+  if (org.li_phone) parts.push(`<div class="entity-desc"><strong>Phone:</strong> ${org.li_phone}</div>`);
   return parts.join("");
 }
 
@@ -916,7 +929,6 @@ function renderOrgDetail(org) {
   document.getElementById("orgNewsList").innerHTML = "";
   document.getElementById("enrichOrgViewStatus").textContent = "";
   document.getElementById("enrichOrgViewStatus").className = "status-line";
-  updateOrgApifyControls(org);
   exitOrgEditMode();
 }
 
@@ -1132,6 +1144,16 @@ async function deleteSelectedOrg() {
 // team members the same way a fresh "add organization" would.
 // View-mode Enrich: researches and saves immediately (merge-only-blanks),
 // same as before there was an edit mode to worry about.
+// One button, three steps, each one feeding the next: research (fills
+// blanks, same merge-only-blanks save as before), then - only if still
+// missing - find a LinkedIn URL, then - only if we now have one - fetch the
+// full LinkedIn company profile via Apify. Each step's own failure stops
+// the chain there rather than masking it as a full failure: research
+// succeeding and saving is real progress even if, say, Apify then errors,
+// so the status line says exactly how far it got rather than just "failed".
+// selectOrg/renderOrgDetail calls along the way each reset the status line
+// themselves - every status.textContent below is deliberately the next
+// line after one of those, not before, so it isn't immediately clobbered.
 async function enrichSelectedOrg() {
   if (!selectedOrg) return;
   const btn = document.getElementById("enrichOrgBtnView");
@@ -1147,48 +1169,47 @@ async function enrichSelectedOrg() {
     const saveRes = await apiWithRetry("/organizations", { method: "POST", body: JSON.stringify(data) });
     const saveData = await saveRes.json();
     if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
-    status.textContent = "";
-    await selectOrg(saveData.organization.id);
+    await selectOrg(saveData.organization.id);  // resets status via renderOrgDetail
     loadOrgList();
-  } catch (err) {
-    status.className = "status-line error"; status.textContent = err.message;
-  } finally {
-    btn.disabled = false;
-  }
-}
 
-// Label switches to "Update" once there's a previous fetch on record, same
-// as updateApifyControls for people; only shown at all once the org has a
-// linkedin_url to fetch against.
-function updateOrgApifyControls(org) {
-  const btn = document.getElementById("orgApifyBtn");
-  const status = document.getElementById("orgApifyStatus");
-  btn.style.display = org.linkedin_url ? "inline-block" : "none";
-  btn.textContent = org.li_profile_fetched_at ? "Update LinkedIn profile" : "Fetch LinkedIn profile";
-  status.className = "status-line";
-  status.textContent = formatFetchedDate(org.li_profile_fetched_at);
-}
-
-async function fetchOrgApifyProfile() {
-  const org = selectedOrg;
-  if (!org || !org.linkedin_url) return;
-  const btn = document.getElementById("orgApifyBtn");
-  const status = document.getElementById("orgApifyStatus");
-  btn.disabled = true; status.className = "status-line"; status.textContent = "Fetching LinkedIn profile…";
-  try {
-    const res = await api(`/organizations/${org.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Fetch failed");
-    const { name_clash, ...fields } = data;
-    Object.assign(org, fields);
-    renderOrgDetail(org);  // also restores the date/label via updateOrgApifyControls
-    if (name_clash) {
-      document.getElementById("orgApifyStatus").className = "status-line error";
-      document.getElementById("orgApifyStatus").textContent =
-        `Fetched — LinkedIn calls this "${name_clash}", but that name is already used by another org, so the name wasn't changed.`;
+    if (!selectedOrg.linkedin_url) {
+      status.textContent = "Finding LinkedIn URL…";
+      const findRes = await api("/organizations/find-linkedin", {
+        method: "POST",
+        body: JSON.stringify({
+          org_id: selectedOrg.id, name: selectedOrg.name,
+          website_url: selectedOrg.website_url || "", country: selectedOrg.hq_country || "",
+        }),
+      });
+      const findData = await findRes.json();
+      if (findRes.ok && findData.linkedin_url) {
+        selectedOrg.linkedin_url = findData.linkedin_url;
+        if (findData.sectors) selectedOrg.sectors = findData.sectors;
+        if (findData.hq_country) selectedOrg.hq_country = findData.hq_country;
+        renderOrgDetail(selectedOrg);  // resets status again
+        loadOrgList();
+      }
     }
-    updatePeopleHeader();  // in case the rename changed "People at <org>"
-    loadOrgList();  // name (and/or other list-visible fields) may have changed
+
+    if (selectedOrg.linkedin_url) {
+      status.textContent = "Fetching LinkedIn profile…";
+      const apifyRes = await api(`/organizations/${selectedOrg.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
+      const apifyData = await apifyRes.json();
+      if (!apifyRes.ok) throw new Error(`Researched, but the LinkedIn profile fetch failed: ${apifyData.error || "unknown error"}`);
+      const { name_clash, ...fields } = apifyData;
+      Object.assign(selectedOrg, fields);
+      renderOrgDetail(selectedOrg);  // resets status once more
+      updatePeopleHeader();  // in case the rename changed "People at <org>"
+      loadOrgList();  // name (and/or other list-visible fields) may have changed
+      if (name_clash) {
+        status.className = "status-line error";
+        status.textContent = `LinkedIn calls this "${name_clash}", but that name is already used by another org, so the name wasn't changed.`;
+      } else {
+        status.textContent = formatFetchedDate(selectedOrg.li_profile_fetched_at);
+      }
+    } else {
+      status.textContent = "Researched — no LinkedIn URL found, so its LinkedIn profile couldn't be fetched.";
+    }
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally {
@@ -2043,7 +2064,6 @@ document.getElementById("orgEditBtn").addEventListener("click", enterOrgEditMode
 document.getElementById("orgDeleteBtn").addEventListener("click", deleteSelectedOrg);
 document.getElementById("orgCancelBtn").addEventListener("click", exitOrgEditMode);
 document.getElementById("enrichOrgBtnView").addEventListener("click", enrichSelectedOrg);
-document.getElementById("orgApifyBtn").addEventListener("click", fetchOrgApifyProfile);
 document.getElementById("enrichOrgBtnEdit").addEventListener("click", enrichIntoEditForm);
 document.getElementById("orgSaveBtn").addEventListener("click", saveOrgEdits);
 const syncOrgWebsiteLink = wireLinkField("editOrgWebsite", "editOrgWebsiteOpen");

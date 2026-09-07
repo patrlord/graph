@@ -64,8 +64,8 @@
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
 //   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, sectors, hq_country } (saved if found; sectors/hq_country only filled if blank)
 //   POST   /organizations/:id/enrich-from-apify  {} -> updated org (full row, including the li_* fields below)
-//     (requires the org to already have a linkedin_url; runs the unseenuser/LinkedIn-Company-Scraper Apify actor's
-//     "get_company" mode against it. li_* fields are always overwritten with the fresh result, same as people's
+//     (requires the org to already have a linkedin_url; runs the harvestapi/linkedin-company Apify actor
+//     against it. li_* fields are always overwritten with the fresh result, same as people's
 //     enrich-from-apify; website_url/hq_country/description are filled only if currently blank. The org's `name`
 //     is renamed to LinkedIn's own company name whenever that differs, UNLESS that name already belongs to a
 //     different org - name uniqueness wins over LinkedIn's data in that one case, everything else still saves)
@@ -623,10 +623,13 @@ async function backfillFromApollo(org: Record<string, any>) {
 
 // ---------- Apify (two actors: a person LinkedIn-profile scraper and an org
 // LinkedIn-company scraper - https://console.apify.com/actors/LpVuK3Zozwuipa5bp
-// and https://console.apify.com/actors/FEoKDOO9YzPRRz8Pf respectively) ----------
+// and https://console.apify.com/actors/UwSdACBp7ymaGUJjS (harvestapi/
+// linkedin-company - same vendor as the person actor, swapped in for a
+// richer response than the original unseenuser/LinkedIn-Company-Scraper,
+// FEoKDOO9YzPRRz8Pf) respectively) ----------
 
 const APIFY_LINKEDIN_PROFILE_ACTOR = "LpVuK3Zozwuipa5bp";
-const APIFY_LINKEDIN_COMPANY_ACTOR = "FEoKDOO9YzPRRz8Pf";
+const APIFY_LINKEDIN_COMPANY_ACTOR = "UwSdACBp7ymaGUJjS";
 
 // Starts a run and polls it directly (rather than the run-sync-get-
 // dataset-items shortcut) specifically so a failed/aborted/timed-out run
@@ -737,12 +740,11 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
   return profile;
 }
 
-// mode "get_company" takes a batch of LinkedIn company URLs/handles/names in
-// profileCompanies - a single-element array here, same batch-of-one idea as
-// the person actor's queries[].
+// Takes a batch of LinkedIn company URLs in `companies` - a single-element
+// array here, same batch-of-one idea as the person actor's queries[].
 async function fetchLinkedinCompanyViaApify(linkedinUrl: string): Promise<Record<string, any> | null> {
   const item = await runApifyActorAndGetFirstItem(APIFY_LINKEDIN_COMPANY_ACTOR, {
-    mode: "get_company", profileCompanies: [linkedinUrl],
+    companies: [linkedinUrl],
   });
   // Shape unconfirmed against a live response at integration time (going on
   // the actor's published docs only) - same defensive fallback as the
@@ -825,21 +827,38 @@ function extractHeadquarter(company: Record<string, any>): any {
   return locations.find((l: any) => l?.headquarter) ?? locations[0] ?? company.headquarter ?? null;
 }
 
+// employeeCountRange comes back as an object ({start: 10001}, possibly with
+// an end too) rather than a ready-made string - formatted here into the
+// same kind of text a human would've typed into this field by hand.
+function formatEmployeeRange(range: any): string | null {
+  if (!range) return null;
+  if (typeof range === "string") return range;
+  const { start, end } = range;
+  if (typeof start === "number" && typeof end === "number") return `${start}-${end}`;
+  if (typeof start === "number") return `${start}+`;
+  return null;
+}
+
 // Maps the company actor's shape onto our organizations li_* columns. Same
 // always-overwrite reasoning as mapApifyProfileToLiFields above - these
 // columns only ever come from this one source. foundedOn/lastFundingRound
 // are kept as their raw nested shape (jsonb) rather than flattened further,
 // same "no need to normalize past what's actually rendered" call as
-// li_experience/li_education on people.
+// li_experience/li_education on people. Funding data comes nested under
+// fundingData (numFundingRounds, lastFundingRound) rather than as flat
+// top-level fields.
 function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string, any> {
   const founded = company.foundedOn;
   const foundedYear = typeof founded === "number" ? founded : (typeof founded?.year === "number" ? founded.year : null);
+  const funding = company.fundingData ?? {};
   return {
     li_tagline: company.tagline || null,
     li_logo_url: company.logo || null,
     li_universal_name: company.universalName || null,
+    li_company_type: company.companyType || null,
+    li_phone: company.phone || null,
     li_employee_count: typeof company.employeeCount === "number" ? company.employeeCount : null,
-    li_employee_count_range: company.employeeCountRange || null,
+    li_employee_count_range: formatEmployeeRange(company.employeeCountRange),
     li_follower_count: typeof company.followerCount === "number" ? company.followerCount : null,
     li_founded_year: foundedYear,
     // Published docs say "specialities" (Apify's own spelling); LinkedIn's
@@ -848,8 +867,8 @@ function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string,
     li_industries: company.industries || [],
     li_locations: company.locations || [],
     li_headquarter: extractHeadquarter(company),
-    li_funding_rounds_count: typeof company.numberOfFundingRounds === "number" ? company.numberOfFundingRounds : null,
-    li_last_funding_round: company.lastFundingRound || null,
+    li_funding_rounds_count: typeof funding.numFundingRounds === "number" ? funding.numFundingRounds : null,
+    li_last_funding_round: funding.lastFundingRound || null,
     li_active: typeof company.active === "boolean" ? company.active : null,
     li_page_verified: typeof company.pageVerified === "boolean" ? company.pageVerified : null,
     li_profile_fetched_at: new Date().toISOString(),
