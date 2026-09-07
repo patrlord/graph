@@ -815,12 +815,22 @@ async function enrichPersonFromApify(personId: string) {
   return updated;
 }
 
+// A live response (confirmed against an actual run, unlike the rest of this
+// mapping - see below) has no top-level `headquarter` field at all: the HQ
+// is just whichever entry of `locations[]` has `headquarter: true` (falling
+// back to the first location, then to a same-named top-level field in case
+// a future actor version does add one back).
+function extractHeadquarter(company: Record<string, any>): any {
+  const locations = Array.isArray(company.locations) ? company.locations : [];
+  return locations.find((l: any) => l?.headquarter) ?? locations[0] ?? company.headquarter ?? null;
+}
+
 // Maps the company actor's shape onto our organizations li_* columns. Same
 // always-overwrite reasoning as mapApifyProfileToLiFields above - these
-// columns only ever come from this one source. foundedOn/headquarter/
-// lastFundingRound are kept as their raw nested shape (jsonb) rather than
-// flattened further, same "no need to normalize past what's actually
-// rendered" call as li_experience/li_education on people.
+// columns only ever come from this one source. foundedOn/lastFundingRound
+// are kept as their raw nested shape (jsonb) rather than flattened further,
+// same "no need to normalize past what's actually rendered" call as
+// li_experience/li_education on people.
 function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string, any> {
   const founded = company.foundedOn;
   const foundedYear = typeof founded === "number" ? founded : (typeof founded?.year === "number" ? founded.year : null);
@@ -837,7 +847,7 @@ function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string,
     li_specialities: Array.isArray(company.specialities) ? company.specialities : (Array.isArray(company.specialties) ? company.specialties : []),
     li_industries: company.industries || [],
     li_locations: company.locations || [],
-    li_headquarter: company.headquarter || null,
+    li_headquarter: extractHeadquarter(company),
     li_funding_rounds_count: typeof company.numberOfFundingRounds === "number" ? company.numberOfFundingRounds : null,
     li_last_funding_round: company.lastFundingRound || null,
     li_active: typeof company.active === "boolean" ? company.active : null,
@@ -846,13 +856,17 @@ function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string,
   };
 }
 
-// Best-effort country out of whatever shape `headquarter` turns out to have -
-// mirrors profile.location?.parsed?.country's role for people (see
-// enrichPersonFromApify): fills org.hq_country, but only if currently blank.
-function countryFromHeadquarter(headquarter: any): string | null {
+// Best-effort "City, Country" text out of a locations[] entry (same shape
+// as li_headquarter above) - mirrors profile.location?.parsed?.country's
+// role for people (see enrichPersonFromApify): fills org.hq_country, but
+// only if currently blank. Prefers parsed.text ("Paris, France") over just
+// the country, matching how hq_country is already written everywhere else
+// in this app (research, hand-editing) - a bare country name is the fallback,
+// not the norm.
+function hqLocationText(headquarter: any): string | null {
   if (!headquarter) return null;
   if (typeof headquarter === "string") return headquarter;
-  return headquarter.country || headquarter.parsed?.country || headquarter.countryCode || null;
+  return headquarter.parsed?.text || headquarter.parsed?.country || headquarter.country || null;
 }
 
 // Unlike people's enrich-from-apify, the general (non-li_*) fields this also
@@ -876,8 +890,11 @@ async function enrichOrgFromApify(orgId: string) {
 
   const fields = mapApifyCompanyToLiFields(company);
   if (!org.website_url && company.website) fields.website_url = company.website;
-  const hqCountry = countryFromHeadquarter(company.headquarter);
-  if (!org.hq_country && hqCountry) fields.hq_country = hqCountry;
+  // hq_country is only ever "null" (the literal string, not blank) on rows a
+  // past import already broke - real garbage, not a value worth protecting,
+  // so it's treated the same as actually blank here.
+  const hqCountry = hqLocationText(fields.li_headquarter);
+  if ((!org.hq_country || org.hq_country === "null") && hqCountry) fields.hq_country = hqCountry;
   if (!org.description && company.description) fields.description = company.description;
 
   let nameClash: string | null = null;
