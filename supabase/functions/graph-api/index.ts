@@ -63,6 +63,12 @@
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
 //   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, sectors, hq_country } (saved if found; sectors/hq_country only filled if blank)
+//   POST   /organizations/:id/enrich-from-apify  {} -> updated org (full row, including the li_* fields below)
+//     (requires the org to already have a linkedin_url; runs the unseenuser/LinkedIn-Company-Scraper Apify actor's
+//     "get_company" mode against it. li_* fields are always overwritten with the fresh result, same as people's
+//     enrich-from-apify; website_url/hq_country/description are filled only if currently blank. The org's `name`
+//     is renamed to LinkedIn's own company name whenever that differs, UNLESS that name already belongs to a
+//     different org - name uniqueness wins over LinkedIn's data in that one case, everything else still saves)
 //   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
 //   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
 //   GET    /organizations/:id/connections -> [ {id, relationship_type, notes, direction, other: {id,name,org_type}}, ... ]
@@ -615,16 +621,21 @@ async function backfillFromApollo(org: Record<string, any>) {
   }
 }
 
-// ---------- Apify (LinkedIn Profile Scraper actor, https://console.apify.com/actors/LpVuK3Zozwuipa5bp) ----------
+// ---------- Apify (two actors: a person LinkedIn-profile scraper and an org
+// LinkedIn-company scraper - https://console.apify.com/actors/LpVuK3Zozwuipa5bp
+// and https://console.apify.com/actors/FEoKDOO9YzPRRz8Pf respectively) ----------
 
 const APIFY_LINKEDIN_PROFILE_ACTOR = "LpVuK3Zozwuipa5bp";
+const APIFY_LINKEDIN_COMPANY_ACTOR = "FEoKDOO9YzPRRz8Pf";
 
-// Starts the run and polls it directly (rather than the run-sync-get-
+// Starts a run and polls it directly (rather than the run-sync-get-
 // dataset-items shortcut) specifically so a failed/aborted/timed-out run
 // surfaces its real status and statusMessage - the shortcut endpoint can
 // return "200 OK, zero items" for a run that didn't actually succeed,
-// with nothing in the response to say why.
-async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record<string, any> | null> {
+// with nothing in the response to say why. Shared by both actors below -
+// the run/poll/dataset-read mechanics are identical, only the actor id and
+// input body differ.
+async function runApifyActorAndGetFirstItem(actorId: string, input: Record<string, unknown>): Promise<any> {
   if (!APIFY_API_TOKEN) throw new HttpError(503, "APIFY_API_TOKEN is not configured.");
 
   // This does a start + several polls + a dataset read (with its own
@@ -640,19 +651,9 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
   const remaining = () => overallDeadline - Date.now();
   const phaseTimeout = (capMs: number) => Math.max(1000, Math.min(capMs, remaining()));
 
-  // The actor's input schema (confirmed against its current Console UI form -
-  // the .actor/input_schema.json fetched from its source at integration time
-  // showed a flat {url|publicIdentifier|profileId} shape, but the actor has
-  // since been rebuilt to take a batch-oriented {profileScraperMode, queries[]}
-  // shape instead, which is why every API-triggered run "succeeded" while
-  // silently processing zero queries).
   const startRes = await fetchWithTimeout(
-    `https://api.apify.com/v2/acts/${APIFY_LINKEDIN_PROFILE_ACTOR}/runs?token=${APIFY_API_TOKEN}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profileScraperMode: "Profile details no email ($4 per 1k)", queries: [linkedinUrl] }),
-    },
+    `https://api.apify.com/v2/acts/${actorId}/runs?token=${APIFY_API_TOKEN}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) },
     phaseTimeout(15000),
   );
   if (!startRes.ok) {
@@ -712,6 +713,19 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
       `Apify run ${run.id} succeeded but its dataset (${run.defaultDatasetId}) had no items after retrying. Recorded input: ${recordedInput}`,
     );
   }
+  return item;
+}
+
+// The actor's input schema (confirmed against its current Console UI form -
+// the .actor/input_schema.json fetched from its source at integration time
+// showed a flat {url|publicIdentifier|profileId} shape, but the actor has
+// since been rebuilt to take a batch-oriented {profileScraperMode, queries[]}
+// shape instead, which is why every API-triggered run "succeeded" while
+// silently processing zero queries).
+async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record<string, any> | null> {
+  const item = await runApifyActorAndGetFirstItem(APIFY_LINKEDIN_PROFILE_ACTOR, {
+    profileScraperMode: "Profile details no email ($4 per 1k)", queries: [linkedinUrl],
+  });
   // The dataset item shape at integration time was {element: {...profile},
   // query, status, ...}, but the actor's rewrite to the batch queries[] input
   // (see above) may have changed this too - fall back to treating the item
@@ -721,6 +735,23 @@ async function fetchLinkedinProfileViaApify(linkedinUrl: string): Promise<Record
     throw new Error(`Apify returned an item with no recognizable profile shape: ${JSON.stringify(item).slice(0, 400)}`);
   }
   return profile;
+}
+
+// mode "get_company" takes a batch of LinkedIn company URLs/handles/names in
+// profileCompanies - a single-element array here, same batch-of-one idea as
+// the person actor's queries[].
+async function fetchLinkedinCompanyViaApify(linkedinUrl: string): Promise<Record<string, any> | null> {
+  const item = await runApifyActorAndGetFirstItem(APIFY_LINKEDIN_COMPANY_ACTOR, {
+    mode: "get_company", profileCompanies: [linkedinUrl],
+  });
+  // Shape unconfirmed against a live response at integration time (going on
+  // the actor's published docs only) - same defensive fallback as the
+  // person actor above, in case results also arrive wrapped in {element}.
+  const company = item.element ?? ((item.linkedinUrl || item.universalName || item.name) ? item : null);
+  if (!company) {
+    throw new Error(`Apify returned an item with no recognizable company shape: ${JSON.stringify(item).slice(0, 400)}`);
+  }
+  return company;
 }
 
 // Maps the actor's profile shape onto our li_* columns. Nested sections
@@ -782,6 +813,89 @@ async function enrichPersonFromApify(personId: string) {
   await importPastEmploymentForPerson(personId, profile.experience);
   await syncCurrentRolesForPerson(personId, profile.experience, profile.currentPosition);
   return updated;
+}
+
+// Maps the company actor's shape onto our organizations li_* columns. Same
+// always-overwrite reasoning as mapApifyProfileToLiFields above - these
+// columns only ever come from this one source. foundedOn/headquarter/
+// lastFundingRound are kept as their raw nested shape (jsonb) rather than
+// flattened further, same "no need to normalize past what's actually
+// rendered" call as li_experience/li_education on people.
+function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string, any> {
+  const founded = company.foundedOn;
+  const foundedYear = typeof founded === "number" ? founded : (typeof founded?.year === "number" ? founded.year : null);
+  return {
+    li_tagline: company.tagline || null,
+    li_logo_url: company.logo || null,
+    li_universal_name: company.universalName || null,
+    li_employee_count: typeof company.employeeCount === "number" ? company.employeeCount : null,
+    li_employee_count_range: company.employeeCountRange || null,
+    li_follower_count: typeof company.followerCount === "number" ? company.followerCount : null,
+    li_founded_year: foundedYear,
+    // Published docs say "specialities" (Apify's own spelling); LinkedIn's
+    // API itself has used "specialties" historically - accept either.
+    li_specialities: Array.isArray(company.specialities) ? company.specialities : (Array.isArray(company.specialties) ? company.specialties : []),
+    li_industries: company.industries || [],
+    li_locations: company.locations || [],
+    li_headquarter: company.headquarter || null,
+    li_funding_rounds_count: typeof company.numberOfFundingRounds === "number" ? company.numberOfFundingRounds : null,
+    li_last_funding_round: company.lastFundingRound || null,
+    li_active: typeof company.active === "boolean" ? company.active : null,
+    li_page_verified: typeof company.pageVerified === "boolean" ? company.pageVerified : null,
+    li_profile_fetched_at: new Date().toISOString(),
+  };
+}
+
+// Best-effort country out of whatever shape `headquarter` turns out to have -
+// mirrors profile.location?.parsed?.country's role for people (see
+// enrichPersonFromApify): fills org.hq_country, but only if currently blank.
+function countryFromHeadquarter(headquarter: any): string | null {
+  if (!headquarter) return null;
+  if (typeof headquarter === "string") return headquarter;
+  return headquarter.country || headquarter.parsed?.country || headquarter.countryCode || null;
+}
+
+// Unlike people's enrich-from-apify, the general (non-li_*) fields this also
+// touches - website_url, hq_country, description - stay merge-only-blanks:
+// they're shared fields other flows (research, hand-editing) already own,
+// same as country does for people. `name` is the deliberate exception the
+// org detail pane's Enrich button doesn't have: LinkedIn's own company name
+// is authoritative here, so it's renamed to match - unless that name is
+// already taken by a different org, in which case the rename is skipped
+// (surfaced via name_clash) but every li_* field still saves.
+async function enrichOrgFromApify(orgId: string) {
+  const rows = await supabaseRequest("GET", "organizations", {
+    params: { id: `eq.${orgId}`, select: "name,linkedin_url,website_url,hq_country,description" },
+  });
+  const org = rows?.[0];
+  if (!org) throw new HttpError(404, "organization not found");
+  if (!org.linkedin_url) throw new HttpError(400, "This organization has no LinkedIn URL yet.");
+
+  const company = await fetchLinkedinCompanyViaApify(org.linkedin_url);
+  if (!company) throw new HttpError(502, "Apify found no company data for this LinkedIn URL.");
+
+  const fields = mapApifyCompanyToLiFields(company);
+  if (!org.website_url && company.website) fields.website_url = company.website;
+  const hqCountry = countryFromHeadquarter(company.headquarter);
+  if (!org.hq_country && hqCountry) fields.hq_country = hqCountry;
+  if (!org.description && company.description) fields.description = company.description;
+
+  let nameClash: string | null = null;
+  const newName = (company.name || "").trim();
+  if (newName && newName.toLowerCase() !== org.name.toLowerCase()) {
+    const clash = await supabaseRequest("GET", "organizations", {
+      params: { name: `ilike.${orValue(newName)}`, id: `neq.${orgId}`, select: "id", limit: "1" },
+    });
+    if (clash?.length) nameClash = newName;
+    else fields.name = newName;
+  }
+
+  const updated = (await supabaseRequest("PATCH", "organizations", {
+    params: { id: `eq.${orgId}` },
+    body: fields,
+    prefer: "return=representation",
+  }))[0];
+  return { ...updated, name_clash: nameClash };
 }
 
 // ---------- Schools / education (normalized from profile.education) ----------
@@ -1610,6 +1724,11 @@ Deno.serve(async (req) => {
       });
       if (!updated?.length) return json({ error: "organization not found" }, 404);
       return json(updated[0]);
+    }
+
+    const orgApifyMatch = path.match(/^\/organizations\/([^/]+)\/enrich-from-apify$/);
+    if (orgApifyMatch && req.method === "POST") {
+      return json(await enrichOrgFromApify(orgApifyMatch[1]));
     }
 
     const personIdMatch = path.match(/^\/people\/([^/]+)$/);

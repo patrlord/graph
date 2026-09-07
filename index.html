@@ -361,11 +361,14 @@
             <div id="detOrgSectors"></div>
             <div class="entity-desc" id="detOrgDesc"></div>
             <div class="investor-profile" id="detOrgInvestorProfile"></div>
-            <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
+            <div id="detOrgLinkedinProfile"></div>
+            <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
               <button class="secondary tiny" id="orgEditBtn">Edit</button>
               <button class="danger tiny" id="orgDeleteBtn">Delete</button>
               <button class="secondary tiny" id="enrichOrgBtnView">Enrich</button>
+              <button class="secondary tiny" id="orgApifyBtn" style="display:none">Fetch LinkedIn profile</button>
               <span class="status-line" id="enrichOrgViewStatus"></span>
+              <span class="status-line" id="orgApifyStatus"></span>
             </div>
           </div>
           <div id="orgBodyEdit" style="display:none">
@@ -874,6 +877,32 @@ function investorProfileHtml(org) {
   return lines.join("");
 }
 
+// Renders whatever "Fetch LinkedIn profile" (enrichOrgFromApify) most
+// recently found, mirroring linkedinProfileHtml for people - same idea,
+// company-shaped fields. li_industries entries are objects (id + name) per
+// the actor's docs; extracted defensively in case a plain string sneaks in.
+function linkedinCompanyHtml(org) {
+  const parts = [];
+  if (org.li_tagline) parts.push(`<div class="entity-desc" style="font-weight:700;">${org.li_tagline}</div>`);
+  const stats = [];
+  if (typeof org.li_employee_count === "number") stats.push(`${org.li_employee_count} employees`);
+  else if (org.li_employee_count_range) stats.push(`${org.li_employee_count_range} employees`);
+  if (typeof org.li_follower_count === "number") stats.push(`${org.li_follower_count} followers`);
+  if (org.li_founded_year) stats.push(`Founded ${org.li_founded_year}`);
+  if (stats.length) parts.push(`<div class="li-meta">${stats.join(" · ")}</div>`);
+  if (Array.isArray(org.li_industries) && org.li_industries.length) {
+    const names = org.li_industries.map(i => (typeof i === "string" ? i : i?.name || i?.localizedName)).filter(Boolean);
+    if (names.length) parts.push(`<div class="entity-desc"><strong>Industries:</strong> ${names.join(", ")}</div>`);
+  }
+  if (org.li_specialities && org.li_specialities.length) parts.push(`<div class="entity-desc"><strong>Specialities:</strong> ${org.li_specialities.join(", ")}</div>`);
+  if (org.li_last_funding_round) {
+    const f = org.li_last_funding_round;
+    const bits = [f.type, f.amount, f.announcementDate || f.announcedDate].filter(Boolean).join(" · ");
+    if (bits) parts.push(`<div class="entity-desc"><strong>Last funding round:</strong> ${bits}</div>`);
+  }
+  return parts.join("");
+}
+
 function renderOrgDetail(org) {
   document.getElementById("orgDetailEmpty").style.display = "none";
   document.getElementById("orgDetailContent").classList.add("shown");
@@ -883,9 +912,11 @@ function renderOrgDetail(org) {
   document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
   document.getElementById("detOrgDesc").textContent = org.description || "";
   document.getElementById("detOrgInvestorProfile").innerHTML = investorProfileHtml(org);
+  document.getElementById("detOrgLinkedinProfile").innerHTML = linkedinCompanyHtml(org);
   document.getElementById("orgNewsList").innerHTML = "";
   document.getElementById("enrichOrgViewStatus").textContent = "";
   document.getElementById("enrichOrgViewStatus").className = "status-line";
+  updateOrgApifyControls(org);
   exitOrgEditMode();
 }
 
@@ -1119,6 +1150,45 @@ async function enrichSelectedOrg() {
     status.textContent = "";
     await selectOrg(saveData.organization.id);
     loadOrgList();
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Label switches to "Update" once there's a previous fetch on record, same
+// as updateApifyControls for people; only shown at all once the org has a
+// linkedin_url to fetch against.
+function updateOrgApifyControls(org) {
+  const btn = document.getElementById("orgApifyBtn");
+  const status = document.getElementById("orgApifyStatus");
+  btn.style.display = org.linkedin_url ? "inline-block" : "none";
+  btn.textContent = org.li_profile_fetched_at ? "Update LinkedIn profile" : "Fetch LinkedIn profile";
+  status.className = "status-line";
+  status.textContent = formatFetchedDate(org.li_profile_fetched_at);
+}
+
+async function fetchOrgApifyProfile() {
+  const org = selectedOrg;
+  if (!org || !org.linkedin_url) return;
+  const btn = document.getElementById("orgApifyBtn");
+  const status = document.getElementById("orgApifyStatus");
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Fetching LinkedIn profile…";
+  try {
+    const res = await api(`/organizations/${org.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Fetch failed");
+    const { name_clash, ...fields } = data;
+    Object.assign(org, fields);
+    renderOrgDetail(org);  // also restores the date/label via updateOrgApifyControls
+    if (name_clash) {
+      document.getElementById("orgApifyStatus").className = "status-line error";
+      document.getElementById("orgApifyStatus").textContent =
+        `Fetched — LinkedIn calls this "${name_clash}", but that name is already used by another org, so the name wasn't changed.`;
+    }
+    updatePeopleHeader();  // in case the rename changed "People at <org>"
+    loadOrgList();  // name (and/or other list-visible fields) may have changed
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally {
@@ -1973,6 +2043,7 @@ document.getElementById("orgEditBtn").addEventListener("click", enterOrgEditMode
 document.getElementById("orgDeleteBtn").addEventListener("click", deleteSelectedOrg);
 document.getElementById("orgCancelBtn").addEventListener("click", exitOrgEditMode);
 document.getElementById("enrichOrgBtnView").addEventListener("click", enrichSelectedOrg);
+document.getElementById("orgApifyBtn").addEventListener("click", fetchOrgApifyProfile);
 document.getElementById("enrichOrgBtnEdit").addEventListener("click", enrichIntoEditForm);
 document.getElementById("orgSaveBtn").addEventListener("click", saveOrgEdits);
 const syncOrgWebsiteLink = wireLinkField("editOrgWebsite", "editOrgWebsiteOpen");
