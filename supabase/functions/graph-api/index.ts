@@ -37,7 +37,7 @@
 //   PATCH  /organizations/:id   { any subset of organization fields above } -> updated org (direct set, not merge-only-blanks - a
 //     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI)
 //   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user}, ... ]
-//     (q omitted/empty -> all people, capped at 1000; include_past=true returns one row per membership - e.g. two past
+//     (q omitted/empty -> all people, no cap (paginated internally, see supabaseRequestAllPages); include_past=true returns one row per membership - e.g. two past
 //     roles at the same company both show - instead of the default one row per person, their best/current membership only.
 //     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
 //     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds)
@@ -172,6 +172,35 @@ async function supabaseRequest(
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
+}
+
+// This project's PostgREST caps any single response at 1000 rows regardless
+// of a higher `limit` param (confirmed: the organizations list was silently
+// cutting off alphabetically at exactly row 1000 once the table passed that
+// count). For a GET whose result can plausibly exceed that - a table-wide
+// scan, or a filter like "everyone connected to the user" that can match
+// thousands of rows - page through with limit/offset instead of trusting a
+// single request to return everything. Safe to use for small results too,
+// it just does one page and stops.
+async function supabaseRequestAllPages(path: string, params: Record<string, string>): Promise<any[]> {
+  const pageSize = 1000;
+  const results: any[] = [];
+  let offset = 0;
+  // Offset-based paging needs a fully stable order or pages can skip/repeat
+  // rows (e.g. two people who happen to share a full_name, straddling a page
+  // boundary) - append id.asc as a tiebreaker under whatever order the
+  // caller asked for, rather than trusting their order alone to be unique.
+  const order = params.order ? `${params.order},id.asc` : "id.asc";
+  for (;;) {
+    const page = await supabaseRequest("GET", path, {
+      params: { ...params, order, limit: String(pageSize), offset: String(offset) },
+    });
+    if (!page?.length) break;
+    results.push(...page);
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return results;
 }
 
 function isBlank(v: unknown): boolean {
@@ -409,13 +438,11 @@ async function getUserConnectedPersonIds(): Promise<Set<string>> {
   const result = new Set<string>(userIds);
   if (!userIds.length) return result;
   const idList = `(${userIds.join(",")})`;
+  // A single user can easily have 1000+ connections (e.g. every LinkedIn-
+  // connection import) - paginated, not a single supabaseRequest.
   const [asA, asB] = await Promise.all([
-    supabaseRequest("GET", "connections", {
-      params: { entity_a_type: "eq.person", entity_a_id: `in.${idList}`, entity_b_type: "eq.person", select: "entity_b_id" },
-    }),
-    supabaseRequest("GET", "connections", {
-      params: { entity_b_type: "eq.person", entity_b_id: `in.${idList}`, entity_a_type: "eq.person", select: "entity_a_id" },
-    }),
+    supabaseRequestAllPages("connections", { entity_a_type: "eq.person", entity_a_id: `in.${idList}`, entity_b_type: "eq.person", select: "entity_b_id" }),
+    supabaseRequestAllPages("connections", { entity_b_type: "eq.person", entity_b_id: `in.${idList}`, entity_a_type: "eq.person", select: "entity_a_id" }),
   ]);
   (asA ?? []).forEach((c: any) => result.add(c.entity_b_id));
   (asB ?? []).forEach((c: any) => result.add(c.entity_a_id));
@@ -438,17 +465,18 @@ async function listOrganizations(includeEmployers: boolean) {
   // specifically meant to show up in for classification. Include NULL
   // explicitly instead of relying on neq alone.
   if (!includeEmployers) params.or = "(org_type.is.null,org_type.neq.employer)";
-  const orgs = await supabaseRequest("GET", "organizations", { params });
-  if (!orgs?.length) return orgs;
+  const orgs = await supabaseRequestAllPages("organizations", params);
+  if (!orgs.length) return orgs;
 
   const connectedIds = await getUserConnectedPersonIds();
   const connectedOrgIds = new Set<string>();
   if (connectedIds.size) {
     // Unfiltered on purpose: filtering by this page's org ids would mean an
     // `in.(...)` list of up to ~1500 UUIDs in the query string. A flat scan
-    // of (organization_id, person_id) pairs is cheap either way.
-    const memberships = await supabaseRequest("GET", "memberships", { params: { select: "organization_id,person_id" } });
-    for (const m of memberships ?? []) {
+    // of (organization_id, person_id) pairs is cheap either way - paginated,
+    // since it's already well past 1000 rows.
+    const memberships = await supabaseRequestAllPages("memberships", { select: "organization_id,person_id" });
+    for (const m of memberships) {
       if (connectedIds.has(m.person_id)) connectedOrgIds.add(m.organization_id);
     }
   }
@@ -552,11 +580,15 @@ async function searchPeopleGlobal(query: string, includePast: boolean) {
   const params: Record<string, string> = {
     select: "*,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
     order: "full_name.asc",
-    limit: query ? "25" : "1000",
   };
   if (query) params.full_name = `ilike.*${query}*`;
+  // A real search stays capped at 25 (a search box result list, not meant to
+  // return everything) - but "all people" (empty query) is a genuine full
+  // table scan, long since past the 1000-row single-request cap, so it
+  // needs to page through rather than silently truncating alphabetically
+  // (see supabaseRequestAllPages).
   const [people, connectedIds] = await Promise.all([
-    supabaseRequest("GET", "people", { params }),
+    query ? supabaseRequest("GET", "people", { params: { ...params, limit: "25" } }) : supabaseRequestAllPages("people", params),
     getUserConnectedPersonIds(),
   ]);
   const rows: any[] = [];
