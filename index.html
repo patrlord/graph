@@ -1668,10 +1668,16 @@ async function fetchApifyProfile() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Fetch failed");
     Object.assign(person, data);
-    const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
-    if (inOrgList) Object.assign(inOrgList.people, data);
-    const inCurrentList = currentPeopleItems.find(p => p.id === person.id);
-    if (inCurrentList && inCurrentList !== person) Object.assign(inCurrentList, data);
+    // The fetch can change this person's role/company (syncCurrentRolesForPerson
+    // may close out their old membership or open a new one) - `data` is just
+    // the people-table row, with no title/organization to hand-patch cached
+    // list rows with, so reload whichever people list could be showing them
+    // from the backend instead. currentPeopleItems isn't otherwise touched.
+    if (currentPeopleMode === "org" && selectedOrg) {
+      await selectOrg(selectedOrg.id, true);  // true: leave the person detail pane alone
+    } else {
+      await applyPeopleFilter();
+    }
     showPersonDetail(person);  // also restores the date/label via updateApifyControls
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
