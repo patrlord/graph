@@ -162,6 +162,8 @@
   /* "Connected" list column - a lone dot rather than text, so it doesn't
      compete with the row's real content; title attribute carries the label. */
   .connected-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2f7a3d; }
+  .dup-warning { cursor: pointer; margin-left: 4px; }
+  .dup-jump { color: inherit; text-decoration: underline; }
   .user-badge {
     display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
     background: #2f7a3d; color: #fff; text-transform: uppercase; letter-spacing: .03em;
@@ -358,6 +360,7 @@
         </div>
         <div class="scroll-box">
           <div id="orgBodyView">
+            <div id="detOrgDupWarning"></div>
             <div id="detOrgSectors"></div>
             <div class="entity-desc" id="detOrgDesc"></div>
             <div class="investor-profile" id="detOrgInvestorProfile"></div>
@@ -365,8 +368,17 @@
             <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
               <button class="secondary tiny" id="orgEditBtn">Edit</button>
               <button class="secondary tiny" id="enrichOrgBtnView">Enrich</button>
+              <button class="secondary tiny" id="orgMergeToggleBtn">Merge into…</button>
               <span class="status-line" id="enrichOrgViewStatus"></span>
               <button class="danger tiny" id="orgDeleteBtn" style="margin-left:auto">Delete</button>
+            </div>
+            <div id="orgMergeForm" style="display:none;margin-top:10px;">
+              <div class="form-row">
+                <input type="text" id="orgMergeTarget" placeholder="Organization to merge into…" list="orgNamesDatalist">
+                <button class="danger tiny" id="orgMergeBtn">Merge</button>
+                <button class="secondary tiny" id="orgMergeCancelBtn">Cancel</button>
+              </div>
+              <span class="status-line" id="orgMergeStatus"></span>
             </div>
           </div>
           <div id="orgBodyEdit" style="display:none">
@@ -623,9 +635,17 @@ function linkedinStub(url) {
   }
 }
 
+// li_duplicate_of (orgs only, set after a Find turns up a URL another org
+// already has - see runFindOrgLinkedin/enrichSelectedOrg) shows as a small
+// warning next to the link, clickable to jump straight to that other org so
+// it's a one-click check for whether to merge.
 function linkedinCellFor(entity) {
   if (entity.linkedin_url) {
-    return `<a class="li-link" href="${entity.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(entity.linkedin_url)}</a>`;
+    const link = `<a class="li-link" href="${entity.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(entity.linkedin_url)}</a>`;
+    if (entity.li_duplicate_of) {
+      return `${link}<span class="dup-warning dup-jump-btn" data-dup-id="${entity.li_duplicate_of.id}" title="Same LinkedIn URL as ${entity.li_duplicate_of.name} - click to check whether to merge">⚠</span>`;
+    }
+    return link;
   }
   return `<button class="secondary tiny find-li-btn" data-id="${entity.id}">Find</button>`;
 }
@@ -749,6 +769,13 @@ function renderOrgList(orgs) {
         runFindOrgLinkedin(orgs[i], findBtn);
       });
     }
+    const dupBtn = tr.querySelector(".dup-jump-btn");
+    if (dupBtn) {
+      dupBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        selectOrg(dupBtn.dataset.dupId);
+      });
+    }
   });
   if (selectedOrg) highlightSelected("orgList", selectedOrg.id);
 }
@@ -769,10 +796,12 @@ async function runFindOrgLinkedin(org, btnEl) {
     if (!res.ok) throw new Error(data.error || "Search failed");
     if (data.linkedin_url) {
       org.linkedin_url = data.linkedin_url;  // mutates the shared object in orgListCache too
+      org.li_duplicate_of = data.duplicate_of || null;
       if (data.sectors) org.sectors = data.sectors;
       if (data.hq_country) org.hq_country = data.hq_country;
       if (selectedOrg && selectedOrg.id === org.id) {
         selectedOrg.linkedin_url = data.linkedin_url;
+        selectedOrg.li_duplicate_of = org.li_duplicate_of;
         if (data.sectors) selectedOrg.sectors = data.sectors;
         if (data.hq_country) selectedOrg.hq_country = data.hq_country;
         renderOrgDetail(selectedOrg);
@@ -858,6 +887,15 @@ function entityLinksHtml(website_url, linkedin_url, hq_country) {
   return links.join("");
 }
 
+// Same li_duplicate_of used by linkedinCellFor's list-row badge, rendered
+// as a full sentence here since the detail pane has room for one - a
+// dup-jump link takes you straight to the other org (wired in renderOrgDetail,
+// since this is set via innerHTML rather than individual event listeners).
+function orgDuplicateWarningHtml(org) {
+  if (!org.li_duplicate_of) return "";
+  return `<div class="status-line error">⚠ This LinkedIn URL is already used by <a href="#" class="dup-jump" data-id="${org.li_duplicate_of.id}">${org.li_duplicate_of.name}</a> - check whether to merge.</div>`;
+}
+
 function sectorsHtml(sectors) {
   if (!sectors || !sectors.length) return "";
   return sectors.map(s => `<span class="sector-tag">${s}</span>`).join("");
@@ -922,6 +960,10 @@ function renderOrgDetail(org) {
   document.getElementById("detOrgName").textContent = org.name;
   document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type || "Unclassified";
   document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
+  const dupWarning = document.getElementById("detOrgDupWarning");
+  dupWarning.innerHTML = orgDuplicateWarningHtml(org);
+  const dupJump = dupWarning.querySelector(".dup-jump");
+  if (dupJump) dupJump.addEventListener("click", e => { e.preventDefault(); selectOrg(dupJump.dataset.id); });
   document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
   document.getElementById("detOrgDesc").textContent = org.description || "";
   document.getElementById("detOrgInvestorProfile").innerHTML = investorProfileHtml(org);
@@ -929,6 +971,7 @@ function renderOrgDetail(org) {
   document.getElementById("orgNewsList").innerHTML = "";
   document.getElementById("enrichOrgViewStatus").textContent = "";
   document.getElementById("enrichOrgViewStatus").className = "status-line";
+  toggleOrgMergeForm(false);
   exitOrgEditMode();
 }
 
@@ -1137,6 +1180,50 @@ async function deleteSelectedOrg() {
   }
 }
 
+function toggleOrgMergeForm(show) {
+  const form = document.getElementById("orgMergeForm");
+  form.style.display = show ? "block" : "none";
+  if (!show) {
+    document.getElementById("orgMergeTarget").value = "";
+    document.getElementById("orgMergeStatus").textContent = "";
+    document.getElementById("orgMergeStatus").className = "status-line";
+  }
+}
+
+// Resolves the typed name against orgListCache (same list the datalist
+// itself is built from) - an exact, case-insensitive match, same rule the
+// backend's own name-based org lookups use elsewhere.
+async function mergeSelectedOrg() {
+  if (!selectedOrg) return;
+  const status = document.getElementById("orgMergeStatus");
+  const typed = document.getElementById("orgMergeTarget").value.trim();
+  if (!typed) { status.className = "status-line error"; status.textContent = "Type or pick an organization to merge into."; return; }
+  const target = orgListCache.find(o => o.name.toLowerCase() === typed.toLowerCase());
+  if (!target) { status.className = "status-line error"; status.textContent = "No organization found with that exact name - pick one from the list."; return; }
+  if (target.id === selectedOrg.id) { status.className = "status-line error"; status.textContent = "That's this organization - pick a different one to merge into."; return; }
+  if (!confirm(
+    `Merge ${selectedOrg.name} into ${target.name}?\n\n` +
+    `${selectedOrg.name}'s team members and connections move onto ${target.name}, ` +
+    `${target.name} keeps its own name, and ${selectedOrg.name} is deleted. This can't be undone.`
+  )) return;
+  const btn = document.getElementById("orgMergeBtn");
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Merging…";
+  try {
+    const res = await api(`/organizations/${selectedOrg.id}/merge-into`, {
+      method: "POST", body: JSON.stringify({ target_id: target.id }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Merge failed");
+    toggleOrgMergeForm(false);
+    loadOrgList();
+    await selectOrg(target.id);  // the merged-away org no longer exists - show the survivor instead
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // Re-runs the same research used when adding an organization, against its
 // existing name/LinkedIn URL, then saves the result through the normal
 // find-or-merge save path - which only fills in blank fields, so nothing
@@ -1184,6 +1271,7 @@ async function enrichSelectedOrg() {
       const findData = await findRes.json();
       if (findRes.ok && findData.linkedin_url) {
         selectedOrg.linkedin_url = findData.linkedin_url;
+        selectedOrg.li_duplicate_of = findData.duplicate_of || null;  // renderOrgDetail below shows the warning banner if set
         if (findData.sectors) selectedOrg.sectors = findData.sectors;
         if (findData.hq_country) selectedOrg.hq_country = findData.hq_country;
         renderOrgDetail(selectedOrg);  // resets status again
@@ -2068,6 +2156,12 @@ document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListV
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
 document.getElementById("orgEditBtn").addEventListener("click", enterOrgEditMode);
 document.getElementById("orgDeleteBtn").addEventListener("click", deleteSelectedOrg);
+document.getElementById("orgMergeToggleBtn").addEventListener("click", () => {
+  const form = document.getElementById("orgMergeForm");
+  toggleOrgMergeForm(form.style.display === "none");
+});
+document.getElementById("orgMergeCancelBtn").addEventListener("click", () => toggleOrgMergeForm(false));
+document.getElementById("orgMergeBtn").addEventListener("click", mergeSelectedOrg);
 document.getElementById("orgCancelBtn").addEventListener("click", exitOrgEditMode);
 document.getElementById("enrichOrgBtnView").addEventListener("click", enrichSelectedOrg);
 document.getElementById("enrichOrgBtnEdit").addEventListener("click", enrichIntoEditForm);

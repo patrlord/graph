@@ -62,7 +62,13 @@
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
-//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, sectors, hq_country } (saved if found; sectors/hq_country only filled if blank)
+//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, sectors, hq_country, duplicate_of } (saved if found; sectors/hq_country
+//     only filled if blank; duplicate_of is {id, name} of another org that already has this exact linkedin_url, or null - a likely-duplicate flag, not a block on saving)
+//   POST   /organizations/:id/merge-into  { target_id } -> updated target org (full row)
+//     (moves :id's team members onto target_id - dropping any that would collide with a membership target_id
+//     already has for that exact person+title - and its org<->org connections too - dropping any that would
+//     become a self-loop once remapped; backfills every field target_id is currently blank on from :id, its
+//     own `name` untouched; then deletes :id. Irreversible - the frontend confirms before calling this)
 //   POST   /organizations/:id/enrich-from-apify  {} -> updated org (full row, including the li_* fields below)
 //     (requires the org to already have a linkedin_url; runs the harvestapi/linkedin-company Apify actor
 //     against it. li_* fields are always overwritten with the fresh result, same as people's
@@ -499,6 +505,88 @@ async function getOrganization(id: string) {
     if (m.people) m.people.connected_to_user = connectedIds.has(m.people.id);
   }
   return org;
+}
+
+// Merges sourceId into targetId: sourceId's team members and org<->org
+// connections move onto targetId, targetId backfills any field it's
+// currently blank on from sourceId (mergeFields, same "existing wins unless
+// blank" idea as saveOrganization - just with the argument order flipped,
+// since here the *target* is the one whose values should win), and sourceId
+// is deleted. targetId's `name` is never touched - the whole point of
+// picking a target is that its name is the one to keep.
+async function mergeOrgInto(sourceId: string, targetId: string) {
+  if (sourceId === targetId) throw new HttpError(400, "Can't merge an organization into itself.");
+  const [sourceRows, targetRows] = await Promise.all([
+    supabaseRequest("GET", "organizations", { params: { id: `eq.${sourceId}`, select: "*" } }),
+    supabaseRequest("GET", "organizations", { params: { id: `eq.${targetId}`, select: "*" } }),
+  ]);
+  const source = sourceRows?.[0];
+  const target = targetRows?.[0];
+  if (!source) throw new HttpError(404, "source organization not found");
+  if (!target) throw new HttpError(404, "target organization not found");
+
+  // Memberships: move each of source's onto target, unless target already
+  // has a membership for that exact (person, title) - in which case it's a
+  // pure duplicate of one already there and is just dropped, rather than
+  // moved and colliding with the memberships_person_id_organization_id_title_key
+  // unique constraint (same situation as the LinkedIn-connections import's
+  // membership step earlier - see li_step4_memberships).
+  const [sourceMemberships, targetMemberships] = await Promise.all([
+    supabaseRequest("GET", "memberships", { params: { organization_id: `eq.${sourceId}`, select: "id,person_id,title" } }),
+    supabaseRequest("GET", "memberships", { params: { organization_id: `eq.${targetId}`, select: "person_id,title" } }),
+  ]);
+  const targetKey = (m: { person_id: string; title: string | null }) => `${m.person_id}::${m.title ?? ""}`;
+  const targetHas = new Set((targetMemberships ?? []).map(targetKey));
+  for (const m of sourceMemberships ?? []) {
+    if (targetHas.has(targetKey(m))) {
+      await supabaseRequest("DELETE", "memberships", { params: { id: `eq.${m.id}` } });
+    } else {
+      await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${m.id}` }, body: { organization_id: targetId } });
+    }
+  }
+
+  // Connections: remap either side that points at source, except a
+  // connection that already runs directly between source and target - that
+  // would become a self-loop (target<->target) once remapped, so it's
+  // dropped instead.
+  const [asA, asB] = await Promise.all([
+    supabaseRequest("GET", "connections", {
+      params: { entity_a_type: "eq.organization", entity_a_id: `eq.${sourceId}`, select: "id,entity_b_type,entity_b_id" },
+    }),
+    supabaseRequest("GET", "connections", {
+      params: { entity_b_type: "eq.organization", entity_b_id: `eq.${sourceId}`, select: "id,entity_a_type,entity_a_id" },
+    }),
+  ]);
+  for (const c of asA ?? []) {
+    const wouldSelfLoop = c.entity_b_type === "organization" && c.entity_b_id === targetId;
+    if (wouldSelfLoop) await supabaseRequest("DELETE", "connections", { params: { id: `eq.${c.id}` } });
+    else await supabaseRequest("PATCH", "connections", { params: { id: `eq.${c.id}` }, body: { entity_a_id: targetId } });
+  }
+  for (const c of asB ?? []) {
+    const wouldSelfLoop = c.entity_a_type === "organization" && c.entity_a_id === targetId;
+    if (wouldSelfLoop) await supabaseRequest("DELETE", "connections", { params: { id: `eq.${c.id}` } });
+    else await supabaseRequest("PATCH", "connections", { params: { id: `eq.${c.id}` }, body: { entity_b_id: targetId } });
+  }
+
+  // Field backfill: every column target is currently blank on gets filled
+  // from source, whatever it is (investor-profile fields, li_* fields
+  // included) - id/created_at/updated_at/name are excluded, name because
+  // target's is the one being kept, the others because they're not
+  // meaningful to merge.
+  const { id: _tid, created_at: _tca, updated_at: _tua, name: _tname, ...targetFieldsToFill } = target;
+  const fields = mergeFields(source, targetFieldsToFill);
+  const updated = (await supabaseRequest("PATCH", "organizations", {
+    params: { id: `eq.${targetId}` },
+    body: fields,
+    prefer: "return=representation",
+  }))[0];
+
+  // News items aren't moved (same as a plain delete - see DELETE /organizations/:id):
+  // they're not FK-linked to organizations at all (entity_type/entity_id is
+  // generic, covering people too), so this just leaves them orphaned rather
+  // than breaking anything.
+  await supabaseRequest("DELETE", "organizations", { params: { id: `eq.${sourceId}` } });
+  return updated;
 }
 
 // ---------- Connections (org<->org relationships: subsidiary/CVC-arm/division/other) ----------
@@ -1656,7 +1744,17 @@ ${NEVER_GUESS}`;
     body: orgFields,
     prefer: "return=representation",
   }))[0];
-  return { linkedin_url: updated.linkedin_url, sectors: updated.sectors, hq_country: updated.hq_country };
+
+  // Still save the found URL either way (see above) - but flag it if some
+  // *other* org already has this exact one, since that's a likely duplicate
+  // worth checking (and now merging, via merge-into) rather than two
+  // separate records for the same real company.
+  const clash = await supabaseRequest("GET", "organizations", {
+    params: { linkedin_url: `eq.${linkedinUrl}`, id: `neq.${orgId}`, select: "id,name", limit: "1" },
+  });
+  const duplicateOf = clash?.[0] ? { id: clash[0].id, name: clash[0].name } : null;
+
+  return { linkedin_url: updated.linkedin_url, sectors: updated.sectors, hq_country: updated.hq_country, duplicate_of: duplicateOf };
 }
 
 // ---------- Routing ----------
@@ -1797,6 +1895,14 @@ Deno.serve(async (req) => {
     const orgApifyMatch = path.match(/^\/organizations\/([^/]+)\/enrich-from-apify$/);
     if (orgApifyMatch && req.method === "POST") {
       return json(await enrichOrgFromApify(orgApifyMatch[1]));
+    }
+
+    const orgMergeMatch = path.match(/^\/organizations\/([^/]+)\/merge-into$/);
+    if (orgMergeMatch && req.method === "POST") {
+      const body = await req.json();
+      const targetId = (body.target_id ?? "").trim();
+      if (!targetId) return json({ error: "target_id is required" }, 400);
+      return json(await mergeOrgInto(orgMergeMatch[1], targetId));
     }
 
     const personIdMatch = path.match(/^\/people\/([^/]+)$/);
