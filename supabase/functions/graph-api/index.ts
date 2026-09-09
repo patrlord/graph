@@ -1225,18 +1225,39 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     // than one role marked current - both equally "current" by LinkedIn's
     // own definition, but not equally their main role.
     const employmentType = entry.employmentType || null;
+    // A person can hold more than one existing membership at the very same
+    // org already (e.g. one created from a LinkedIn-headline-parse import
+    // with their title as of that snapshot, before a later full profile
+    // fetch found a different/updated title for the same job) - fetching
+    // all of them, not just the first, and closing out every one but the
+    // row this sync actually updates, is what stops that turning into a
+    // stray "ex" duplicate sitting alongside the real current row forever.
+    // A person can't be simultaneously current under two different titles
+    // at the same employer, unlike across different orgs (handled by
+    // syncedOrgIds below).
     const existingMemberships = await supabaseRequest("GET", "memberships", {
-      params: { person_id: `eq.${personId}`, organization_id: `eq.${org.id}`, select: "id" },
+      params: { person_id: `eq.${personId}`, organization_id: `eq.${org.id}`, select: "id,title" },
     });
-    if (existingMemberships?.[0]) {
+    const rows = existingMemberships ?? [];
+    const primary = rows.find((r: any) => (r.title || null) === title) ?? rows[0];
+    let primaryId: string;
+    if (primary) {
       await supabaseRequest("PATCH", "memberships", {
-        params: { id: `eq.${existingMemberships[0].id}` },
+        params: { id: `eq.${primary.id}` },
         body: { title, is_current: true, employment_type: employmentType },
       });
+      primaryId = primary.id;
     } else {
-      await supabaseRequest("POST", "memberships", {
+      const created = (await supabaseRequest("POST", "memberships", {
         body: { person_id: personId, organization_id: org.id, title, is_current: true, employment_type: employmentType },
-      });
+        prefer: "return=representation",
+      }))[0];
+      primaryId = created.id;
+    }
+    for (const r of rows) {
+      if (r.id !== primaryId) {
+        await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${r.id}` }, body: { is_current: false } });
+      }
     }
   }
 
