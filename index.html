@@ -106,17 +106,15 @@
   /* Shared by both the organizations and people lists' leading flags column. */
   .flags-cell { white-space: nowrap; }
   .flag-btn { background: none; border: none; padding: 1px 2px; font-size: 13px; line-height: 1; cursor: pointer; }
-  /* 🚫 is a colored emoji glyph - a filter is the only way to grey it out
-     and reveal its own (already-red) color when active. */
-  .hide-btn { filter: grayscale(1) opacity(.45); }
-  .hide-btn:hover { filter: grayscale(1) opacity(.75); }
-  .hide-btn.active { filter: none; }
-  /* ★ is a plain text glyph, not a colored emoji - styled with `color`
-     directly instead, so it can be an app-color green rather than
-     whatever hue a filter trick could approximate from the default yellow. */
-  .star-btn { color: #cfcabf; }
+  /* ★ and − are plain text glyphs, not colored emoji - styled with `color`
+     directly, so each can be an exact app color rather than whatever hue a
+     grayscale/hue-rotate filter trick could approximate. */
+  .star-btn { color: #cfcabf; font-size: 14px; }
   .star-btn:hover { color: #b5b1a9; }
   .star-btn.active { color: #2f7a3d; }
+  .hide-btn { color: #cfcabf; font-size: 16px; font-weight: 700; }
+  .hide-btn:hover { color: #b5b1a9; }
+  .hide-btn.active { color: #a33; }
   .ex-tag {
     display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .02em; color: #fff;
     background: #3b6ea5; padding: 1px 5px; border-radius: 4px; margin-right: 5px; vertical-align: middle;
@@ -890,7 +888,7 @@ function renderOrgList(orgs) {
 function flagButtonsHtml(entity) {
   return `<td class="flags-cell">
     <button class="flag-btn star-btn${entity.is_starred ? " active" : ""}" title="${entity.is_starred ? "Starred - click to unstar" : "Star this"}">★</button>
-    <button class="flag-btn hide-btn${entity.is_hidden ? " active" : ""}" title="${entity.is_hidden ? "Hidden - click to unhide" : "Hide this"}">🚫</button>
+    <button class="flag-btn hide-btn${entity.is_hidden ? " active" : ""}" title="${entity.is_hidden ? "Hidden - click to unhide" : "Hide this"}">−</button>
   </td>`;
 }
 
