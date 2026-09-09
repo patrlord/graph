@@ -1746,11 +1746,13 @@ async function refreshAfterPersonMerge(survivingId, oldId) {
   }
 }
 
-async function selectPerson(p) {
-  if (currentPeopleMode === "global" && p.organization) {
-    await selectOrg(p.organization.id);  // reloads the people list scoped to that org
-    document.getElementById("peopleSearchInput").value = "";
-  }
+// Deliberately touches nothing but the person detail pane and this row's
+// own highlight - the org pane and the people list (whichever mode it's
+// currently in) stay exactly as they were. Navigating *to* an org from
+// inside the person pane is the other direction (loadPersonCareerSections'
+// career-link handlers, via selectOrg(id, true)) and is the only thing
+// that's meant to change the org pane/people list from here.
+function selectPerson(p) {
   selectedPersonId = p.id;
   highlightSelected("peopleList", selectedPersonId);
   showPersonDetail(p);
