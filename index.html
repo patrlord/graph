@@ -169,6 +169,10 @@
     display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
     background: #2f7a3d; color: #fff; text-transform: uppercase; letter-spacing: .03em;
   }
+  .person-photo {
+    width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex: 0 0 auto;
+    background: #f0eee9; border: 1px solid #e2e0dc;
+  }
 
   .org-header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .org-header h3 { margin: 0; font-size: 15.5px; }
@@ -492,11 +496,17 @@
       <div id="personDetailContent" class="detail-content">
         <div class="detail-header">
           <div id="personHeaderView">
-            <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-              <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
-                <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
-                <span class="user-badge" id="detPersonUserBadge" style="display:none">User</span>
-                <div class="entity-links" id="detPersonLinks" style="margin-top:0;"></div>
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+              <div style="display:flex;align-items:flex-start;gap:10px;">
+                <img id="detPersonPhoto" class="person-photo" alt="" style="display:none">
+                <div>
+                  <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+                    <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+                    <span class="user-badge" id="detPersonUserBadge" style="display:none">User</span>
+                    <div class="entity-links" id="detPersonLinks" style="margin-top:0;"></div>
+                  </div>
+                  <div class="entity-desc" id="detPersonMeta"></div>
+                </div>
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <span class="status-line" id="personApifyStatus" style="margin:0;min-height:0;"></span>
@@ -504,7 +514,6 @@
                 <button class="secondary tiny" id="personEditBtn">Edit</button>
               </div>
             </div>
-            <div class="entity-desc" id="detPersonMeta"></div>
             <div class="header-divider"></div>
           </div>
           <input type="text" id="editPersonName" class="name-input" placeholder="Full name" style="display:none">
@@ -1749,6 +1758,9 @@ function showPersonDetail(person) {
   document.getElementById("personDetailContent").classList.add("shown");
   document.getElementById("detPersonName").textContent = person.full_name;
   document.getElementById("detPersonUserBadge").style.display = person.is_user ? "inline-block" : "none";
+  const photoEl = document.getElementById("detPersonPhoto");
+  if (person.li_photo_url) { photoEl.src = person.li_photo_url; photoEl.style.display = "block"; }
+  else { photoEl.style.display = "none"; photoEl.removeAttribute("src"); }
   // A row clicked from a people list can be a specific past membership (the
   // "ex" tag case) rather than this person's real current role - never show
   // it as if it were their role at all; always resolved (as HTML, "Company
