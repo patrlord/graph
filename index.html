@@ -574,9 +574,9 @@
                 </div>
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <span class="status-line" id="personApifyStatus" style="margin:0;min-height:0;"></span>
-                <button class="secondary tiny" id="personApifyBtn" style="display:none">Fetch LinkedIn profile</button>
                 <button class="secondary tiny" id="personEditBtn">Edit</button>
+                <button class="secondary tiny" id="personEnrichBtn">Enrich</button>
+                <span class="status-line" id="personEnrichStatus" style="margin:0;min-height:0;"></span>
               </div>
             </div>
             <div class="header-divider"></div>
@@ -1981,7 +1981,7 @@ function showPersonDetail(person) {
   document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
   setupAboutClamp();
   loadPersonCareerSections(person);
-  updateApifyControls(person);
+  updatePersonEnrichStatus(person);
   document.getElementById("personNewsList").innerHTML = "";
   loadPersonNews(person);
   exitPersonEditMode();
@@ -2131,25 +2131,69 @@ function formatFetchedDate(iso) {
   return `Fetched ${new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
 }
 
-// Label switches to "Update" once there's a previous fetch on record;
-// the date/status line normally shows when that fetch happened, standing
-// in for a transient "Fetching…"/error message while one is in progress.
-function updateApifyControls(person) {
-  const btn = document.getElementById("personApifyBtn");
-  const status = document.getElementById("personApifyStatus");
-  btn.style.display = person.linkedin_url ? "inline-block" : "none";
-  btn.textContent = person.li_profile_fetched_at ? "Update LinkedIn profile" : "Fetch LinkedIn profile";
+// The date/status line normally shows when the last Apify fetch happened,
+// standing in for a transient "Finding…"/"Fetching…"/error message while
+// one is in progress (see enrichSelectedPerson).
+function updatePersonEnrichStatus(person) {
+  const status = document.getElementById("personEnrichStatus");
   status.className = "status-line";
   status.textContent = formatFetchedDate(person.li_profile_fetched_at);
 }
 
-async function fetchApifyProfile() {
+// One button, same two-step chain as the org detail pane's Enrich: find a
+// LinkedIn URL if there isn't one already, then fetch the full profile once
+// there is one. Every status.textContent below is deliberately the next
+// line after a showPersonDetail/selectOrg/applyPeopleFilter call, never
+// before - each of those resets the status line via updatePersonEnrichStatus,
+// same discipline enrichSelectedOrg follows.
+async function enrichSelectedPerson() {
   const person = selectedPersonObj;
-  if (!person || !person.linkedin_url) return;
-  const btn = document.getElementById("personApifyBtn");
-  const status = document.getElementById("personApifyStatus");
-  btn.disabled = true; status.className = "status-line"; status.textContent = "Fetching LinkedIn profile…";
+  if (!person) return;
+  const btn = document.getElementById("personEnrichBtn");
+  const status = document.getElementById("personEnrichStatus");
+  btn.disabled = true;
+  status.className = "status-line";
+  status.textContent = person.linkedin_url ? "Fetching LinkedIn profile…" : "Finding LinkedIn URL…";
   try {
+    if (!person.linkedin_url) {
+      const companyName = personCompanyName(person);
+      const findRes = await api("/people/find-linkedin", {
+        method: "POST",
+        body: JSON.stringify({
+          person_id: person.id, name: person.full_name,
+          title: person.title || "", company: companyName || "",
+          organization_id: personOrgId(person) || "",
+        }),
+      });
+      const findData = await findRes.json();
+      if (!findRes.ok) throw new Error(findData.error || "Search failed");
+      if (findData.merged_into_person_id) {
+        // Same real person as an existing different record - person.id no
+        // longer exists server-side, it was merged away. Nothing left to
+        // fetch under this identity; refreshAfterPersonMerge re-selects
+        // the survivor if this person was the one showing.
+        await refreshAfterPersonMerge(findData.merged_into_person_id, person.id);
+        return;
+      }
+      if (findData.renamed_to) person.full_name = findData.renamed_to;
+      if (!findData.linkedin_url) {
+        showPersonDetail(person);  // resets status - picks up a renamed_to name, if any
+        status.textContent = "No LinkedIn URL found, so a profile couldn't be fetched.";
+        return;
+      }
+      person.linkedin_url = findData.linkedin_url;
+      if (findData.title) person.title = findData.title;
+      const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
+      if (membership) {
+        if (findData.renamed_to) membership.people.full_name = findData.renamed_to;
+        membership.people.linkedin_url = findData.linkedin_url;
+        if (findData.title) membership.title = findData.title;
+      }
+      renderPeopleTableBody();
+      showPersonDetail(person);  // resets status
+      status.textContent = "Fetching LinkedIn profile…";
+    }
+
     const res = await api(`/people/${person.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Fetch failed");
@@ -2164,7 +2208,7 @@ async function fetchApifyProfile() {
     } else {
       await applyPeopleFilter();
     }
-    showPersonDetail(person);  // also restores the date/label via updateApifyControls
+    showPersonDetail(person);  // also restores the date via updatePersonEnrichStatus
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally {
@@ -2596,7 +2640,7 @@ document.getElementById("bulkPeopleStartBtn").addEventListener("click", startBul
 document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
 document.getElementById("personEditBtn").addEventListener("click", enterPersonEditMode);
 document.getElementById("personCancelBtn").addEventListener("click", exitPersonEditMode);
-document.getElementById("personApifyBtn").addEventListener("click", fetchApifyProfile);
+document.getElementById("personEnrichBtn").addEventListener("click", enrichSelectedPerson);
 document.getElementById("personSaveBtn").addEventListener("click", savePersonEdits);
 const syncPersonLinkedinLink = wireLinkField("editPersonLinkedin", "editPersonLinkedinOpen");
 
