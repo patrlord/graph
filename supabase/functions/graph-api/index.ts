@@ -1286,10 +1286,22 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     // at the same employer, unlike across different orgs (handled by
     // syncedOrgIds below).
     const existingMemberships = await supabaseRequest("GET", "memberships", {
-      params: { person_id: `eq.${personId}`, organization_id: `eq.${org.id}`, select: "id,title" },
+      params: { person_id: `eq.${personId}`, organization_id: `eq.${org.id}`, select: "id,title,start_date,end_date" },
     });
     const rows = existingMemberships ?? [];
-    const primary = rows.find((r: any) => (r.title || null) === title) ?? rows[0];
+    // Only a row with no dates is eligible to be reused as "the same
+    // ongoing relationship, just under a fresher title" - this function
+    // never sets start_date/end_date (only importPastEmploymentForPerson
+    // does), so a row that already has one is a genuine, separate past
+    // stint (a real title/date range LinkedIn reported), not a stale
+    // duplicate of *this* current entry. Reusing it would silently rewrite
+    // real history - confirmed happening for a person with two Truffle
+    // Capital stints, where the current-role sync grabbed the past
+    // "Relations Investisseurs" (2015-2017) row and renamed it to their
+    // actual current title, leaving a row that claimed to be both current
+    // and ended in 2017 at once.
+    const reusable = rows.filter((r: any) => !r.start_date && !r.end_date);
+    const primary = reusable.find((r: any) => (r.title || null) === title) ?? reusable[0];
     let primaryId: string;
     if (primary) {
       await supabaseRequest("PATCH", "memberships", {
