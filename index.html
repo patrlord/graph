@@ -271,7 +271,14 @@
      selectors beat the class rules above regardless of source order. */
   #peopleTable th:nth-child(6) { width: 8%; }
   #peopleTable th:nth-child(7) { width: 10%; }
-  .ba-cell { text-align: center; }
+  /* JPL (org: 6th column, people: 7th) and BA (people: 6th) hold only an
+     icon/checkbox, not text - center the header over them too, not just
+     the content, so they actually line up. */
+  #orgTable th:nth-child(6), #orgTable td:nth-child(6),
+  #peopleTable th:nth-child(6), #peopleTable td:nth-child(6),
+  #peopleTable th:nth-child(7), #peopleTable td:nth-child(7) {
+    text-align: center;
+  }
   .ba-cell input[type="checkbox"] { vertical-align: middle; cursor: pointer; }
   .li-meta { font-size: 10.5px; color: #8a877e; }
   .career-link { color: #8a5a2b; text-decoration: none; }
