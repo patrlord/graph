@@ -8,7 +8,7 @@ Live at **https://patrlord.github.io/graph/**, gated behind Supabase Auth (singl
 
 - `index.html` — the whole frontend (static, served by GitHub Pages).
 - `supabase/functions/graph-api/` — the backend (Supabase Edge Function). Research/news use OpenRouter (`openai/gpt-5-nano` + one grounded web search per call, not an agentic search loop); Apollo's free `organizations/enrich` backfills whatever OpenRouter didn't find; the person detail pane's "Fetch LinkedIn profile" button runs Apify's LinkedIn Profile Scraper actor (`LpVuK3Zozwuipa5bp`) against a known LinkedIn URL for the richer `li_*` profile fields (experience, education, skills, etc.); the organization detail pane's "Enrich" button chains three steps into one click - research/save, find a LinkedIn URL if still missing, then (via Apify's `harvestapi/linkedin-company` actor, `UwSdACBp7ymaGUJjS`) fetch the full LinkedIn company profile - also renaming the org to LinkedIn's own company name when it differs.
-- `schema.sql`, then `migration_002_*.sql` through `migration_011_*.sql` — run once each in the Supabase SQL Editor, in order.
+- `schema.sql`, then `migration_002_*.sql` through `migration_012_*.sql` — run once each in the Supabase SQL Editor, in order.
 
 ## Deploying a change to the Edge Function
 

@@ -62,8 +62,13 @@
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
-//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, sectors, hq_country, duplicate_of } (saved if found; sectors/hq_country
-//     only filled if blank; duplicate_of is {id, name} of another org that already has this exact linkedin_url, or null - a likely-duplicate flag, not a block on saving)
+//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, name, org_type, sectors, hq_country, duplicate_of, name_clash, candidates }
+//     (saved if found; sectors/hq_country/org_type only filled if currently blank; name is renamed to LinkedIn's own name when it differs, unless that name already belongs
+//     to a different org (rename skipped, name_clash set, everything else still saves - same rule as enrich-from-apify, via renameOrgIfPossible). duplicate_of is
+//     {id, name} of another org that already has this exact linkedin_url, or null - a likely-duplicate flag, not a block on saving. Verification also checks the
+//     candidate against whatever's already on file for this org - type, sectors, ticket size, stage, description - not just its name, since names collide; when that
+//     leaves more than one plausible candidate it can't confidently tell apart, linkedin_url is null, nothing is saved, and candidates carries up to 3
+//     {linkedin_url, name, org_type, industry, hq} for a human to pick from instead of guessing)
 //   POST   /organizations/:id/merge-into  { target_id } -> updated target org (full row)
 //     (moves :id's team members onto target_id - dropping any that would collide with a membership target_id
 //     already has for that exact person+title - and its org<->org connections too - dropping any that would
@@ -316,7 +321,11 @@ async function saveOrganization(payload: any) {
   const linkedinUrl = normalizeLinkedinUrl(orgIn.linkedin_url);
   const orgFields = {
     name,
-    org_type: orgIn.org_type || "vc",
+    // No fallback to a default type anymore - org_type now spans 20+ very
+    // different kinds of organization (see ORG_TYPES), not just investor
+    // sub-types where "vc" was a safe generic guess. Genuinely unclassified
+    // stays null, same as everywhere else in the app.
+    org_type: orgIn.org_type || null,
     website_url: websiteUrl,
     linkedin_url: linkedinUrl,
     hq_country: orgIn.hq_country || null,
@@ -1016,6 +1025,21 @@ function hqLocationText(headquarter: any): string | null {
 // is authoritative here, so it's renamed to match - unless that name is
 // already taken by a different org, in which case the rename is skipped
 // (surfaced via name_clash) but every li_* field still saves.
+// Shared by enrichOrgFromApify and findOrgLinkedin: a candidate name found
+// from LinkedIn is authoritative once we've matched this org by its
+// LinkedIn URL, so rename to it - unless that name already belongs to a
+// different existing org, in which case the rename is skipped (surfaced as
+// name_clash, so the caller doesn't just fail the whole operation over a
+// same-name duplicate) but everything else the caller found still saves.
+async function renameOrgIfPossible(orgId: string, currentName: string, candidateName: string | null | undefined): Promise<{ name?: string; name_clash: string | null }> {
+  const newName = (candidateName || "").trim();
+  if (!newName || newName.toLowerCase() === currentName.toLowerCase()) return { name_clash: null };
+  const clash = await supabaseRequest("GET", "organizations", {
+    params: { name: `ilike.${orValue(newName)}`, id: `neq.${orgId}`, select: "id", limit: "1" },
+  });
+  return clash?.length ? { name_clash: newName } : { name: newName, name_clash: null };
+}
+
 async function enrichOrgFromApify(orgId: string) {
   const rows = await supabaseRequest("GET", "organizations", {
     params: { id: `eq.${orgId}`, select: "name,linkedin_url,website_url,hq_country,description" },
@@ -1036,22 +1060,15 @@ async function enrichOrgFromApify(orgId: string) {
   if ((!org.hq_country || org.hq_country === "null") && hqCountry) fields.hq_country = hqCountry;
   if (!org.description && company.description) fields.description = company.description;
 
-  let nameClash: string | null = null;
-  const newName = (company.name || "").trim();
-  if (newName && newName.toLowerCase() !== org.name.toLowerCase()) {
-    const clash = await supabaseRequest("GET", "organizations", {
-      params: { name: `ilike.${orValue(newName)}`, id: `neq.${orgId}`, select: "id", limit: "1" },
-    });
-    if (clash?.length) nameClash = newName;
-    else fields.name = newName;
-  }
+  const rename = await renameOrgIfPossible(orgId, org.name, company.name);
+  if (rename.name) fields.name = rename.name;
 
   const updated = (await supabaseRequest("PATCH", "organizations", {
     params: { id: `eq.${orgId}` },
     body: fields,
     prefer: "return=representation",
   }))[0];
-  return { ...updated, name_clash: nameClash };
+  return { ...updated, name_clash: rename.name_clash };
 }
 
 // ---------- Schools / education (normalized from profile.education) ----------
@@ -1297,17 +1314,54 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
 
 const NEVER_GUESS = "Never invent, guess, or construct a URL, name, or fact you didn't actually find via search - use null for anything you can't confirm.";
 
-const ORG_TYPE_INSTRUCTIONS = `Classify the firm's type as exactly one of:
-- "vc": an independent venture capital firm
-- "cvc": a corporate venture capital arm (invests from a corporation's balance sheet/strategic fund)
-- "angel": an individual business angel / angel investor
-- "family_office": a family office or private wealth investment vehicle
-If genuinely unclear, default to "vc".`;
+// Single source of truth for org_type: [slug, description for the AI
+// classification prompt]. "employer" is deliberately excluded from this
+// list - it's reserved for the passive past-employer auto-creation path
+// (enrichPersonFromApify/importPastEmploymentForPerson), not something
+// active research should assign. The DB check constraint (migration_012),
+// the PATCH /organizations/:id validation list below, and the frontend's
+// ORG_TYPE_LABEL must all stay in sync with this - there's no shared module
+// between backend and frontend to enforce that automatically.
+const ORG_TYPES: [string, string][] = [
+  ["vc", "an independent venture capital firm"],
+  ["cvc", "a corporate venture capital arm (invests from a corporation's balance sheet/strategic fund)"],
+  ["angel", "an individual business angel / angel investor"],
+  ["angel_network", "a network or syndicate of angel investors organized as a group"],
+  ["family_office", "a family office or private wealth investment vehicle"],
+  ["investment_syndicate", "an ad hoc or platform-based syndicate that pools capital for specific deals"],
+  ["pe", "a private equity firm"],
+  ["asset_manager", "an asset management firm (not specifically VC/PE)"],
+  ["investment_bank", "an investment bank"],
+  ["bank", "a retail or commercial bank"],
+  ["insurer", "an insurance company"],
+  ["startup", "an early-stage operating company - not an investor"],
+  ["enterprise", "a large, established operating company/corporation - not an investor"],
+  ["incubator_accelerator", "an incubator or accelerator program"],
+  ["university", "a university or academic institution"],
+  ["association", "a trade association, industry body, or non-profit membership organization"],
+  ["legal", "a law firm or legal services provider"],
+  ["consulting", "a management/strategy consulting firm"],
+  ["audit_accounting", "an audit or accounting firm"],
+  ["media_agency", "a media, PR, or marketing agency"],
+  ["exec_search", "an executive search / headhunting firm"],
+  ["interim_agency", "an interim-management staffing agency"],
+  ["group", "none of the above fit well, but it's a real organization worth tracking"],
+];
+const ORG_TYPE_SLUGS = ORG_TYPES.map(([slug]) => slug);
+// "employer" is a valid stored value (see above) even though research can't pick it.
+const ALL_ORG_TYPE_SLUGS = [...ORG_TYPE_SLUGS, "employer"];
 
+const ORG_TYPE_INSTRUCTIONS = `Classify the organization's type as exactly one of:
+${ORG_TYPES.map(([slug, desc]) => `- "${slug}": ${desc}`).join("\n")}
+If you can't tell which of these fits, leave org_type null rather than guessing.`;
+
+// Only applies to organizations that actually invest capital - conditioned
+// in the prompt itself (see researchOrganization/researchPerson) so a
+// University or law firm doesn't get asked for a ticket size.
 const INVESTOR_PROFILE_INSTRUCTIONS = `- Typical investment ticket size / check size it writes (e.g. "$250K-1M"), only if stated somewhere
 - Investment stage(s) it invests at (e.g. "Pre-seed", "Seed", "Series A", "Growth")
 - Geographic region(s) it focuses its investing in (e.g. "US", "Europe", "Global") - this is about where it invests, not where it's headquartered, though for a firm that only invests locally these are often the same
-- A short, more specific fund-type label than the vc/cvc/angel/family_office classification above, if one applies (e.g. "Corporate VC", "Family Office", "Accelerator", "Venture Studio", "Fund of Funds") - otherwise leave null`;
+- A short, more specific fund-type label than the org_type classification above, if one applies (e.g. "Corporate VC", "Family Office", "Accelerator", "Venture Studio", "Fund of Funds") - otherwise leave null`;
 
 const RESEARCH_JSON_SCHEMA = {
   type: "object",
@@ -1316,7 +1370,7 @@ const RESEARCH_JSON_SCHEMA = {
       type: "object",
       properties: {
         name: { type: ["string", "null"] },
-        org_type: { type: "string", enum: ["vc", "cvc", "angel", "family_office"] },
+        org_type: { type: ["string", "null"], enum: [...ORG_TYPE_SLUGS, null] },
         website_url: { type: ["string", "null"] },
         linkedin_url: { type: ["string", "null"] },
         hq_country: { type: ["string", "null"] },
@@ -1355,26 +1409,26 @@ const RESEARCH_JSON_SCHEMA = {
 
 async function researchOrganization(name: string, linkedinUrl: string) {
   if (!name && !linkedinUrl) throw new HttpError(400, "name or linkedin_url is required");
-  const who = name ? `"${name}"` : `the firm at this LinkedIn company page: ${linkedinUrl}`;
-  const prompt = `Search for and find information about ${who}, an investment organization: its official website, LinkedIn company page, key team members, and sectors it invests in.
+  const who = name ? `"${name}"` : `the organization at this LinkedIn company page: ${linkedinUrl}`;
+  const prompt = `Search for and find information about ${who}: its official website, LinkedIn company page, key people, and what it does.
 
 Report:
 - Its name
 - ${ORG_TYPE_INSTRUCTIONS}
 - Official website URL and LinkedIn company page URL, only if confirmed
 - Where it's headquartered (city and country)
-- A one-sentence description of the firm
-- 2-6 short sector/industry tags it focuses on (e.g. "Fintech", "AI infrastructure", "Climate tech")
+- A one-sentence description
+- 2-6 short sector/industry tags it's associated with (e.g. "Fintech", "AI infrastructure", "Climate tech")
+- If it's an investing organization (VC, CVC, PE, angel network, family office, investment syndicate, or similar), also report:
 ${INVESTOR_PROFILE_INSTRUCTIONS}
-- Its current key team members - partners, principals, investment directors and similar investment-team roles (skip admin/ops staff). For each: full name, title, sector/focus if stated, country they're based in, and personal LinkedIn URL if confirmed.
+- Its current key people - leadership, partners, or other senior roles relevant to what it does (skip admin/ops staff). For each: full name, title, sector/focus if stated, country they're based in, and personal LinkedIn URL if confirmed.
 
-If you cannot confidently identify the firm, leave "name" and other fields null rather than guessing (still pick a best-guess org_type if you can tell it's an investment organization at all).
+If you cannot confidently identify it, leave "name" and other fields null rather than guessing (still pick a best-guess org_type if the search results make it reasonably clear, leave it null otherwise).
 
 ${NEVER_GUESS}`;
 
   const data = await openRouterCall(prompt, "firm_research", RESEARCH_JSON_SCHEMA);
   data.organization = data.organization || {};
-  if (!data.organization.org_type) data.organization.org_type = "vc";
   data.people = data.people || [];
   if (data.organization.name) await backfillFromApollo(data.organization);
   applyInvestmentRegionFallback(data.organization);
@@ -1386,21 +1440,20 @@ async function researchPerson(name: string, companyHint: string, linkedinUrl: st
   const who = name
     ? `"${name}"${companyHint ? `, who may work at "${companyHint}"` : ""}`
     : `the person at this LinkedIn URL: ${linkedinUrl}`;
-  const prompt = `Search for and identify ${who} - an individual working at a VC, CVC, business angel, or family office firm.
+  const prompt = `Search for and identify ${who}, and the organization they currently work at.
 
 Report:
 - Their full name, current title, sector/focus if stated, and the country they're based in
 - Their confirmed personal LinkedIn URL
-- The firm they currently work at: its name, ${ORG_TYPE_INSTRUCTIONS}, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and 2-6 short sector/industry tags. Also, about that firm:
+- The organization they currently work at: its name, ${ORG_TYPE_INSTRUCTIONS}, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and 2-6 short sector/industry tags. If it's an investing organization (VC, CVC, PE, angel network, family office, investment syndicate, or similar), also report:
 ${INVESTOR_PROFILE_INSTRUCTIONS}
 
-If you cannot confidently identify this person or their current firm, leave the relevant fields null rather than guessing. Return exactly one entry in "people" (or none if you can't confirm anyone).
+If you cannot confidently identify this person or their current organization, leave the relevant fields null rather than guessing. Return exactly one entry in "people" (or none if you can't confirm anyone).
 
 ${NEVER_GUESS}`;
 
   const data = await openRouterCall(prompt, "person_research", RESEARCH_JSON_SCHEMA);
   data.organization = data.organization || {};
-  if (!data.organization.org_type) data.organization.org_type = "vc";
   data.people = (data.people || []).slice(0, 1);
   if (data.organization.name) await backfillFromApollo(data.organization);
   applyInvestmentRegionFallback(data.organization);
@@ -1495,10 +1548,27 @@ const FIND_ORG_LINKEDIN_SCHEMA = {
   type: "object",
   properties: {
     linkedin_url: { type: ["string", "null"] },
+    observed_name: { type: ["string", "null"] },
+    observed_org_type: { type: ["string", "null"], enum: [...ORG_TYPE_SLUGS, null] },
     observed_industry: { type: ["string", "null"] },
     observed_hq: { type: ["string", "null"] },
+    candidates: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          linkedin_url: { type: "string" },
+          observed_name: { type: ["string", "null"] },
+          observed_org_type: { type: ["string", "null"], enum: [...ORG_TYPE_SLUGS, null] },
+          observed_industry: { type: ["string", "null"] },
+          observed_hq: { type: ["string", "null"] },
+        },
+        required: ["linkedin_url", "observed_name", "observed_org_type", "observed_industry", "observed_hq"],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ["linkedin_url", "observed_industry", "observed_hq"],
+  required: ["linkedin_url", "observed_name", "observed_org_type", "observed_industry", "observed_hq", "candidates"],
   additionalProperties: false,
 };
 
@@ -1708,30 +1778,86 @@ ${NEVER_GUESS}`;
   return { country: updatedCountry, title: updatedTitle, observed_company: data.observed_company || null };
 }
 
+// Short labels for the "what's already on file" summary in findOrgLinkedin's
+// prompt - keep in sync with the frontend's ORG_TYPE_LABEL (same slugs, same
+// idea, just no shared module to enforce it). Falls back to the raw slug
+// for anything not listed, so this can lag ORG_TYPES/ALL_ORG_TYPE_SLUGS
+// without breaking - just reads a bit rawer in the prompt.
+const FIND_ORG_TYPE_LABEL: Record<string, string> = {
+  vc: "VC", cvc: "CVC (corporate VC)", angel: "angel investor", angel_network: "angel network",
+  family_office: "family office", investment_syndicate: "investment syndicate", pe: "private equity firm",
+  asset_manager: "asset manager", investment_bank: "investment bank", bank: "bank", insurer: "insurer",
+  startup: "startup", enterprise: "enterprise", incubator_accelerator: "incubator/accelerator",
+  university: "university", association: "association", legal: "law firm", consulting: "consulting firm",
+  audit_accounting: "audit/accounting firm", media_agency: "media agency", exec_search: "exec search firm",
+  interim_agency: "interim agency", group: "group", employer: "employer",
+};
+
 // Same idea as findPersonLinkedin, but for a company's LinkedIn page. Fills
 // in sectors (from industry) and hq_country - only where currently blank.
+//
+// Company names collide often enough that "search for the name, verify
+// against the snippet" alone isn't reliable - a completely unrelated
+// company (different industry, different country, sometimes a startup that
+// just happens to share the name) can look like a fine match from name
+// alone. So this also tells the model whatever we already have on file
+// about *this* org (type, sectors, ticket size, stage, description) and
+// asks it to check the candidate is consistent with that - not just
+// name-matching - before treating it as verified. When it finds more than
+// one plausible candidate and can't confidently tell which is right even
+// with that context, it reports them as `candidates` instead of guessing;
+// the frontend then lets a human pick (or reject all of them).
 async function findOrgLinkedin(orgId: string, name: string, websiteUrl: string, country: string) {
-  const who = [name, websiteUrl, country].filter(Boolean).join(", ");
+  const rows = await supabaseRequest("GET", "organizations", {
+    params: {
+      id: `eq.${orgId}`,
+      select: "name,org_type,description,sectors,ticket_size,investment_stages,investment_regions,hq_country,website_url",
+    },
+  });
+  const current = rows?.[0] || {};
+  const effectiveWebsite = websiteUrl || current.website_url || "";
+  const effectiveCountry = country || current.hq_country || "";
+
+  const profileLines: string[] = [];
+  if (current.org_type) profileLines.push(`Type: ${FIND_ORG_TYPE_LABEL[current.org_type] || current.org_type}`);
+  if (current.sectors?.length) profileLines.push(`Sectors it invests in: ${current.sectors.join(", ")}`);
+  if (current.ticket_size) profileLines.push(`Ticket size: ${current.ticket_size}`);
+  if (current.investment_stages?.length) profileLines.push(`Investment stages: ${current.investment_stages.join(", ")}`);
+  if (current.investment_regions?.length) profileLines.push(`Investment regions: ${current.investment_regions.join(", ")}`);
+  if (current.description) profileLines.push(`Description on file: ${current.description}`);
+  const knownProfile = profileLines.length
+    ? `\n\nWhat's already on file about this specific company - use this to check you have the right one, not a different company that just happens to share the name:\n${profileLines.map((l) => `- ${l}`).join("\n")}`
+    : "";
+
+  const who = [name, effectiveWebsite, effectiveCountry].filter(Boolean).join(", ");
   const prompt = `Search for: linkedin ${who}
 
-This is a company named "${name}"${websiteUrl ? `, whose website is ${websiteUrl}` : ""}${country ? `, headquartered in ${country}` : ""}. Find their official LinkedIn company page.
+This is a company named "${name}"${effectiveWebsite ? `, whose website is ${effectiveWebsite}` : ""}${effectiveCountry ? `, headquartered in ${effectiveCountry}` : ""}.${knownProfile} Find their official LinkedIn company page.
 
-From the search results, identify up to 3 candidate linkedin.com/company/... URLs that could belong to this specific company. Check them one at a time, in the order the search ranked them: for each, look at what the result's title/snippet says about that company (name, industry, location) and judge whether it genuinely matches - the name should match, and location/industry should at least plausibly match. Stop at the first candidate you can confidently verify this way and return its URL.
+Company names collide often - this search can surface a completely different company that just shares the name (different industry, different country, sometimes an unrelated startup). From the search results, identify up to 3 candidate linkedin.com/company/... URLs that could belong to this specific company. Check them one at a time, in the order the search ranked them: for each, look at what the result's title/snippet says about that company (name, industry, location) and judge whether it's consistent with what's already on file above (if given) - not just whether the name matches. Stop at the first candidate you can confidently verify this way and return its URL, leaving "candidates" empty.
 
-If you verify a match, also report the company's industry/category and HQ location exactly as stated in that same search result/snippet (null for either if not stated there - don't guess).
+If you verify a match, also report (each independently - leave any of them null rather than guessing if you're not confident, even if you did confirm the URL itself):
+- Its correct/official name exactly as shown on that LinkedIn page
+- ${ORG_TYPE_INSTRUCTIONS}
+- Its industry/category and HQ location exactly as stated in that same search result/snippet
 
-If none of the candidates confidently match, return null for everything - never guess, and never return an unverified best-guess URL.
+If two or more candidates look plausible by name but you can't confidently tell which one is this specific company even with the profile above, don't guess which is right - leave linkedin_url null and instead list up to 3 of them in "candidates" (their URL and whatever you can tell about their name/type/industry/HQ from the search result, each independently, null for anything unclear), so a human can pick.
+
+If nothing found looks like a plausible match at all, return null for linkedin_url and an empty array for candidates.
 
 ${NEVER_GUESS}`;
 
   const data = await openRouterCall(prompt, "find_org_linkedin", FIND_ORG_LINKEDIN_SCHEMA);
   const linkedinUrl = normalizeLinkedinUrl(data.linkedin_url);
-  if (!linkedinUrl) return { linkedin_url: null };
+  const candidates = (data.candidates ?? [])
+    .map((c: any) => ({
+      linkedin_url: normalizeLinkedinUrl(c.linkedin_url), name: c.observed_name || null, org_type: c.observed_org_type || null,
+      industry: c.observed_industry || null, hq: c.observed_hq || null,
+    }))
+    .filter((c: any) => c.linkedin_url);
 
-  const existingRows = await supabaseRequest("GET", "organizations", {
-    params: { id: `eq.${orgId}`, select: "sectors,hq_country" },
-  });
-  const current = existingRows?.[0] || {};
+  if (!linkedinUrl) return { linkedin_url: null, candidates };
+
   const orgFields: Record<string, any> = { linkedin_url: linkedinUrl };
   if ((!current.sectors || current.sectors.length === 0) && data.observed_industry) {
     orgFields.sectors = [data.observed_industry];
@@ -1739,6 +1865,12 @@ ${NEVER_GUESS}`;
   if (!current.hq_country && data.observed_hq) {
     orgFields.hq_country = data.observed_hq;
   }
+  if (!current.org_type && data.observed_org_type) {
+    orgFields.org_type = data.observed_org_type;
+  }
+  const rename = await renameOrgIfPossible(orgId, current.name ?? name, data.observed_name);
+  if (rename.name) orgFields.name = rename.name;
+
   const updated = (await supabaseRequest("PATCH", "organizations", {
     params: { id: `eq.${orgId}` },
     body: orgFields,
@@ -1754,7 +1886,11 @@ ${NEVER_GUESS}`;
   });
   const duplicateOf = clash?.[0] ? { id: clash[0].id, name: clash[0].name } : null;
 
-  return { linkedin_url: updated.linkedin_url, sectors: updated.sectors, hq_country: updated.hq_country, duplicate_of: duplicateOf };
+  return {
+    linkedin_url: updated.linkedin_url, name: updated.name, org_type: updated.org_type,
+    sectors: updated.sectors, hq_country: updated.hq_country,
+    duplicate_of: duplicateOf, name_clash: rename.name_clash, candidates: [],
+  };
 }
 
 // ---------- Routing ----------
@@ -1872,8 +2008,8 @@ Deno.serve(async (req) => {
       ]);
       if ("name" in fields && !String(fields.name ?? "").trim()) return json({ error: "name cannot be blank" }, 400);
       if ("org_type" in fields) {
-        if (fields.org_type && !["vc", "cvc", "angel", "family_office", "group", "employer"].includes(fields.org_type)) {
-          return json({ error: "org_type must be blank or one of vc, cvc, angel, family_office, group, employer" }, 400);
+        if (fields.org_type && !ALL_ORG_TYPE_SLUGS.includes(fields.org_type)) {
+          return json({ error: `org_type must be blank or one of ${ALL_ORG_TYPE_SLUGS.join(", ")}` }, 400);
         }
         fields.org_type = fields.org_type || null;  // "" is not a valid value for the check constraint - blank means null
       }

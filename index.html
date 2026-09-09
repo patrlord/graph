@@ -164,6 +164,7 @@
   .connected-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2f7a3d; }
   .dup-warning { cursor: pointer; margin-left: 4px; }
   .dup-jump { color: inherit; text-decoration: underline; }
+  .candidates-box { border: 1px solid #eeece7; border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
   .user-badge {
     display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
     background: #2f7a3d; color: #fff; text-transform: uppercase; letter-spacing: .03em;
@@ -361,6 +362,7 @@
         <div class="scroll-box">
           <div id="orgBodyView">
             <div id="detOrgDupWarning"></div>
+            <div id="detOrgLinkedinCandidates"></div>
             <div id="detOrgSectors"></div>
             <div class="entity-desc" id="detOrgDesc"></div>
             <div class="investor-profile" id="detOrgInvestorProfile"></div>
@@ -548,7 +550,18 @@ const SUPABASE_ANON_KEY = "sb_publishable_SiN9EMxBxQ-qc34l8UScYQ_EEAFW_Cp";
 const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/graph-api`;
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-const ORG_TYPE_LABEL = { vc: "VC", cvc: "CVC", angel: "Angel", family_office: "Family office", group: "Group", employer: "Past employer" };
+// Keep in sync with ORG_TYPES/ALL_ORG_TYPE_SLUGS in the Edge Function and
+// the DB check constraint (migration_012) - no shared module to enforce that.
+const ORG_TYPE_LABEL = {
+  vc: "VC", cvc: "CVC", angel: "Angel", angel_network: "Angel network", family_office: "Family office",
+  investment_syndicate: "Investment syndicate", pe: "PE", asset_manager: "Asset manager",
+  investment_bank: "Investment bank", bank: "Bank", insurer: "Insurer",
+  startup: "Startup", enterprise: "Enterprise", incubator_accelerator: "Incubator / Accelerator",
+  university: "University", association: "Association",
+  legal: "Legal", consulting: "Consulting", audit_accounting: "Audit / Accounting",
+  media_agency: "Media agency", exec_search: "Exec search", interim_agency: "Interim agency",
+  group: "Group", employer: "Past employer",
+};
 
 let orgListCache = [];
 let orgViewCache = [];   // currently filtered+sorted org list (what's actually rendered)
@@ -646,6 +659,14 @@ function linkedinCellFor(entity) {
       return `${link}<span class="dup-warning dup-jump-btn" data-dup-id="${entity.li_duplicate_of.id}" title="Same LinkedIn URL as ${entity.li_duplicate_of.name} - click to check whether to merge">⚠</span>`;
     }
     return link;
+  }
+  // li_find_candidates (orgs only): a Find that couldn't confidently tell
+  // apart same/similar-named companies - nothing saved, picked in the org
+  // detail pane's picker instead (orgCandidatesHtml). Survives re-renders
+  // by living on the cached entity, same as li_duplicate_of above.
+  if (entity.li_find_candidates && entity.li_find_candidates.length) {
+    const n = entity.li_find_candidates.length;
+    return `<button class="secondary tiny find-li-btn" data-id="${entity.id}" title="Open this organization to pick the right LinkedIn page">${n} option${n > 1 ? "s" : ""}</button>`;
   }
   return `<button class="secondary tiny find-li-btn" data-id="${entity.id}">Find</button>`;
 }
@@ -780,6 +801,24 @@ function renderOrgList(orgs) {
   if (selectedOrg) highlightSelected("orgList", selectedOrg.id);
 }
 
+// Applies a successful /organizations/find-linkedin (or a picked candidate,
+// see useOrgLinkedinCandidate) result onto a cached org-like object -
+// shared by the per-row Find button and the combined Enrich flow's own
+// find-linkedin step, so the two don't drift. name/org_type/sectors/
+// hq_country are only set when the result actually carries a value - each
+// was itself only filled server-side (or, for a picked candidate, is only
+// worth applying client-side) if blank/confirmed, per findOrgLinkedin.
+function applyOrgFindResult(org, data) {
+  org.linkedin_url = data.linkedin_url;
+  if (data.name) org.name = data.name;
+  if (data.org_type) org.org_type = data.org_type;
+  if (data.sectors) org.sectors = data.sectors;
+  if (data.hq_country) org.hq_country = data.hq_country;
+  org.li_duplicate_of = data.duplicate_of || null;
+  org.li_name_clash = data.name_clash || null;
+  org.li_find_candidates = [];
+}
+
 async function runFindOrgLinkedin(org, btnEl) {
   btnEl.disabled = true;
   btnEl.textContent = "Searching…";
@@ -795,18 +834,25 @@ async function runFindOrgLinkedin(org, btnEl) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Search failed");
     if (data.linkedin_url) {
-      org.linkedin_url = data.linkedin_url;  // mutates the shared object in orgListCache too
-      org.li_duplicate_of = data.duplicate_of || null;
-      if (data.sectors) org.sectors = data.sectors;
-      if (data.hq_country) org.hq_country = data.hq_country;
+      applyOrgFindResult(org, data);  // mutates the shared object in orgListCache too
       if (selectedOrg && selectedOrg.id === org.id) {
-        selectedOrg.linkedin_url = data.linkedin_url;
-        selectedOrg.li_duplicate_of = org.li_duplicate_of;
-        if (data.sectors) selectedOrg.sectors = data.sectors;
-        if (data.hq_country) selectedOrg.hq_country = data.hq_country;
+        applyOrgFindResult(selectedOrg, data);
         renderOrgDetail(selectedOrg);
+        updatePeopleHeader();  // in case a rename changed "People at <org>"
       }
       applyOrgFilter();
+    } else if (data.candidates && data.candidates.length) {
+      // Couldn't confidently tell apart same-or-similar-named companies -
+      // nothing saved (see findOrgLinkedin) - surfaced in the org detail
+      // pane's picker (orgCandidatesHtml) rather than here in the row.
+      org.li_find_candidates = data.candidates;
+      if (selectedOrg && selectedOrg.id === org.id) {
+        selectedOrg.li_find_candidates = data.candidates;
+        renderOrgDetail(selectedOrg);
+      }
+      btnEl.disabled = false;
+      btnEl.textContent = `${data.candidates.length} option${data.candidates.length > 1 ? "s" : ""}`;
+      btnEl.title = "Open this organization to pick the right LinkedIn page";
     } else {
       btnEl.disabled = false;
       btnEl.textContent = "Not found";
@@ -818,28 +864,90 @@ async function runFindOrgLinkedin(org, btnEl) {
   }
 }
 
+// Picking a candidate is a plain PATCH (the same direct-set path a manual
+// edit uses) rather than re-running findOrgLinkedin's search - the URL is
+// already known, there's nothing left to search for. Everything findOrgLinkedin
+// would itself have checked server-side for a *confirmed* match - the
+// duplicate-URL flag, the rename-unless-a-different-org-already-has-that-
+// name guard, filling org_type/hq_country/sectors only if currently blank -
+// is redone here client-side against orgListCache instead, so picking a
+// candidate behaves the same as if it had come back as the sole match.
+async function useOrgLinkedinCandidate(candidate) {
+  if (!selectedOrg) return;
+  const status = document.getElementById("enrichOrgViewStatus");
+  status.className = "status-line"; status.textContent = "Saving…";
+  try {
+    const fields = { linkedin_url: candidate.linkedin_url };
+    let nameClash = null;
+    const newName = (candidate.name || "").trim();
+    if (newName && newName.toLowerCase() !== selectedOrg.name.toLowerCase()) {
+      const clash = orgListCache.find(o => o.id !== selectedOrg.id && o.name.toLowerCase() === newName.toLowerCase());
+      if (clash) nameClash = newName;
+      else fields.name = newName;
+    }
+    if (!selectedOrg.org_type && candidate.org_type) fields.org_type = candidate.org_type;
+    if ((!selectedOrg.hq_country || selectedOrg.hq_country === "null") && candidate.hq) fields.hq_country = candidate.hq;
+    if ((!selectedOrg.sectors || !selectedOrg.sectors.length) && candidate.industry) fields.sectors = [candidate.industry];
+
+    const res = await api(`/organizations/${selectedOrg.id}`, { method: "PATCH", body: JSON.stringify(fields) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed");
+    Object.assign(selectedOrg, data);
+    selectedOrg.li_find_candidates = [];
+    const dup = orgListCache.find(o => o.id !== selectedOrg.id && (o.linkedin_url || "").toLowerCase() === (data.linkedin_url || "").toLowerCase());
+    selectedOrg.li_duplicate_of = dup ? { id: dup.id, name: dup.name } : null;
+    selectedOrg.li_name_clash = nameClash;
+    renderOrgDetail(selectedOrg);  // resets status
+    updatePeopleHeader();  // in case a rename changed "People at <org>"
+    loadOrgList();
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  }
+}
+
+function dismissOrgLinkedinCandidates() {
+  if (!selectedOrg) return;
+  selectedOrg.li_find_candidates = [];
+  renderOrgDetail(selectedOrg);
+}
+
 // Runs the equivalent of clicking every per-row "Find" button for orgs
 // currently in view that are missing a LinkedIn URL, one at a time
 // (each call re-renders the org table, so rows/buttons are re-queried by
 // id on every iteration rather than reusing stale DOM references).
+// Doesn't stop or block on an org that comes back with multiple candidates
+// (see runFindOrgLinkedin) - that row is just left showing "N options" and
+// the batch moves on, since there's no way to ask which one is right
+// mid-loop. The tally at the end is the only place that ever surfaces how
+// many need a look, so it's worth interrupting with an alert for - unlike
+// found/not-found, which are already visible in the list itself.
 async function runFindAllOrgLinkedin(btnEl) {
   if (btnEl.disabled) return;
   const targets = orgViewCache.filter(o => !o.linkedin_url);
   if (!targets.length) return;
   const originalText = btnEl.textContent;
   btnEl.disabled = true;
-  let done = 0;
+  let done = 0, found = 0, needsReview = 0, notFound = 0;
   for (const org of targets) {
     btnEl.textContent = `Finding… ${done}/${targets.length}`;
     const row = document.querySelector(`#orgList tr[data-id="${org.id}"]`);
     const findBtn = row ? row.querySelector(".find-li-btn") : null;
     if (findBtn) {
       await runFindOrgLinkedin(org, findBtn);
+      if (org.linkedin_url) found++;
+      else if (org.li_find_candidates && org.li_find_candidates.length) needsReview++;
+      else notFound++;
     }
     done++;
   }
   btnEl.disabled = false;
   btnEl.textContent = originalText;
+  if (needsReview) {
+    alert(
+      `Find all: found ${found}, ${notFound} not found, and ${needsReview} with more than one possible match.\n\n` +
+      `Open each of those (look for the "N options" button in the LinkedIn column) to pick the right one.`
+    );
+  }
 }
 
 function highlightSelected(listId, id) {
@@ -892,8 +1000,45 @@ function entityLinksHtml(website_url, linkedin_url, hq_country) {
 // dup-jump link takes you straight to the other org (wired in renderOrgDetail,
 // since this is set via innerHTML rather than individual event listeners).
 function orgDuplicateWarningHtml(org) {
-  if (!org.li_duplicate_of) return "";
-  return `<div class="status-line error">⚠ This LinkedIn URL is already used by <a href="#" class="dup-jump" data-id="${org.li_duplicate_of.id}">${org.li_duplicate_of.name}</a> - check whether to merge.</div>`;
+  const parts = [];
+  if (org.li_duplicate_of) {
+    parts.push(`<div class="status-line error">⚠ This LinkedIn URL is already used by <a href="#" class="dup-jump" data-id="${org.li_duplicate_of.id}">${org.li_duplicate_of.name}</a> - check whether to merge.</div>`);
+  }
+  if (org.li_name_clash) {
+    parts.push(`<div class="status-line error">⚠ LinkedIn calls this "${org.li_name_clash}", but that name is already used by another organization, so the name wasn't changed.</div>`);
+  }
+  return parts.join("");
+}
+
+// li_find_candidates: set by runFindOrgLinkedin/enrichSelectedOrg when a
+// Find couldn't confidently tell same/similar-named companies apart (see
+// findOrgLinkedin) - nothing was saved, so this is the actual point of
+// decision, not just a heads-up like the duplicate-URL banner above. Each
+// row's own LinkedIn link opens in a new tab so it can be sanity-checked
+// before picking it. Click wiring is in renderOrgDetail (event delegation,
+// same pattern as the dup-jump link, since this is set via innerHTML).
+function orgCandidatesHtml(org) {
+  const candidates = org.li_find_candidates;
+  if (!candidates || !candidates.length) return "";
+  const rows = candidates.map((c, i) => {
+    const bits = [c.name, c.org_type ? (ORG_TYPE_LABEL[c.org_type] || c.org_type) : null, c.industry, c.hq].filter(Boolean).join(" · ");
+    return `
+    <div class="bulk-result-row">
+      <div class="bulk-result-label">
+        <a class="li-link" href="${c.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(c.linkedin_url)}</a>
+        ${bits ? ` — ${bits}` : ""}
+      </div>
+      <button class="secondary tiny use-candidate-btn" data-index="${i}">Use this</button>
+    </div>
+  `;
+  }).join("");
+  return `
+    <div class="candidates-box">
+      <div class="entity-desc"><strong>Found a few possible LinkedIn pages, couldn't confirm which one:</strong></div>
+      ${rows}
+      <button class="secondary tiny" id="dismissCandidatesBtn" style="margin-top:6px;">None of these</button>
+    </div>
+  `;
 }
 
 function sectorsHtml(sectors) {
@@ -964,6 +1109,13 @@ function renderOrgDetail(org) {
   dupWarning.innerHTML = orgDuplicateWarningHtml(org);
   const dupJump = dupWarning.querySelector(".dup-jump");
   if (dupJump) dupJump.addEventListener("click", e => { e.preventDefault(); selectOrg(dupJump.dataset.id); });
+  const candBox = document.getElementById("detOrgLinkedinCandidates");
+  candBox.innerHTML = orgCandidatesHtml(org);
+  candBox.querySelectorAll(".use-candidate-btn").forEach(btn => {
+    btn.addEventListener("click", () => useOrgLinkedinCandidate(org.li_find_candidates[parseInt(btn.dataset.index, 10)]));
+  });
+  const dismissBtn = document.getElementById("dismissCandidatesBtn");
+  if (dismissBtn) dismissBtn.addEventListener("click", dismissOrgLinkedinCandidates);
   document.getElementById("detOrgSectors").innerHTML = sectorsHtml(org.sectors);
   document.getElementById("detOrgDesc").textContent = org.description || "";
   document.getElementById("detOrgInvestorProfile").innerHTML = investorProfileHtml(org);
@@ -1270,12 +1422,18 @@ async function enrichSelectedOrg() {
       });
       const findData = await findRes.json();
       if (findRes.ok && findData.linkedin_url) {
-        selectedOrg.linkedin_url = findData.linkedin_url;
-        selectedOrg.li_duplicate_of = findData.duplicate_of || null;  // renderOrgDetail below shows the warning banner if set
-        if (findData.sectors) selectedOrg.sectors = findData.sectors;
-        if (findData.hq_country) selectedOrg.hq_country = findData.hq_country;
+        applyOrgFindResult(selectedOrg, findData);  // renderOrgDetail below shows the duplicate/name-clash warning banners if set
         renderOrgDetail(selectedOrg);  // resets status again
+        updatePeopleHeader();  // in case a rename changed "People at <org>"
         loadOrgList();
+      } else if (findRes.ok && findData.candidates?.length) {
+        // Couldn't confidently tell same/similar-named companies apart -
+        // nothing saved. Show the picker (renderOrgDetail) and stop the
+        // chain here rather than skipping straight to "no URL found".
+        selectedOrg.li_find_candidates = findData.candidates;
+        renderOrgDetail(selectedOrg);
+        status.textContent = `Researched — found ${findData.candidates.length} possible LinkedIn ${findData.candidates.length > 1 ? "pages" : "page"} for this company but couldn't confirm which; pick one above.`;
+        return;
       }
     }
 
