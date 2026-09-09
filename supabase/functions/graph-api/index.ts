@@ -56,7 +56,9 @@
 //     than one concurrent current role; a brand-new org found this way gets org_type left blank, not "employer",
 //     for a human to classify - unlike past jobs, this is likely an org the tool actually cares about))
 //   GET    /people/:id/education          -> [ {id, degree, period, start_date, end_date, schools: {id, name, linkedin_url}}, ... ]
-//   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, organizations: {id, name, org_type}}, ... ]
+//   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, employment_type, organizations: {id, name, org_type}}, ... ]
+//     (employment_type is LinkedIn's own label - "Permanent", "Freelance", "Volunteer", etc. - used by the person pane to rank which of several
+//     concurrent current roles is the "primary" one to headline; see loadPersonCareerSections in index.html)
 //   GET    /schools/:id/people            -> [ {id, full_name, linkedin_url, country, degree, period}, ... ]
 //   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company, renamed_to, merged_into_person_id }
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
@@ -1174,7 +1176,7 @@ async function importPastEmploymentForPerson(personId: string, experienceArr: an
         select: "id",
       },
     });
-    const fields = { start_date: e.startDate?.text || null, end_date: e.endDate?.text || null };
+    const fields = { start_date: e.startDate?.text || null, end_date: e.endDate?.text || null, employment_type: e.employmentType || null };
     if (existingMemberships?.[0]) {
       await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${existingMemberships[0].id}` }, body: fields });
     } else {
@@ -1217,13 +1219,24 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     }
     syncedOrgIds.add(org.id);
     const title = entry.position || null;
+    // employmentType (e.g. "Permanent" vs "Freelance"/"Volunteer") is what
+    // listEmploymentHistoryForPerson's ranking uses to tell a real primary
+    // job apart from a side/advisory/committee seat when someone has more
+    // than one role marked current - both equally "current" by LinkedIn's
+    // own definition, but not equally their main role.
+    const employmentType = entry.employmentType || null;
     const existingMemberships = await supabaseRequest("GET", "memberships", {
       params: { person_id: `eq.${personId}`, organization_id: `eq.${org.id}`, select: "id" },
     });
     if (existingMemberships?.[0]) {
-      await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${existingMemberships[0].id}` }, body: { title, is_current: true } });
+      await supabaseRequest("PATCH", "memberships", {
+        params: { id: `eq.${existingMemberships[0].id}` },
+        body: { title, is_current: true, employment_type: employmentType },
+      });
     } else {
-      await supabaseRequest("POST", "memberships", { body: { person_id: personId, organization_id: org.id, title, is_current: true } });
+      await supabaseRequest("POST", "memberships", {
+        body: { person_id: personId, organization_id: org.id, title, is_current: true, employment_type: employmentType },
+      });
     }
   }
 
@@ -1250,7 +1263,7 @@ async function listEmploymentHistoryForPerson(personId: string) {
   return await supabaseRequest("GET", "memberships", {
     params: {
       person_id: `eq.${personId}`,
-      select: "id,title,focus,is_current,start_date,end_date,organizations(id,name,org_type)",
+      select: "id,title,focus,is_current,start_date,end_date,employment_type,organizations(id,name,org_type)",
       order: "is_current.desc",
     },
   });
