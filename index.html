@@ -236,6 +236,13 @@
   .li-meta { font-size: 10.5px; color: #8a877e; }
   .career-link { color: #8a5a2b; text-decoration: none; }
   .career-link:hover { text-decoration: underline; }
+  .people-scope-org { color: #8a5a2b; font-weight: 700; }
+  .people-scope-clear {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; margin-left: 6px; border: 1px solid #d9c2a3; border-radius: 3px;
+    color: #8a5a2b; background: #fbf3ea; font-size: 10.5px; line-height: 1; cursor: pointer; vertical-align: middle;
+  }
+  .people-scope-clear:hover { background: #f0dfc8; }
   .empty-note { font-size: 12px; color: #8a877e; padding: 4px 2px; }
 
   .news-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e0dc; }
@@ -374,9 +381,9 @@
             <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
               <button class="secondary tiny" id="orgEditBtn">Edit</button>
               <button class="secondary tiny" id="enrichOrgBtnView">Enrich</button>
-              <button class="secondary tiny" id="orgMergeToggleBtn">Merge into…</button>
               <span class="status-line" id="enrichOrgViewStatus"></span>
-              <button class="danger tiny" id="orgDeleteBtn" style="margin-left:auto">Delete</button>
+              <button class="secondary tiny" id="orgMergeToggleBtn" style="margin-left:auto">Merge into…</button>
+              <button class="danger tiny" id="orgDeleteBtn">Delete</button>
             </div>
             <div id="orgMergeForm" style="display:none;margin-top:10px;">
               <div class="form-row">
@@ -966,8 +973,23 @@ function highlightSelected(listId, id) {
 // ---------- organization detail + its people ----------
 
 function updatePeopleHeader() {
-  document.getElementById("peopleListTitle").textContent =
-    (selectedOrg && !peopleForceGlobal) ? `People at ${selectedOrg.name}` : "People";
+  const titleEl = document.getElementById("peopleListTitle");
+  if (selectedOrg && !peopleForceGlobal) {
+    // Same bold-brown treatment as an org's name in the person pane
+    // (.career-link's color, just not a link here - there's nothing to
+    // navigate to, this org is already what's shown above). The × returns
+    // to the full people list without touching the search box - unlike
+    // the "Clear" button next to the search input, which resets both.
+    titleEl.innerHTML = `People at <span class="people-scope-org">${selectedOrg.name}</span>` +
+      `<button class="people-scope-clear" id="peopleScopeClearBtn" title="Show all people">✕</button>`;
+    document.getElementById("peopleScopeClearBtn").addEventListener("click", () => {
+      peopleForceGlobal = true;
+      updatePeopleHeader();
+      applyPeopleFilter();
+    });
+  } else {
+    titleEl.textContent = "People";
+  }
 }
 
 // fromPersonProfile is set when navigating here by clicking a company
