@@ -101,6 +101,15 @@
     display: block; font-size: 10.5px; color: #8a877e; margin: -6px 0 10px; cursor: pointer; user-select: none;
   }
   .list-toggle input { vertical-align: middle; margin-right: 4px; }
+  .toggle-row { display: flex; flex-wrap: wrap; gap: 14px; margin: -6px 0 10px; }
+  .toggle-row .list-toggle { margin: 0; }
+  .org-flags { white-space: nowrap; }
+  .org-flag-btn {
+    background: none; border: none; padding: 1px 2px; font-size: 12.5px; line-height: 1; cursor: pointer;
+    filter: grayscale(1) opacity(.45);
+  }
+  .org-flag-btn:hover { filter: grayscale(1) opacity(.75); }
+  .org-flag-btn.active { filter: none; }
   .ex-tag {
     display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .02em; color: #fff;
     background: #3b6ea5; padding: 1px 5px; border-radius: 4px; margin-right: 5px; vertical-align: middle;
@@ -309,13 +318,18 @@
           <button class="tiny" id="orgAddToggleBtn">+ Add</button>
         </div>
       </div>
-      <label class="list-toggle" id="includeEmployersRow"><input type="checkbox" id="includeEmployersToggle"> Include past employers</label>
+      <div class="toggle-row" id="orgTogglesRow">
+        <label class="list-toggle"><input type="checkbox" id="orgStarredOnlyToggle"> Starred only</label>
+        <label class="list-toggle"><input type="checkbox" id="orgShowHiddenToggle"> Show hidden</label>
+        <label class="list-toggle"><input type="checkbox" id="includeEmployersToggle"> Include past employers</label>
+      </div>
 
       <div id="orgListView" class="list-view">
         <div class="scroll-box">
           <table class="sortable-table" id="orgTable">
             <thead>
               <tr>
+                <th></th>
                 <th data-sort="name">Name <span class="sort-arrow"></span></th>
                 <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
@@ -730,6 +744,8 @@ function renderNewsList(containerId, items) {
 let orgSort = { field: "name", dir: "asc" };
 
 let includeEmployers = false;  // "Include past employers" toggle next to the org search box
+let orgStarredOnly = false;    // "Starred only" toggle
+let orgShowHidden = false;     // "Show hidden" toggle - hidden orgs are excluded unless this is checked
 
 async function loadOrgList() {
   const res = await api(`/organizations${includeEmployers ? "?include_employers=true" : ""}`);
@@ -748,6 +764,10 @@ function applyOrgFilter() {
     (ORG_TYPE_LABEL[o.org_type] || o.org_type || "").toLowerCase().includes(q) ||
     (o.sectors || []).some(s => s.toLowerCase().includes(q))
   );
+  // Hidden is an override, independent of "starred only" - checking
+  // "starred only" doesn't bring hidden-but-starred orgs back into view.
+  if (!orgShowHidden) filtered = filtered.filter(o => !o.is_hidden);
+  if (orgStarredOnly) filtered = filtered.filter(o => o.is_starred);
   filtered.sort(makeComparator(orgSort, (item, field) => field === "org_type" ? (ORG_TYPE_LABEL[item.org_type] || item.org_type) : undefined));
   orgViewCache = filtered;
   renderOrgList(filtered);
@@ -791,6 +811,10 @@ function renderOrgList(orgs) {
   emptyEl.style.display = "none";
   listEl.innerHTML = orgs.map(o => `
     <tr data-id="${o.id}">
+      <td class="org-flags">
+        <button class="org-flag-btn org-star-btn${o.is_starred ? " active" : ""}" title="${o.is_starred ? "Starred - click to unstar" : "Star this organization"}">⭐️</button>
+        <button class="org-flag-btn org-hide-btn${o.is_hidden ? " active" : ""}" title="${o.is_hidden ? "Hidden - click to unhide" : "Hide this organization"}">🚫</button>
+      </td>
       <td class="li-name">${o.name}</td>
       <td>${o.hq_country || '<span class="none">—</span>'}</td>
       <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
@@ -814,8 +838,38 @@ function renderOrgList(orgs) {
         selectOrg(dupBtn.dataset.dupId);
       });
     }
+    tr.querySelector(".org-star-btn").addEventListener("click", e => {
+      e.stopPropagation();
+      toggleOrgFlag(orgs[i], "is_starred", e.currentTarget);
+    });
+    tr.querySelector(".org-hide-btn").addEventListener("click", e => {
+      e.stopPropagation();
+      toggleOrgFlag(orgs[i], "is_hidden", e.currentTarget);
+    });
   });
   if (selectedOrg) highlightSelected("orgList", selectedOrg.id);
+}
+
+// Shared by the star and hide buttons - PATCHes the one field, updates the
+// cached org object (orgListCache row, and selectedOrg if it's the same
+// org) in place, then re-applies the current filters: hiding an org (or
+// un-starring one while "Starred only" is checked) can make its own row
+// disappear immediately, which is the point.
+async function toggleOrgFlag(org, field, btnEl) {
+  const newValue = !org[field];
+  btnEl.disabled = true;
+  try {
+    const res = await api(`/organizations/${org.id}`, { method: "PATCH", body: JSON.stringify({ [field]: newValue }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed");
+    org[field] = data[field];
+    if (selectedOrg && selectedOrg.id === org.id) selectedOrg[field] = data[field];
+    applyOrgFilter();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btnEl.disabled = false;
+  }
 }
 
 // Applies a successful /organizations/find-linkedin (or a picked candidate,
@@ -2185,14 +2239,14 @@ function makeBulkRowClickable(statusEl, onClick) {
 
 function showOrgListView() {
   document.getElementById("orgListHeader").style.display = "flex";
-  document.getElementById("includeEmployersRow").style.display = "block";
+  document.getElementById("orgTogglesRow").style.display = "flex";
   document.getElementById("orgListView").style.display = "flex";
   document.getElementById("orgAddView").style.display = "none";
 }
 
 function showOrgAddView() {
   document.getElementById("orgListHeader").style.display = "none";
-  document.getElementById("includeEmployersRow").style.display = "none";
+  document.getElementById("orgTogglesRow").style.display = "none";
   document.getElementById("orgListView").style.display = "none";
   document.getElementById("orgAddView").style.display = "flex";
 }
@@ -2373,6 +2427,8 @@ document.getElementById("signOutBtn").addEventListener("click", signOut);
 document.getElementById("orgSearchInput").addEventListener("input", applyOrgFilter);
 document.getElementById("orgSearchClearBtn").addEventListener("click", () => { document.getElementById("orgSearchInput").value = ""; applyOrgFilter(); });
 document.getElementById("includeEmployersToggle").addEventListener("change", e => { includeEmployers = e.target.checked; loadOrgList(); });
+document.getElementById("orgStarredOnlyToggle").addEventListener("change", e => { orgStarredOnly = e.target.checked; applyOrgFilter(); });
+document.getElementById("orgShowHiddenToggle").addEventListener("change", e => { orgShowHidden = e.target.checked; applyOrgFilter(); });
 document.getElementById("includePastRolesToggle").addEventListener("change", e => { includePastRoles = e.target.checked; applyPeopleFilter(); });
 document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));

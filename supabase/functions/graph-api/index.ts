@@ -23,7 +23,8 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at, connected_to_user}, ... ]
+//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at, connected_to_user, is_starred, is_hidden}, ... ]
+//     (is_starred/is_hidden are purely manual flags, set via PATCH /organizations/:id - nothing here filters by them server-side, the frontend does that client-side)
 //     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true.
 //     connected_to_user: true if any person with a membership at this org - past or current - is themselves flagged
 //     is_user, or is connected to one via a person<->person row in `connections`; see getUserConnectedPersonIds)
@@ -495,7 +496,7 @@ async function getUserConnectedPersonIds(): Promise<Set<string>> {
 // them directly when wanted.
 async function listOrganizations(includeEmployers: boolean) {
   const params: Record<string, string> = {
-    select: "id,name,org_type,website_url,linkedin_url,hq_country,sectors,updated_at",
+    select: "id,name,org_type,website_url,linkedin_url,hq_country,sectors,updated_at,is_starred,is_hidden",
     order: "name.asc",
   };
   // org_type <> 'employer' would silently also exclude NULL org_type rows -
@@ -2070,6 +2071,7 @@ Deno.serve(async (req) => {
       const fields = pickDefined(body, [
         "name", "org_type", "website_url", "linkedin_url", "hq_country", "description",
         "sectors", "ticket_size", "investment_stages", "investment_regions", "fund_type_raw",
+        "is_starred", "is_hidden",
       ]);
       if ("name" in fields && !String(fields.name ?? "").trim()) return json({ error: "name cannot be blank" }, 400);
       if ("org_type" in fields) {
