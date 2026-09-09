@@ -37,19 +37,21 @@
 //   DELETE /organizations/:id   -> { ok: true }
 //   PATCH  /organizations/:id   { any subset of organization fields above } -> updated org (direct set, not merge-only-blanks - a
 //     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI)
-//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user}, ... ]
+//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba}, ... ]
 //     (q omitted/empty -> all people, no cap (paginated internally, see supabaseRequestAllPages); include_past=true returns one row per membership - e.g. two past
 //     roles at the same company both show - instead of the default one row per person, their best/current membership only.
 //     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
-//     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds)
-//   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, is_user } -> updated person (direct set, same as organizations PATCH)
+//     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds.
+//     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id - nothing here filters by them server-side, the frontend does that client-side)
+//   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
 //   PATCH  /memberships/:id     { any subset of title, focus } -> updated membership (direct set, same as organizations PATCH)
 //   POST   /people/:id/enrich-from-linkedin  { linkedin_url, name?, organization_id? } -> { country, title, observed_company }
 //     (for a hand-entered LinkedIn URL, not one found via search - looks up what else that profile says and
 //     fills in country/title, only where currently blank; organization_id needed to know which membership's title to fill)
 //   POST   /people/:id/enrich-from-apify  {} -> updated person (full row, including the li_* fields below)
 //     (requires the person to already have a linkedin_url; runs the harvestapi LinkedIn Profile Scraper Apify actor
-//     against it and overwrites all li_* fields with the fresh result - country is filled only if currently blank.
+//     against it and overwrites all li_* fields with the fresh result - country is filled only if currently blank,
+//     full_name is always overwritten to match LinkedIn's own name (no uniqueness constraint to guard, unlike an org's name).
 //     Also normalizes profile.education into schools/education, profile.experience's non-current entries into
 //     organizations (org_type "employer" if not already a known org) + memberships (is_current: false), and
 //     syncs the person's current membership(s) to match LinkedIn's current role(s) exactly (always, not merge-
@@ -959,6 +961,15 @@ async function enrichPersonFromApify(personId: string) {
   const fields = mapApifyProfileToLiFields(profile);
   const countryFromProfile = profile.location?.parsed?.country;
   if (!person.country && countryFromProfile) fields.country = countryFromProfile;
+  // Like an org's name (renameOrgIfPossible), LinkedIn's own name is
+  // authoritative once matched by URL - always overwritten, not merge-
+  // only-blanks. Unlike orgs, full_name has no uniqueness constraint to
+  // protect, so no clash check is needed here. Field name unconfirmed
+  // against a live response (unlike headline/about/experience, already
+  // seen live this session) - checks the couple of shapes a profile-fetch
+  // actor plausibly uses.
+  const nameFromProfile = stripPictograms(profile.fullName || profile.name || [profile.firstName, profile.lastName].filter(Boolean).join(" "));
+  if (nameFromProfile) fields.full_name = nameFromProfile;
 
   const updated = (await supabaseRequest("PATCH", "people", {
     params: { id: `eq.${personId}` },
@@ -2111,7 +2122,7 @@ Deno.serve(async (req) => {
     const personIdMatch = path.match(/^\/people\/([^/]+)$/);
     if (personIdMatch && req.method === "PATCH") {
       const body = await req.json();
-      const fields = pickDefined(body, ["full_name", "linkedin_url", "country", "is_user"]);
+      const fields = pickDefined(body, ["full_name", "linkedin_url", "country", "is_user", "is_starred", "is_hidden", "is_ba"]);
       if ("full_name" in fields && !String(fields.full_name ?? "").trim()) return json({ error: "full_name cannot be blank" }, 400);
       if ("linkedin_url" in fields) fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);
       if (!Object.keys(fields).length) return json({ error: "no editable fields provided" }, 400);

@@ -103,13 +103,20 @@
   .list-toggle input { vertical-align: middle; margin-right: 4px; }
   .toggle-row { display: flex; flex-wrap: wrap; gap: 14px; margin: -6px 0 10px; }
   .toggle-row .list-toggle { margin: 0; }
-  .org-flags { white-space: nowrap; }
-  .org-flag-btn {
-    background: none; border: none; padding: 1px 2px; font-size: 12.5px; line-height: 1; cursor: pointer;
-    filter: grayscale(1) opacity(.45);
-  }
-  .org-flag-btn:hover { filter: grayscale(1) opacity(.75); }
-  .org-flag-btn.active { filter: none; }
+  /* Shared by both the organizations and people lists' leading flags column. */
+  .flags-cell { white-space: nowrap; }
+  .flag-btn { background: none; border: none; padding: 1px 2px; font-size: 13px; line-height: 1; cursor: pointer; }
+  /* 🚫 is a colored emoji glyph - a filter is the only way to grey it out
+     and reveal its own (already-red) color when active. */
+  .hide-btn { filter: grayscale(1) opacity(.45); }
+  .hide-btn:hover { filter: grayscale(1) opacity(.75); }
+  .hide-btn.active { filter: none; }
+  /* ★ is a plain text glyph, not a colored emoji - styled with `color`
+     directly instead, so it can be an app-color green rather than
+     whatever hue a filter trick could approximate from the default yellow. */
+  .star-btn { color: #cfcabf; }
+  .star-btn:hover { color: #b5b1a9; }
+  .star-btn.active { color: #2f7a3d; }
   .ex-tag {
     display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .02em; color: #fff;
     background: #3b6ea5; padding: 1px 5px; border-radius: 4px; margin-right: 5px; vertical-align: middle;
@@ -242,6 +249,30 @@
   table.sortable-table tbody tr:hover { color: #8a5a2b; }
   table.sortable-table tbody tr.selected { background: #fbf3ea; }
   table.sortable-table td.li-name { font-weight: 500; color: #1c1c1c; }
+  /* No wrapping anywhere in these lists - long content truncates with an
+     ellipsis instead of growing the row taller. table-layout: fixed is what
+     makes a td's width (and so its ellipsis point) predictable regardless
+     of content; the org and people tables share this same 6-column shape
+     (a narrow flags column, then Name/Country/Type-or-Role/LinkedIn/JPL),
+     so one set of nth-child widths covers both. */
+  table.sortable-table { table-layout: fixed; }
+  table.sortable-table th, table.sortable-table td {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  table.sortable-table td .li-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.sortable-table th:nth-child(1), table.sortable-table td:nth-child(1) { width: 42px; }
+  table.sortable-table th:nth-child(2) { width: 30%; }
+  table.sortable-table th:nth-child(3) { width: 18%; }
+  table.sortable-table th:nth-child(4) { width: 20%; }
+  table.sortable-table th:nth-child(5) { width: 17%; }
+  table.sortable-table th:nth-child(6) { width: 10%; }
+  /* peopleTable has one extra column (BA, before JPL) the org table
+     doesn't - override the last two columns' widths specifically, ID
+     selectors beat the class rules above regardless of source order. */
+  #peopleTable th:nth-child(6) { width: 8%; }
+  #peopleTable th:nth-child(7) { width: 10%; }
+  .ba-cell { text-align: center; }
+  .ba-cell input[type="checkbox"] { vertical-align: middle; cursor: pointer; }
   .li-meta { font-size: 10.5px; color: #8a877e; }
   .career-link { color: #8a5a2b; text-decoration: none; }
   .career-link:hover { text-decoration: underline; }
@@ -334,7 +365,7 @@
                 <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
                 <th>LinkedIn <button class="secondary tiny" id="orgFindAllBtn" title="Find LinkedIn URLs for every organization below that's missing one">Find all</button></th>
-                <th title="Has a team member connected to a flagged user">Connected</th>
+                <th title="Has a team member connected to a flagged user">JPL</th>
               </tr>
             </thead>
             <tbody id="orgList"></tbody>
@@ -471,18 +502,25 @@
           <button class="tiny" id="personAddToggleBtn">+ Add</button>
         </div>
       </div>
-      <label class="list-toggle" id="includePastRolesRow"><input type="checkbox" id="includePastRolesToggle"> Include ex-employees</label>
+      <div class="toggle-row" id="peopleTogglesRow">
+        <label class="list-toggle"><input type="checkbox" id="peopleStarredOnlyToggle"> Starred only</label>
+        <label class="list-toggle"><input type="checkbox" id="peopleBAOnlyToggle"> BAs only</label>
+        <label class="list-toggle"><input type="checkbox" id="peopleShowHiddenToggle"> Show hidden</label>
+        <label class="list-toggle"><input type="checkbox" id="includePastRolesToggle"> Include ex-employees</label>
+      </div>
 
       <div id="peopleListView" class="list-view">
         <div class="scroll-box">
           <table class="sortable-table" id="peopleTable">
             <thead>
               <tr>
+                <th></th>
                 <th data-sort="full_name">Name <span class="sort-arrow"></span></th>
                 <th data-sort="country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="title">Role <span class="sort-arrow"></span></th>
                 <th>LinkedIn</th>
-                <th title="Connected to a flagged user">Connected</th>
+                <th title="Business angel">BA</th>
+                <th title="Connected to a flagged user">JPL</th>
               </tr>
             </thead>
             <tbody id="peopleList"></tbody>
@@ -811,10 +849,7 @@ function renderOrgList(orgs) {
   emptyEl.style.display = "none";
   listEl.innerHTML = orgs.map(o => `
     <tr data-id="${o.id}">
-      <td class="org-flags">
-        <button class="org-flag-btn org-star-btn${o.is_starred ? " active" : ""}" title="${o.is_starred ? "Starred - click to unstar" : "Star this organization"}">⭐️</button>
-        <button class="org-flag-btn org-hide-btn${o.is_hidden ? " active" : ""}" title="${o.is_hidden ? "Hidden - click to unhide" : "Hide this organization"}">🚫</button>
-      </td>
+      ${flagButtonsHtml(o)}
       <td class="li-name">${o.name}</td>
       <td>${o.hq_country || '<span class="none">—</span>'}</td>
       <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
@@ -838,16 +873,32 @@ function renderOrgList(orgs) {
         selectOrg(dupBtn.dataset.dupId);
       });
     }
-    tr.querySelector(".org-star-btn").addEventListener("click", e => {
-      e.stopPropagation();
-      toggleOrgFlag(orgs[i], "is_starred", e.currentTarget);
-    });
-    tr.querySelector(".org-hide-btn").addEventListener("click", e => {
-      e.stopPropagation();
-      toggleOrgFlag(orgs[i], "is_hidden", e.currentTarget);
-    });
+    wireFlagButtons(tr, orgs[i], toggleOrgFlag);
   });
   if (selectedOrg) highlightSelected("orgList", selectedOrg.id);
+}
+
+// Shared by both lists' leading flags column (star/hide) - one cell's markup,
+// built from is_starred/is_hidden on whatever entity (org or person) is passed.
+function flagButtonsHtml(entity) {
+  return `<td class="flags-cell">
+    <button class="flag-btn star-btn${entity.is_starred ? " active" : ""}" title="${entity.is_starred ? "Starred - click to unstar" : "Star this"}">★</button>
+    <button class="flag-btn hide-btn${entity.is_hidden ? " active" : ""}" title="${entity.is_hidden ? "Hidden - click to unhide" : "Hide this"}">🚫</button>
+  </td>`;
+}
+
+// Wires a row's two flag buttons to toggleFn (toggleOrgFlag or
+// togglePersonFlag) - stopPropagation so clicking them doesn't also select
+// the row's org/person.
+function wireFlagButtons(tr, entity, toggleFn) {
+  tr.querySelector(".star-btn").addEventListener("click", e => {
+    e.stopPropagation();
+    toggleFn(entity, "is_starred", e.currentTarget);
+  });
+  tr.querySelector(".hide-btn").addEventListener("click", e => {
+    e.stopPropagation();
+    toggleFn(entity, "is_hidden", e.currentTarget);
+  });
 }
 
 // Shared by the star and hide buttons - PATCHes the one field, updates the
@@ -869,6 +920,55 @@ async function toggleOrgFlag(org, field, btnEl) {
     alert(err.message);
   } finally {
     btnEl.disabled = false;
+  }
+}
+
+// Same idea as toggleOrgFlag, for a person. Also has selectedOrg.people to
+// keep in sync (org-mode's list is re-derived from it on every filter
+// pass, not re-fetched - see applyPeopleFilter) - its rows wrap the person
+// under .people, a different object than the flattened one currentPeopleItems
+// holds (normalizePeopleItems copies it), so both need the new value written in.
+async function togglePersonFlag(person, field, btnEl) {
+  const newValue = !person[field];
+  btnEl.disabled = true;
+  try {
+    const res = await api(`/people/${person.id}`, { method: "PATCH", body: JSON.stringify({ [field]: newValue }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed");
+    person[field] = data[field];
+    if (selectedPersonObj && selectedPersonObj.id === person.id) selectedPersonObj[field] = data[field];
+    const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
+    if (inOrgList) inOrgList.people[field] = data[field];
+    applyPeopleFilter();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btnEl.disabled = false;
+  }
+}
+
+// Same idea as togglePersonFlag, but for a real checkbox (the BA column)
+// rather than a button standing in for one - the browser's already flipped
+// checkboxEl.checked by the time "change" fires, so the new value comes
+// from that instead of negating the old one, and a failed save reverts it
+// back rather than just leaving it wherever the click left it.
+async function togglePersonCheckbox(person, field, checkboxEl) {
+  const newValue = checkboxEl.checked;
+  checkboxEl.disabled = true;
+  try {
+    const res = await api(`/people/${person.id}`, { method: "PATCH", body: JSON.stringify({ [field]: newValue }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed");
+    person[field] = data[field];
+    if (selectedPersonObj && selectedPersonObj.id === person.id) selectedPersonObj[field] = data[field];
+    const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
+    if (inOrgList) inOrgList.people[field] = data[field];
+    applyPeopleFilter();
+  } catch (err) {
+    checkboxEl.checked = !newValue;
+    alert(err.message);
+  } finally {
+    checkboxEl.disabled = false;
   }
 }
 
@@ -1620,6 +1720,9 @@ function normalizePeopleItems(items, mode) {
 }
 
 let includePastRoles = false;  // "Include ex-employees" toggle next to the people search box
+let peopleStarredOnly = false; // "Starred only" toggle
+let peopleBAOnly = false;      // "BAs only" toggle
+let peopleShowHidden = false;  // "Show hidden" toggle - hidden people are excluded unless this is checked
 
 // Best-effort recency from free-text dates ("Jan 2024", "2018", ...) - the
 // only real signal we have for ranking two past roles against each other.
@@ -1703,7 +1806,13 @@ function renderPeopleList(items, mode, forceIncludePast) {
   currentPeopleMode = mode;
   const normalized = normalizePeopleItems(items, mode);
   const showPast = forceIncludePast || includePastRoles;
-  currentPeopleItems = showPast ? normalized : normalized.filter(item => item.is_current !== false);
+  let filtered = showPast ? normalized : normalized.filter(item => item.is_current !== false);
+  // Hidden is an override, independent of "starred only" - same rule as
+  // the organizations list (applyOrgFilter).
+  if (!peopleShowHidden) filtered = filtered.filter(item => !item.is_hidden);
+  if (peopleStarredOnly) filtered = filtered.filter(item => item.is_starred);
+  if (peopleBAOnly) filtered = filtered.filter(item => item.is_ba);
+  currentPeopleItems = filtered;
   wireSortHeaders("peopleTable", peopleSort, () => {
     currentPeopleItems.sort(peopleComparator());
     renderPeopleTableBody();
@@ -1724,15 +1833,20 @@ function renderPeopleTableBody() {
   emptyEl.style.display = "none";
   listEl.innerHTML = currentPeopleItems.map(p => `
     <tr data-id="${p.id}">
+      ${flagButtonsHtml(p)}
       <td class="li-name">${p.full_name}</td>
       <td>${p.country || '<span class="none">—</span>'}</td>
       <td>${exTagHtml(p)}${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}</td>
       <td>${linkedinCellFor(p)}</td>
+      <td class="ba-cell"><input type="checkbox" class="ba-checkbox"${p.is_ba ? " checked" : ""}></td>
       <td>${connectedCellHtml(p)}</td>
     </tr>
   `).join("");
   [...listEl.children].forEach((tr, i) => {
     tr.addEventListener("click", () => selectPerson(currentPeopleItems[i]));
+    const baCb = tr.querySelector(".ba-checkbox");
+    baCb.addEventListener("click", e => e.stopPropagation());
+    baCb.addEventListener("change", e => togglePersonCheckbox(currentPeopleItems[i], "is_ba", e.target));
     const findBtn = tr.querySelector(".find-li-btn");
     if (findBtn) {
       findBtn.addEventListener("click", e => {
@@ -1740,6 +1854,7 @@ function renderPeopleTableBody() {
         runFindLinkedin(currentPeopleItems[i], findBtn);
       });
     }
+    wireFlagButtons(tr, currentPeopleItems[i], togglePersonFlag);
   });
   if (selectedPersonId) highlightSelected("peopleList", selectedPersonId);
 }
@@ -2253,14 +2368,14 @@ function showOrgAddView() {
 
 function showPeopleListView() {
   document.getElementById("peopleListHeader").style.display = "flex";
-  document.getElementById("includePastRolesRow").style.display = "block";
+  document.getElementById("peopleTogglesRow").style.display = "flex";
   document.getElementById("peopleListView").style.display = "flex";
   document.getElementById("peopleAddView").style.display = "none";
 }
 
 function showPeopleAddView() {
   document.getElementById("peopleListHeader").style.display = "none";
-  document.getElementById("includePastRolesRow").style.display = "none";
+  document.getElementById("peopleTogglesRow").style.display = "none";
   document.getElementById("peopleListView").style.display = "none";
   document.getElementById("peopleAddView").style.display = "flex";
   if (!document.querySelector("#bulkPeopleRows tr")) {
@@ -2430,6 +2545,9 @@ document.getElementById("includeEmployersToggle").addEventListener("change", e =
 document.getElementById("orgStarredOnlyToggle").addEventListener("change", e => { orgStarredOnly = e.target.checked; applyOrgFilter(); });
 document.getElementById("orgShowHiddenToggle").addEventListener("change", e => { orgShowHidden = e.target.checked; applyOrgFilter(); });
 document.getElementById("includePastRolesToggle").addEventListener("change", e => { includePastRoles = e.target.checked; applyPeopleFilter(); });
+document.getElementById("peopleStarredOnlyToggle").addEventListener("change", e => { peopleStarredOnly = e.target.checked; applyPeopleFilter(); });
+document.getElementById("peopleBAOnlyToggle").addEventListener("change", e => { peopleBAOnly = e.target.checked; applyPeopleFilter(); });
+document.getElementById("peopleShowHiddenToggle").addEventListener("change", e => { peopleShowHidden = e.target.checked; applyPeopleFilter(); });
 document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);
