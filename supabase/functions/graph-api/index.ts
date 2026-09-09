@@ -223,6 +223,27 @@ function isBlank(v: unknown): boolean {
   return false;
 }
 
+// Strips decorative emoji/pictograms from LinkedIn-sourced text - "🍋
+// Isabelle Drault Gallo 🍋" or "Growth Hacker 🚀" style decoration people
+// add to stand out in a feed, not signal worth keeping. Only matches actual
+// pictograph/symbol/flag code points (Extended_Pictographic, regional
+// indicators, the ZWJ/variation-selector/keycap combiners that ride along
+// with them) - never touches legitimate accented or non-Latin text, so
+// "Frédéric" or "Chhay" pass through untouched. Collapses whatever
+// whitespace the removal leaves behind; empty result becomes null rather
+// than an empty string.
+function stripPictograms(text: string | null | undefined): string | null {
+  if (!text) return text ?? null;
+  const cleaned = text
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, "")     // regional-indicator flag letters
+    .replace(new RegExp("[‍️⃣]", "g"), "")     // ZWJ, variation selector, combining keycap
+    .replace(/ {2,}/g, " ")            // only collapses runs of literal spaces left behind - never touches newlines (multi-line about/bio text)
+    .replace(/ *\n */g, "\n")          // trims space now stranded at a line break, without collapsing the break itself
+    .trim();
+  return cleaned || null;
+}
+
 // Collapses any LinkedIn URL variant (country subdomains like at./de./fr.,
 // missing www, trailing slash, tracking query strings, http) down to one
 // canonical form: https://www.linkedin.com/<path>. Leaves non-LinkedIn or
@@ -893,8 +914,8 @@ async function fetchLinkedinCompanyViaApify(linkedinUrl: string): Promise<Record
 // stored as jsonb and there's no need to normalize them for how they're used.
 function mapApifyProfileToLiFields(profile: Record<string, any>): Record<string, any> {
   return {
-    li_headline: profile.headline || null,
-    li_about: profile.about || null,
+    li_headline: stripPictograms(profile.headline),
+    li_about: stripPictograms(profile.about),
     li_photo_url: profile.photo || null,
     li_location_text: profile.location?.linkedinText || null,
     // The sample response at integration time had topSkills as a single
@@ -984,7 +1005,7 @@ function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string,
   const foundedYear = typeof founded === "number" ? founded : (typeof founded?.year === "number" ? founded.year : null);
   const funding = company.fundingData ?? {};
   return {
-    li_tagline: company.tagline || null,
+    li_tagline: stripPictograms(company.tagline),
     li_logo_url: company.logo || null,
     li_universal_name: company.universalName || null,
     li_company_type: company.companyType || null,
@@ -1035,7 +1056,7 @@ function hqLocationText(headquarter: any): string | null {
 // name_clash, so the caller doesn't just fail the whole operation over a
 // same-name duplicate) but everything else the caller found still saves.
 async function renameOrgIfPossible(orgId: string, currentName: string, candidateName: string | null | undefined): Promise<{ name?: string; name_clash: string | null }> {
-  const newName = (candidateName || "").trim();
+  const newName = stripPictograms(candidateName) || "";
   if (!newName || newName.toLowerCase() === currentName.toLowerCase()) return { name_clash: null };
   const clash = await supabaseRequest("GET", "organizations", {
     params: { name: `ilike.${orValue(newName)}`, id: `neq.${orgId}`, select: "id", limit: "1" },
@@ -1159,7 +1180,7 @@ function isCurrentExperienceEntry(e: any): boolean {
 async function importPastEmploymentForPerson(personId: string, experienceArr: any[] | undefined) {
   for (const e of experienceArr ?? []) {
     if (isCurrentExperienceEntry(e)) continue;
-    const name = (e.companyName || "").trim();
+    const name = stripPictograms(e.companyName);
     if (!name) continue;
     const linkedinUrl = normalizeLinkedinUrl(e.companyLinkedinUrl || null);
     // Checked regardless of type: if this company is already a real vc/cvc/
@@ -1169,7 +1190,7 @@ async function importPastEmploymentForPerson(personId: string, experienceArr: an
     if (!org) {
       org = (await supabaseRequest("POST", "organizations", { body: { name, org_type: "employer" }, prefer: "return=representation" }))[0];
     }
-    const title = e.position || null;
+    const title = stripPictograms(e.position);
     const existingMemberships = await supabaseRequest("GET", "memberships", {
       params: {
         person_id: `eq.${personId}`, organization_id: `eq.${org.id}`,
@@ -1214,7 +1235,7 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
 
   const syncedOrgIds = new Set<string>();
   for (const entry of sources) {
-    const companyName = (entry.companyName || "").trim();
+    const companyName = stripPictograms(entry.companyName);
     if (!companyName) continue;
     const linkedinUrl = normalizeLinkedinUrl(entry.companyLinkedinUrl || null);
     // Unlike importPastEmploymentForPerson, a brand-new org discovered here
@@ -1227,7 +1248,7 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
       org = (await supabaseRequest("POST", "organizations", { body: { name: companyName, org_type: null }, prefer: "return=representation" }))[0];
     }
     syncedOrgIds.add(org.id);
-    const title = entry.position || null;
+    const title = stripPictograms(entry.position);
     // employmentType (e.g. "Permanent" vs "Freelance"/"Volunteer") is what
     // listEmploymentHistoryForPerson's ranking uses to tell a real primary
     // job apart from a side/advisory/committee seat when someone has more
@@ -1895,7 +1916,7 @@ ${NEVER_GUESS}`;
   const linkedinUrl = normalizeLinkedinUrl(data.linkedin_url);
   const candidates = (data.candidates ?? [])
     .map((c: any) => ({
-      linkedin_url: normalizeLinkedinUrl(c.linkedin_url), name: c.observed_name || null, org_type: c.observed_org_type || null,
+      linkedin_url: normalizeLinkedinUrl(c.linkedin_url), name: stripPictograms(c.observed_name), org_type: c.observed_org_type || null,
       industry: c.observed_industry || null, hq: c.observed_hq || null,
     }))
     .filter((c: any) => c.linkedin_url);
