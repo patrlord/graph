@@ -56,9 +56,10 @@
 //     than one concurrent current role; a brand-new org found this way gets org_type left blank, not "employer",
 //     for a human to classify - unlike past jobs, this is likely an org the tool actually cares about))
 //   GET    /people/:id/education          -> [ {id, degree, period, start_date, end_date, schools: {id, name, linkedin_url}}, ... ]
-//   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, employment_type, organizations: {id, name, org_type}}, ... ]
-//     (employment_type is LinkedIn's own label - "Permanent", "Freelance", "Volunteer", etc. - used by the person pane to rank which of several
-//     concurrent current roles is the "primary" one to headline; see loadPersonCareerSections in index.html)
+//   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, employment_type, experience_order, organizations: {id, name, org_type}}, ... ]
+//     (employment_type is LinkedIn's own label - "Permanent", "Freelance", "Volunteer", etc.; experience_order is this entry's position in LinkedIn's own
+//     profile.experience array - both used by the person pane to rank which of several concurrent current roles is the "primary" one to headline;
+//     see loadPersonCareerSections in index.html)
 //   GET    /schools/:id/people            -> [ {id, full_name, linkedin_url, country, degree, period}, ... ]
 //   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company, renamed_to, merged_into_person_id }
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
@@ -1198,10 +1199,18 @@ async function importPastEmploymentForPerson(personId: string, experienceArr: an
 // out. Falls back to profile.currentPosition (company name only, no title)
 // if experience has nothing marked current.
 async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] | undefined, currentPositionArr: any[] | undefined) {
-  const currentEntries = (experienceArr ?? []).filter(isCurrentExperienceEntry);
+  // __order is this entry's position in LinkedIn's own profile.experience
+  // array (captured before filtering to current-only) - "shown at the top
+  // of the profile" is itself a real signal of which current role is
+  // primary, and one that's there even when employmentType isn't (LinkedIn
+  // often leaves it blank for an owner-operated side venture, not just for
+  // a genuine second job - employmentType alone left ties unresolved).
+  const currentEntries = (experienceArr ?? [])
+    .map((e: any, i: number) => ({ ...e, __order: i }))
+    .filter(isCurrentExperienceEntry);
   const sources = currentEntries.length
     ? currentEntries
-    : (currentPositionArr ?? []).map((p: any) => ({ companyName: p.companyName, companyLinkedinUrl: p.companyLinkedinUrl, position: null }));
+    : (currentPositionArr ?? []).map((p: any, i: number) => ({ companyName: p.companyName, companyLinkedinUrl: p.companyLinkedinUrl, position: null, __order: i }));
 
   const syncedOrgIds = new Set<string>();
   for (const entry of sources) {
@@ -1225,6 +1234,7 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     // than one role marked current - both equally "current" by LinkedIn's
     // own definition, but not equally their main role.
     const employmentType = entry.employmentType || null;
+    const experienceOrder = typeof entry.__order === "number" ? entry.__order : null;
     // A person can hold more than one existing membership at the very same
     // org already (e.g. one created from a LinkedIn-headline-parse import
     // with their title as of that snapshot, before a later full profile
@@ -1244,12 +1254,12 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     if (primary) {
       await supabaseRequest("PATCH", "memberships", {
         params: { id: `eq.${primary.id}` },
-        body: { title, is_current: true, employment_type: employmentType },
+        body: { title, is_current: true, employment_type: employmentType, experience_order: experienceOrder },
       });
       primaryId = primary.id;
     } else {
       const created = (await supabaseRequest("POST", "memberships", {
-        body: { person_id: personId, organization_id: org.id, title, is_current: true, employment_type: employmentType },
+        body: { person_id: personId, organization_id: org.id, title, is_current: true, employment_type: employmentType, experience_order: experienceOrder },
         prefer: "return=representation",
       }))[0];
       primaryId = created.id;
@@ -1284,7 +1294,7 @@ async function listEmploymentHistoryForPerson(personId: string) {
   return await supabaseRequest("GET", "memberships", {
     params: {
       person_id: `eq.${personId}`,
-      select: "id,title,focus,is_current,start_date,end_date,employment_type,organizations(id,name,org_type)",
+      select: "id,title,focus,is_current,start_date,end_date,employment_type,experience_order,organizations(id,name,org_type)",
       order: "is_current.desc",
     },
   });

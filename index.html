@@ -1555,18 +1555,29 @@ function roleRecencyYear(item) {
 // When someone has more than one role LinkedIn marks current (a fund
 // partnership plus a board/committee seat, say - both genuinely "current",
 // not equally their main job), this decides which leads the person pane's
-// headline. LinkedIn's own employment_type is the signal: unknown/missing
-// (most memberships - anything not sourced from a LinkedIn fetch, or a
-// fetch from before this field was captured) is treated as a real primary
-// role rather than penalized for lacking the data; only a type positively
-// known to be a side/advisory engagement is ranked below it. Ties within a
-// tier go to whichever started most recently.
+// headline. Two signals, in order:
+// 1. LinkedIn's own employment_type: unknown/missing (most memberships -
+//    anything not sourced from a LinkedIn fetch, or a fetch from before
+//    this field was captured) is treated as a real primary role rather
+//    than penalized for lacking the data; only a type positively known to
+//    be a side/advisory engagement is ranked below it. This alone isn't
+//    always enough to break a tie, though - LinkedIn often leaves
+//    employmentType blank for an owner-operated side venture too, not just
+//    for a genuine second job (e.g. Frederic Caron: neither of two side
+//    companies had a type, so both tied with his real main role).
+// 2. experience_order: this entry's position in LinkedIn's own profile -
+//    "shown at the top of the profile" is itself a signal, and one that's
+//    there even when employmentType isn't. Falls back to whichever started
+//    most recently only for older data synced before this field existed.
 const SIDE_EMPLOYMENT_TYPES = new Set(["freelance", "volunteer", "internship", "trainee", "part-time", "self-employed"]);
 function currentRolePriority(role) {
   return SIDE_EMPLOYMENT_TYPES.has(String(role.employment_type || "").toLowerCase()) ? 1 : 0;
 }
 function currentRoleComparator(a, b) {
-  return currentRolePriority(a) - currentRolePriority(b) || roleRecencyYear(b) - roleRecencyYear(a);
+  const priorityDiff = currentRolePriority(a) - currentRolePriority(b);
+  if (priorityDiff) return priorityDiff;
+  if (a.experience_order != null && b.experience_order != null) return a.experience_order - b.experience_order;
+  return roleRecencyYear(b) - roleRecencyYear(a);
 }
 
 // The blue "ex" tag shown for a past (non-current) role, with the year they
