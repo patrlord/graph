@@ -58,6 +58,13 @@
 //     only-blanks - closes out any other membership LinkedIn's current data no longer backs up; supports more
 //     than one concurrent current role; a brand-new org found this way gets org_type left blank, not "employer",
 //     for a human to classify - unlike past jobs, this is likely an org the tool actually cares about))
+//   POST   /people/:id/merge-into  { target_id } -> updated target person (full row)
+//     (moves :id's memberships across every org onto target_id - dropping any that would collide with a membership
+//     target_id already has at that exact org+title - and its person<->person/person<->org connections too - dropping
+//     any that would become a self-loop once remapped; backfills every field target_id is currently blank on from :id,
+//     its own full_name untouched; then deletes :id. Irreversible - the frontend confirms before calling this. Unlike
+//     org merge, no uniqueness constraint on full_name to guard, so no name-clash case here)
+//   DELETE /people/:id -> { ok: true }
 //   GET    /people/:id/education          -> [ {id, degree, period, start_date, end_date, schools: {id, name, linkedin_url}}, ... ]
 //   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, employment_type, experience_order, organizations: {id, name, org_type}}, ... ]
 //     (employment_type is LinkedIn's own label - "Permanent", "Freelance", "Volunteer", etc.; experience_order is this entry's position in LinkedIn's own
@@ -1810,6 +1817,70 @@ async function mergePersonInto(
   await supabaseRequest("DELETE", "people", { params: { id: `eq.${sourceId}` } });
 }
 
+// General-purpose person merge for the "Merge into..." button in the person
+// detail pane - unlike mergePersonInto above (find-linkedin's own narrow
+// dedup, scoped to a single organization's membership), this moves every
+// membership across every org, not just one. Same shape as mergeOrgInto:
+// dedup memberships by (organization, title) instead of (org has this
+// person already), remap connections with a self-loop guard, backfill
+// every blank field on target from source (full_name excluded - target's
+// is the one being kept, same as an org's name), then delete source.
+async function mergePersonRecordInto(sourceId: string, targetId: string) {
+  if (sourceId === targetId) throw new HttpError(400, "Can't merge a person into themselves.");
+  const [sourceRows, targetRows] = await Promise.all([
+    supabaseRequest("GET", "people", { params: { id: `eq.${sourceId}`, select: "*" } }),
+    supabaseRequest("GET", "people", { params: { id: `eq.${targetId}`, select: "*" } }),
+  ]);
+  const source = sourceRows?.[0];
+  const target = targetRows?.[0];
+  if (!source) throw new HttpError(404, "source person not found");
+  if (!target) throw new HttpError(404, "target person not found");
+
+  const [sourceMemberships, targetMemberships] = await Promise.all([
+    supabaseRequest("GET", "memberships", { params: { person_id: `eq.${sourceId}`, select: "id,organization_id,title" } }),
+    supabaseRequest("GET", "memberships", { params: { person_id: `eq.${targetId}`, select: "organization_id,title" } }),
+  ]);
+  const membershipKey = (m: { organization_id: string; title: string | null }) => `${m.organization_id}::${m.title ?? ""}`;
+  const targetHasMembership = new Set((targetMemberships ?? []).map(membershipKey));
+  for (const m of sourceMemberships ?? []) {
+    if (targetHasMembership.has(membershipKey(m))) {
+      await supabaseRequest("DELETE", "memberships", { params: { id: `eq.${m.id}` } });
+    } else {
+      await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${m.id}` }, body: { person_id: targetId } });
+    }
+  }
+
+  const [asA, asB] = await Promise.all([
+    supabaseRequest("GET", "connections", {
+      params: { entity_a_type: "eq.person", entity_a_id: `eq.${sourceId}`, select: "id,entity_b_type,entity_b_id" },
+    }),
+    supabaseRequest("GET", "connections", {
+      params: { entity_b_type: "eq.person", entity_b_id: `eq.${sourceId}`, select: "id,entity_a_type,entity_a_id" },
+    }),
+  ]);
+  for (const c of asA ?? []) {
+    const wouldSelfLoop = c.entity_b_type === "person" && c.entity_b_id === targetId;
+    if (wouldSelfLoop) await supabaseRequest("DELETE", "connections", { params: { id: `eq.${c.id}` } });
+    else await supabaseRequest("PATCH", "connections", { params: { id: `eq.${c.id}` }, body: { entity_a_id: targetId } });
+  }
+  for (const c of asB ?? []) {
+    const wouldSelfLoop = c.entity_a_type === "person" && c.entity_a_id === targetId;
+    if (wouldSelfLoop) await supabaseRequest("DELETE", "connections", { params: { id: `eq.${c.id}` } });
+    else await supabaseRequest("PATCH", "connections", { params: { id: `eq.${c.id}` }, body: { entity_b_id: targetId } });
+  }
+
+  const { id: _tid, created_at: _tca, updated_at: _tua, full_name: _tname, ...targetFieldsToFill } = target;
+  const fields = mergeFields(source, targetFieldsToFill);
+  const updated = (await supabaseRequest("PATCH", "people", {
+    params: { id: `eq.${targetId}` },
+    body: fields,
+    prefer: "return=representation",
+  }))[0];
+
+  await supabaseRequest("DELETE", "people", { params: { id: `eq.${sourceId}` } });
+  return updated;
+}
+
 // For when a LinkedIn URL is hand-entered (not found via findPersonLinkedin's
 // own search) - the URL is already known and trusted, so this just looks up
 // what else that profile says and fills in country/title, only where
@@ -2134,6 +2205,10 @@ Deno.serve(async (req) => {
       if (!updated?.length) return json({ error: "person not found" }, 404);
       return json(updated[0]);
     }
+    if (personIdMatch && req.method === "DELETE") {
+      await supabaseRequest("DELETE", "people", { params: { id: `eq.${personIdMatch[1]}` } });
+      return json({ ok: true });
+    }
 
     const personEnrichMatch = path.match(/^\/people\/([^/]+)\/enrich-from-linkedin$/);
     if (personEnrichMatch && req.method === "POST") {
@@ -2148,6 +2223,14 @@ Deno.serve(async (req) => {
     const personApifyMatch = path.match(/^\/people\/([^/]+)\/enrich-from-apify$/);
     if (personApifyMatch && req.method === "POST") {
       return json(await enrichPersonFromApify(personApifyMatch[1]));
+    }
+
+    const personMergeMatch = path.match(/^\/people\/([^/]+)\/merge-into$/);
+    if (personMergeMatch && req.method === "POST") {
+      const body = await req.json();
+      const targetId = (body.target_id ?? "").trim();
+      if (!targetId) return json({ error: "target_id is required" }, 400);
+      return json(await mergePersonRecordInto(personMergeMatch[1], targetId));
     }
 
     const personEducationMatch = path.match(/^\/people\/([^/]+)\/education$/);

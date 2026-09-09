@@ -496,6 +496,7 @@
       </div>
     </div>
     <datalist id="orgNamesDatalist"></datalist>
+    <datalist id="peopleNamesDatalist"></datalist>
 
     <!-- Bottom-left: people list -->
     <div class="card" id="peopleListCard">
@@ -577,7 +578,17 @@
                 <button class="secondary tiny" id="personEditBtn">Edit</button>
                 <button class="secondary tiny" id="personEnrichBtn">Enrich</button>
                 <span class="status-line" id="personEnrichStatus" style="margin:0;min-height:0;"></span>
+                <button class="secondary tiny" id="personMergeToggleBtn" style="margin-left:auto">Merge into…</button>
+                <button class="danger tiny" id="personDeleteBtn">Delete</button>
               </div>
+            </div>
+            <div id="personMergeForm" style="display:none;margin-top:10px;">
+              <div class="form-row">
+                <input type="text" id="personMergeTarget" placeholder="Person to merge into…" list="peopleNamesDatalist">
+                <button class="danger tiny" id="personMergeBtn">Merge</button>
+                <button class="secondary tiny" id="personMergeCancelBtn">Cancel</button>
+              </div>
+              <span class="status-line" id="personMergeStatus"></span>
             </div>
             <div class="header-divider"></div>
           </div>
@@ -1959,6 +1970,7 @@ let selectedPersonObj = null;  // the object currently shown in the person detai
 
 function showPersonDetail(person) {
   selectedPersonObj = person;
+  togglePersonMergeForm(false);
   if (!person) {
     document.getElementById("personDetailEmpty").style.display = "block";
     document.getElementById("personDetailContent").classList.remove("shown");
@@ -2209,6 +2221,101 @@ async function enrichSelectedPerson() {
       await applyPeopleFilter();
     }
     showPersonDetail(person);  // also restores the date via updatePersonEnrichStatus
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteSelectedPerson() {
+  const person = selectedPersonObj;
+  if (!person) return;
+  if (!confirm(`Delete ${person.full_name}? This can't be undone.`)) return;
+  const btn = document.getElementById("personDeleteBtn");
+  btn.disabled = true;
+  try {
+    const res = await api(`/people/${person.id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json()).error || "Delete failed");
+    selectedPersonId = null;
+    showPersonDetail(null);
+    if (currentPeopleMode === "org" && selectedOrg) {
+      await selectOrg(selectedOrg.id, true);
+    } else {
+      await applyPeopleFilter();
+    }
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function togglePersonMergeForm(show) {
+  const form = document.getElementById("personMergeForm");
+  form.style.display = show ? "block" : "none";
+  if (!show) {
+    document.getElementById("personMergeTarget").value = "";
+    document.getElementById("personMergeStatus").textContent = "";
+    document.getElementById("personMergeStatus").className = "status-line";
+  } else {
+    ensurePeopleNamesCache();  // lazily loads/populates peopleNamesDatalist the first time this opens
+  }
+}
+
+// Unlike orgListCache (always fully loaded, since the org list itself needs
+// it), people are never all loaded at once - fetched lazily here instead,
+// just for this datalist, and cached until a merge makes it stale.
+// include_past=true so someone with zero memberships still appears (the
+// default "current membership only" mode would otherwise silently drop them).
+let peopleNamesCache = null;  // [{id, full_name}] | null
+async function ensurePeopleNamesCache(forceRefresh) {
+  if (peopleNamesCache && !forceRefresh) return peopleNamesCache;
+  const res = await api("/people?include_past=true");
+  const rows = res.ok ? await res.json() : [];
+  const byId = new Map();
+  for (const r of rows) if (!byId.has(r.id)) byId.set(r.id, { id: r.id, full_name: r.full_name });
+  peopleNamesCache = [...byId.values()];
+  document.getElementById("peopleNamesDatalist").innerHTML = peopleNamesCache.map(p => `<option value="${p.full_name}">`).join("");
+  return peopleNamesCache;
+}
+
+// Resolves the typed name against peopleNamesCache - an exact,
+// case-insensitive match, same rule mergeSelectedOrg uses (and the same
+// simplicity: if more than one person happens to share that exact name,
+// this just takes the first one, same as the org version would for a
+// duplicate org name).
+async function mergeSelectedPerson() {
+  const person = selectedPersonObj;
+  if (!person) return;
+  const status = document.getElementById("personMergeStatus");
+  const typed = document.getElementById("personMergeTarget").value.trim();
+  if (!typed) { status.className = "status-line error"; status.textContent = "Type or pick a person to merge into."; return; }
+  const names = await ensurePeopleNamesCache();
+  const target = names.find(p => p.full_name.toLowerCase() === typed.toLowerCase() && p.id !== person.id);
+  if (!target) { status.className = "status-line error"; status.textContent = "No other person found with that exact name - pick one from the list."; return; }
+  if (!confirm(
+    `Merge ${person.full_name} into ${target.full_name}?\n\n` +
+    `${person.full_name}'s roles and connections move onto ${target.full_name}, ` +
+    `${target.full_name} keeps its own name, and ${person.full_name} is deleted. This can't be undone.`
+  )) return;
+  const btn = document.getElementById("personMergeBtn");
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Merging…";
+  try {
+    const res = await api(`/people/${person.id}/merge-into`, {
+      method: "POST", body: JSON.stringify({ target_id: target.id }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Merge failed");
+    togglePersonMergeForm(false);
+    peopleNamesCache = null;  // stale now (person.id is gone) - refreshed lazily next time the form opens
+    selectedPersonId = target.id;
+    if (currentPeopleMode === "org" && selectedOrg) {
+      await selectOrg(selectedOrg.id, true);
+    } else {
+      await applyPeopleFilter();
+    }
+    showPersonDetail(data);  // the merged-away person no longer exists - show the survivor instead
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally {
@@ -2641,6 +2748,13 @@ document.getElementById("personNewsSearchBtn").addEventListener("click", searchP
 document.getElementById("personEditBtn").addEventListener("click", enterPersonEditMode);
 document.getElementById("personCancelBtn").addEventListener("click", exitPersonEditMode);
 document.getElementById("personEnrichBtn").addEventListener("click", enrichSelectedPerson);
+document.getElementById("personDeleteBtn").addEventListener("click", deleteSelectedPerson);
+document.getElementById("personMergeToggleBtn").addEventListener("click", () => {
+  const form = document.getElementById("personMergeForm");
+  togglePersonMergeForm(form.style.display === "none");
+});
+document.getElementById("personMergeCancelBtn").addEventListener("click", () => togglePersonMergeForm(false));
+document.getElementById("personMergeBtn").addEventListener("click", mergeSelectedPerson);
 document.getElementById("personSaveBtn").addEventListener("click", savePersonEdits);
 const syncPersonLinkedinLink = wireLinkField("editPersonLinkedin", "editPersonLinkedinOpen");
 
