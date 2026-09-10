@@ -112,6 +112,10 @@
   .star-btn { color: #cfcabf; font-size: 14px; }
   .star-btn:hover { color: #b5b1a9; }
   .star-btn.active { color: #2f7a3d; }
+  /* same star button, standing to the left of the name in a detail pane
+     header - a touch larger, and centred against the name rather than
+     baseline-aligned (a button has no useful text baseline). */
+  .detail-star { font-size: 17px; align-self: center; padding-left: 0; }
   .hide-btn { color: #cfcabf; font-size: 16px; font-weight: 700; }
   .hide-btn:hover { color: #b5b1a9; }
   .hide-btn.active { color: #a33; }
@@ -279,7 +283,8 @@
      the content, so they actually line up. */
   #orgTable th:nth-child(6), #orgTable td:nth-child(6),
   #peopleTable th:nth-child(7), #peopleTable td:nth-child(7),
-  #peopleTable th:nth-child(8), #peopleTable td:nth-child(8) {
+  #peopleTable th:nth-child(8), #peopleTable td:nth-child(8),
+  .sortable-table th.col-li, .sortable-table td.col-li {
     text-align: center;
   }
   .ba-cell input[type="checkbox"] { vertical-align: middle; cursor: pointer; }
@@ -381,7 +386,7 @@
                 <th data-sort="name">Name <span class="sort-arrow"></span></th>
                 <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
-                <th>LinkedIn <button class="secondary tiny" id="orgFindAllBtn" title="Find LinkedIn URLs for every organization below that's missing one">Find all</button></th>
+                <th class="col-li">LI <button class="secondary tiny" id="orgFindAllBtn" title="Find LinkedIn URLs for every organization below that's missing one">Find all</button></th>
                 <th title="Has a team member connected to a flagged user">JPL</th>
               </tr>
             </thead>
@@ -422,6 +427,7 @@
         <div class="detail-header">
           <div id="orgHeaderView">
             <div class="org-header">
+              <button class="flag-btn star-btn detail-star" id="detOrgStarBtn" title="Star this">★</button>
               <h3 id="detOrgName"></h3>
               <span class="type-pill" id="detOrgType"></span>
               <div class="entity-links" id="detOrgLinks"></div>
@@ -539,7 +545,7 @@
                 <th data-sort="country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="title">Role <span class="sort-arrow"></span></th>
                 <th class="col-company">Company</th>
-                <th>LinkedIn</th>
+                <th class="col-li">LI</th>
                 <th title="Business angel">BA</th>
                 <th title="Connected to a flagged user">JPL</th>
               </tr>
@@ -581,6 +587,7 @@
               <img id="detPersonPhoto" class="person-photo" alt="" style="display:none">
               <div>
                 <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+                  <button class="flag-btn star-btn detail-star" id="detPersonStarBtn" title="Star this">★</button>
                   <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
                   <span class="user-badge" id="detPersonUserBadge" style="display:none">User</span>
                   <div class="entity-links" id="detPersonLinks" style="margin-top:0;"></div>
@@ -973,7 +980,7 @@ function renderOrgList(orgs) {
       <td class="li-name">${o.name}</td>
       <td>${countryCellFor(o, o.hq_country) || '<span class="none">—</span>'}</td>
       <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
-      <td>${linkedinCellFor(o)}</td>
+      <td class="col-li">${linkedinCellFor(o)}</td>
       <td>${connectedCellHtml(o)}</td>
     </tr>
   `).join("");
@@ -1005,6 +1012,15 @@ function flagButtonsHtml(entity) {
     <button class="flag-btn star-btn${entity.is_starred ? " active" : ""}" title="${entity.is_starred ? "Starred - click to unstar" : "Star this"}">★</button>
     <button class="flag-btn hide-btn${entity.is_hidden ? " active" : ""}" title="${entity.is_hidden ? "Hidden - click to unhide" : "Hide this"}">−</button>
   </td>`;
+}
+
+// The single star button that sits to the left of the name in the org and
+// person detail-pane headers - same PATCH path as the list-row stars, just
+// its own visual state to keep in sync (a detail pane isn't re-rendered by
+// toggleOrgFlag/togglePersonFlag, only the lists are).
+function syncDetailStar(btnEl, isStarred) {
+  btnEl.classList.toggle("active", !!isStarred);
+  btnEl.title = isStarred ? "Starred - click to unstar" : "Star this";
 }
 
 // Wires a row's two flag buttons to toggleFn (toggleOrgFlag or
@@ -1412,6 +1428,7 @@ function renderOrgDetail(org) {
   document.getElementById("orgDetailEmpty").style.display = "none";
   document.getElementById("orgDetailContent").classList.add("shown");
   document.getElementById("detOrgName").textContent = org.name;
+  syncDetailStar(document.getElementById("detOrgStarBtn"), org.is_starred);
   document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type || "Unclassified";
   document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
   const dupWarning = document.getElementById("detOrgDupWarning");
@@ -2035,7 +2052,7 @@ function renderPeopleTableBody() {
       <td>${countryCellFor(p, p.country) || '<span class="none">—</span>'}</td>
       <td${p.roles && p.roles.length > 1 ? ` title="${roleCellTitle(p)}"` : ""}>${roleCellHtml(p)}</td>
       <td class="col-company"${currentPeopleMode === "global" && p.roles && p.roles.length > 1 ? ` title="${companyCellTitle(p)}"` : ""}>${companyCellHtml(p)}</td>
-      <td>${linkedinCellFor(p)}</td>
+      <td class="col-li">${linkedinCellFor(p)}</td>
       <td class="ba-cell"><input type="checkbox" class="ba-checkbox"${p.is_ba ? " checked" : ""}></td>
       <td>${connectedCellHtml(p)}</td>
     </tr>
@@ -2161,6 +2178,7 @@ function showPersonDetail(person) {
   document.getElementById("personDetailEmpty").style.display = "none";
   document.getElementById("personDetailContent").classList.add("shown");
   document.getElementById("detPersonName").textContent = person.full_name;
+  syncDetailStar(document.getElementById("detPersonStarBtn"), person.is_starred);
   document.getElementById("detPersonUserBadge").style.display = person.is_user ? "inline-block" : "none";
   const photoEl = document.getElementById("detPersonPhoto");
   if (person.li_photo_url) { photoEl.src = person.li_photo_url; photoEl.style.display = "block"; }
@@ -2896,6 +2914,15 @@ document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListV
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
 document.getElementById("orgEditBtn").addEventListener("click", enterOrgEditMode);
 document.getElementById("orgDeleteBtn").addEventListener("click", deleteSelectedOrg);
+document.getElementById("detOrgStarBtn").addEventListener("click", async e => {
+  if (!selectedOrg) return;
+  // toggleOrgFlag writes back to the orgListCache row (so applyOrgFilter
+  // re-renders the list right) and to selectedOrg; pass the cache row when
+  // there is one so both stay in sync.
+  const target = orgListCache.find(o => o.id === selectedOrg.id) || selectedOrg;
+  await toggleOrgFlag(target, "is_starred", e.currentTarget);
+  syncDetailStar(e.currentTarget, selectedOrg.is_starred);
+});
 document.getElementById("orgMergeToggleBtn").addEventListener("click", () => {
   const form = document.getElementById("orgMergeForm");
   toggleOrgMergeForm(form.style.display === "none");
@@ -2933,6 +2960,11 @@ document.getElementById("bulkPeopleStartBtn").addEventListener("click", startBul
 document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
 document.getElementById("personEditBtn").addEventListener("click", enterPersonEditMode);
 document.getElementById("personCancelBtn").addEventListener("click", exitPersonEditMode);
+document.getElementById("detPersonStarBtn").addEventListener("click", async e => {
+  if (!selectedPersonObj) return;
+  await togglePersonFlag(selectedPersonObj, "is_starred", e.currentTarget);
+  syncDetailStar(e.currentTarget, selectedPersonObj.is_starred);
+});
 document.getElementById("personEnrichBtn").addEventListener("click", enrichSelectedPerson);
 document.getElementById("personDeleteBtn").addEventListener("click", deleteSelectedPerson);
 document.getElementById("personMergeToggleBtn").addEventListener("click", () => {
