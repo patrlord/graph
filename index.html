@@ -704,6 +704,12 @@ function showApp(user) {
   document.getElementById("signedInAs").style.display = "inline";
   document.getElementById("signOutBtn").style.display = "inline";
   loadOrgList();
+  // Same as pressing "Clear" next to the people search box - no org
+  // selected yet, so without this the list would otherwise start on its
+  // "Select an organization, or search all people." empty state.
+  peopleForceGlobal = true;
+  updatePeopleHeader();
+  applyPeopleFilter();
 }
 
 function showLogin() {
