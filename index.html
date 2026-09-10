@@ -237,6 +237,7 @@
   th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: #8a877e; font-weight: 600; }
   a.li-link { color: #8a5a2b; text-decoration: none; font-size: 11.5px; }
   a.li-link:hover { text-decoration: underline; }
+  a.li-link-arrow { font-size: 14px; font-weight: 700; }
 
   .scroll-box table.sortable-table thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
   table.sortable-table th { cursor: pointer; user-select: none; white-space: nowrap; }
@@ -449,6 +450,7 @@
             <div class="edit-field"><label for="editOrgWebsite">Website</label><div class="input-with-link"><input type="text" id="editOrgWebsite" placeholder="https://…"><a id="editOrgWebsiteOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
             <div class="edit-field"><label for="editOrgLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editOrgLinkedin" placeholder="https://www.linkedin.com/company/…"><a id="editOrgLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
             <div class="edit-field"><label for="editOrgHqCountry">HQ location</label><input type="text" id="editOrgHqCountry" placeholder="e.g. London, UK"></div>
+            <div class="edit-field"><label for="editOrgCountryCode">Country code</label><input type="text" id="editOrgCountryCode" placeholder="e.g. FR, UK" maxlength="10" style="text-transform:uppercase"></div>
             <div class="edit-field"><label for="editOrgDescription">Description</label><textarea id="editOrgDescription" rows="2"></textarea></div>
             <div class="edit-field"><label for="editOrgSectors">Sectors</label><input type="text" id="editOrgSectors" placeholder="comma-separated, e.g. Fintech, AI"></div>
             <div class="edit-field"><label for="editOrgTicketSize">Ticket size</label><input type="text" id="editOrgTicketSize" placeholder="e.g. $250K-1M"></div>
@@ -562,25 +564,23 @@
       <div id="personDetailContent" class="detail-content">
         <div class="detail-header">
           <div id="personHeaderView">
-            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-              <div style="display:flex;align-items:flex-start;gap:10px;">
-                <img id="detPersonPhoto" class="person-photo" alt="" style="display:none">
-                <div>
-                  <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
-                    <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
-                    <span class="user-badge" id="detPersonUserBadge" style="display:none">User</span>
-                    <div class="entity-links" id="detPersonLinks" style="margin-top:0;"></div>
-                  </div>
-                  <div class="entity-desc" id="detPersonMeta"></div>
+            <div style="display:flex;align-items:flex-start;gap:10px;">
+              <img id="detPersonPhoto" class="person-photo" alt="" style="display:none">
+              <div>
+                <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+                  <h3 id="detPersonName" style="margin:0;font-size:15.5px;"></h3>
+                  <span class="user-badge" id="detPersonUserBadge" style="display:none">User</span>
+                  <div class="entity-links" id="detPersonLinks" style="margin-top:0;"></div>
                 </div>
+                <div class="entity-desc" id="detPersonMeta"></div>
               </div>
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <button class="secondary tiny" id="personEditBtn">Edit</button>
-                <button class="secondary tiny" id="personEnrichBtn">Enrich</button>
-                <span class="status-line" id="personEnrichStatus" style="margin:0;min-height:0;"></span>
-                <button class="secondary tiny" id="personMergeToggleBtn" style="margin-left:auto">Merge into…</button>
-                <button class="danger tiny" id="personDeleteBtn">Delete</button>
-              </div>
+            </div>
+            <div style="margin-top:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <button class="secondary tiny" id="personEditBtn">Edit</button>
+              <button class="secondary tiny" id="personEnrichBtn">Enrich</button>
+              <span class="status-line" id="personEnrichStatus" style="margin:0;min-height:0;"></span>
+              <button class="secondary tiny" id="personMergeToggleBtn" style="margin-left:auto">Merge into…</button>
+              <button class="danger tiny" id="personDeleteBtn">Delete</button>
             </div>
             <div id="personMergeForm" style="display:none;margin-top:10px;">
               <div class="form-row">
@@ -604,6 +604,7 @@
             <div class="edit-field"><label for="editPersonTitle">Title</label><input type="text" id="editPersonTitle"></div>
             <div class="edit-field"><label for="editPersonFocus">Focus</label><input type="text" id="editPersonFocus"></div>
             <div class="edit-field"><label for="editPersonCountry">Country</label><input type="text" id="editPersonCountry"></div>
+            <div class="edit-field"><label for="editPersonCountryCode">Country code</label><input type="text" id="editPersonCountryCode" placeholder="e.g. FR, UK" maxlength="10" style="text-transform:uppercase"></div>
             <div class="edit-field"><label for="editPersonLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editPersonLinkedin" placeholder="https://www.linkedin.com/in/…"><a id="editPersonLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
             <label class="list-toggle" id="editPersonIsUserRow" style="margin:0 0 12px;"><input type="checkbox" id="editPersonIsUser"> This is a user - people and orgs connected to them show a "Connected" flag</label>
             <div style="display:flex;align-items:center;gap:10px;">
@@ -745,7 +746,7 @@ function linkedinStub(url) {
 // it's a one-click check for whether to merge.
 function linkedinCellFor(entity) {
   if (entity.linkedin_url) {
-    const link = `<a class="li-link" href="${entity.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(entity.linkedin_url)}</a>`;
+    const link = `<a class="li-link li-link-arrow" href="${entity.linkedin_url}" target="_blank" rel="noopener" title="Open LinkedIn profile">↗</a>`;
     if (entity.li_duplicate_of) {
       return `${link}<span class="dup-warning dup-jump-btn" data-dup-id="${entity.li_duplicate_of.id}" title="Same LinkedIn URL as ${entity.li_duplicate_of.name} - click to check whether to merge">⚠</span>`;
     }
@@ -873,7 +874,7 @@ function renderOrgList(orgs) {
     <tr data-id="${o.id}">
       ${flagButtonsHtml(o)}
       <td class="li-name">${o.name}</td>
-      <td>${o.hq_country || '<span class="none">—</span>'}</td>
+      <td>${o.country_code || o.hq_country || '<span class="none">—</span>'}</td>
       <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
       <td>${linkedinCellFor(o)}</td>
       <td>${connectedCellHtml(o)}</td>
@@ -1343,6 +1344,7 @@ function populateOrgEditForm(org) {
   document.getElementById("editOrgWebsite").value = org.website_url || "";
   document.getElementById("editOrgLinkedin").value = org.linkedin_url || "";
   document.getElementById("editOrgHqCountry").value = org.hq_country || "";
+  document.getElementById("editOrgCountryCode").value = org.country_code || "";
   document.getElementById("editOrgDescription").value = org.description || "";
   document.getElementById("editOrgSectors").value = (org.sectors || []).join(", ");
   document.getElementById("editOrgTicketSize").value = org.ticket_size || "";
@@ -1405,6 +1407,7 @@ async function saveOrgEdits() {
       website_url: document.getElementById("editOrgWebsite").value.trim(),
       linkedin_url: document.getElementById("editOrgLinkedin").value.trim(),
       hq_country: document.getElementById("editOrgHqCountry").value.trim(),
+      country_code: document.getElementById("editOrgCountryCode").value.trim().toUpperCase(),
       description: document.getElementById("editOrgDescription").value.trim(),
       sectors: splitCsv(document.getElementById("editOrgSectors").value),
       ticket_size: document.getElementById("editOrgTicketSize").value.trim(),
@@ -1741,6 +1744,70 @@ function normalizePeopleItems(items, mode) {
     : { ...entry, membership_id: entry.membership_id || null, organization: entry.organization || null });
 }
 
+// Someone with several memberships (multiple roles - e.g. "include
+// ex-employees" pulls in past jobs alongside a current one, or a person
+// with two concurrent roles at different orgs in the global list) comes in
+// as one normalized item per membership. Collapses those back into one row
+// per person, carrying every role along in `roles` (each {title, focus,
+// organization, is_current, start_date, end_date, membership_id}) for the
+// Role cell to render, while keeping the flat title/organization/is_current/
+// etc fields - taken from a current role if there is one, else the first -
+// so code that only ever expects a single role (sorting, the find-linkedin
+// company hint, the "ex" tag) keeps working unchanged. A person with only
+// one role round-trips through this untouched.
+function groupPeopleByPerson(items) {
+  const groups = [];
+  const byId = new Map();
+  for (const item of items) {
+    const role = {
+      title: item.title, focus: item.focus, organization: item.organization,
+      is_current: item.is_current, start_date: item.start_date, end_date: item.end_date,
+      membership_id: item.membership_id,
+    };
+    let group = byId.get(item.id);
+    if (!group) {
+      group = { ...item, roles: [] };
+      byId.set(item.id, group);
+      groups.push(group);
+    }
+    group.roles.push(role);
+  }
+  for (const group of groups) {
+    const primary = group.roles.find(r => r.is_current !== false) || group.roles[0];
+    group.title = primary.title;
+    group.focus = primary.focus;
+    group.organization = primary.organization;
+    group.start_date = primary.start_date;
+    group.end_date = primary.end_date;
+    group.membership_id = primary.membership_id;
+    group.is_current = group.roles.some(r => r.is_current !== false);
+  }
+  return groups;
+}
+
+// The Role column's cell: a single role renders exactly as before; several
+// roles join with " · ", each carrying its own "ex" tag and (in the global
+// list, where the org isn't already implied by context) its own org name.
+function roleCellHtml(p) {
+  if (!p.roles || p.roles.length <= 1) {
+    return `${exTagHtml(p)}${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}`;
+  }
+  return p.roles.map(r => {
+    const org = currentPeopleMode === "global" && r.organization ? ` – ${r.organization.name}` : "";
+    return `${exTagHtml(r)}${r.title || "—"}${org}`;
+  }).join(" · ");
+}
+
+// Plain-text version of the same multi-role list, for a `title` attribute -
+// the cell itself gets ellipsis-truncated (table.sortable-table), so this is
+// how the full set of roles stays reachable on hover.
+function roleCellTitle(p) {
+  return p.roles.map(r => {
+    const org = currentPeopleMode === "global" && r.organization ? ` – ${r.organization.name}` : "";
+    return `${r.is_current === false ? "ex " : ""}${r.title || "—"}${org}`;
+  }).join(" · ").replace(/"/g, "&quot;");
+}
+
 let includePastRoles = false;  // "Include ex-employees" toggle next to the people search box
 let peopleStarredOnly = false; // "Starred only" toggle
 let peopleBAOnly = false;      // "BAs only" toggle
@@ -1834,7 +1901,7 @@ function renderPeopleList(items, mode, forceIncludePast) {
   if (!peopleShowHidden) filtered = filtered.filter(item => !item.is_hidden);
   if (peopleStarredOnly) filtered = filtered.filter(item => item.is_starred);
   if (peopleBAOnly) filtered = filtered.filter(item => item.is_ba);
-  currentPeopleItems = filtered;
+  currentPeopleItems = groupPeopleByPerson(filtered);
   wireSortHeaders("peopleTable", peopleSort, () => {
     currentPeopleItems.sort(peopleComparator());
     renderPeopleTableBody();
@@ -1857,8 +1924,8 @@ function renderPeopleTableBody() {
     <tr data-id="${p.id}">
       ${flagButtonsHtml(p)}
       <td class="li-name">${p.full_name}</td>
-      <td>${p.country || '<span class="none">—</span>'}</td>
-      <td>${exTagHtml(p)}${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}</td>
+      <td>${p.country_code || p.country || '<span class="none">—</span>'}</td>
+      <td${p.roles && p.roles.length > 1 ? ` title="${roleCellTitle(p)}"` : ""}>${roleCellHtml(p)}</td>
       <td>${linkedinCellFor(p)}</td>
       <td class="ba-cell"><input type="checkbox" class="ba-checkbox"${p.is_ba ? " checked" : ""}></td>
       <td>${connectedCellHtml(p)}</td>
@@ -2334,6 +2401,7 @@ function populatePersonEditForm(person) {
   document.getElementById("editPersonTitle").value = person.title || "";
   document.getElementById("editPersonFocus").value = person.focus || "";
   document.getElementById("editPersonCountry").value = person.country || "";
+  document.getElementById("editPersonCountryCode").value = person.country_code || "";
   document.getElementById("editPersonLinkedin").value = person.linkedin_url || "";
   document.getElementById("editPersonIsUser").checked = !!person.is_user;
   syncPersonLinkedinLink();
@@ -2375,6 +2443,7 @@ async function savePersonEdits() {
       body: JSON.stringify({
         full_name: fullName,
         country: document.getElementById("editPersonCountry").value.trim(),
+        country_code: document.getElementById("editPersonCountryCode").value.trim().toUpperCase(),
         linkedin_url: newLinkedin,
         is_user: document.getElementById("editPersonIsUser").checked,
       }),

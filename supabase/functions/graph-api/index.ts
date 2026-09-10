@@ -23,8 +23,10 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, sectors, updated_at, connected_to_user, is_starred, is_hidden}, ... ]
+//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, updated_at, connected_to_user, is_starred, is_hidden}, ... ]
 //     (is_starred/is_hidden are purely manual flags, set via PATCH /organizations/:id - nothing here filters by them server-side, the frontend does that client-side)
+//     (country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from
+//     hq_country, which stays free text (e.g. "Paris, France") for the detail pane and research prompts)
 //     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true.
 //     connected_to_user: true if any person with a membership at this org - past or current - is themselves flagged
 //     is_user, or is connected to one via a person<->person row in `connections`; see getUserConnectedPersonIds)
@@ -37,13 +39,14 @@
 //   DELETE /organizations/:id   -> { ok: true }
 //   PATCH  /organizations/:id   { any subset of organization fields above } -> updated org (direct set, not merge-only-blanks - a
 //     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI)
-//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba}, ... ]
+//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, country_code, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba}, ... ]
 //     (q omitted/empty -> all people, no cap (paginated internally, see supabaseRequestAllPages); include_past=true returns one row per membership - e.g. two past
 //     roles at the same company both show - instead of the default one row per person, their best/current membership only.
 //     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
 //     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds.
-//     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id - nothing here filters by them server-side, the frontend does that client-side)
-//   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
+//     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id - nothing here filters by them server-side, the frontend does that client-side.
+//     country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from country, which stays free text)
+//   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, country_code, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
 //   PATCH  /memberships/:id     { any subset of title, focus } -> updated membership (direct set, same as organizations PATCH)
 //   POST   /people/:id/enrich-from-linkedin  { linkedin_url, name?, organization_id? } -> { country, title, observed_company }
 //     (for a hand-entered LinkedIn URL, not one found via search - looks up what else that profile says and
@@ -505,7 +508,7 @@ async function getUserConnectedPersonIds(): Promise<Set<string>> {
 // them directly when wanted.
 async function listOrganizations(includeEmployers: boolean) {
   const params: Record<string, string> = {
-    select: "id,name,org_type,website_url,linkedin_url,hq_country,sectors,updated_at,is_starred,is_hidden",
+    select: "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,updated_at,is_starred,is_hidden",
     order: "name.asc",
   };
   // org_type <> 'employer' would silently also exclude NULL org_type rows -
@@ -2163,7 +2166,7 @@ Deno.serve(async (req) => {
     if (orgIdMatch && req.method === "PATCH") {
       const body = await req.json();
       const fields = pickDefined(body, [
-        "name", "org_type", "website_url", "linkedin_url", "hq_country", "description",
+        "name", "org_type", "website_url", "linkedin_url", "hq_country", "country_code", "description",
         "sectors", "ticket_size", "investment_stages", "investment_regions", "fund_type_raw",
         "is_starred", "is_hidden",
       ]);
@@ -2205,7 +2208,7 @@ Deno.serve(async (req) => {
     const personIdMatch = path.match(/^\/people\/([^/]+)$/);
     if (personIdMatch && req.method === "PATCH") {
       const body = await req.json();
-      const fields = pickDefined(body, ["full_name", "linkedin_url", "country", "is_user", "is_starred", "is_hidden", "is_ba"]);
+      const fields = pickDefined(body, ["full_name", "linkedin_url", "country", "country_code", "is_user", "is_starred", "is_hidden", "is_ba"]);
       if ("full_name" in fields && !String(fields.full_name ?? "").trim()) return json({ error: "full_name cannot be blank" }, 400);
       if ("linkedin_url" in fields) fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);
       if (!Object.keys(fields).length) return json({ error: "no editable fields provided" }, 400);
