@@ -249,11 +249,13 @@
   table.sortable-table tbody tr.selected { background: #fbf3ea; }
   table.sortable-table td.li-name { font-weight: 500; color: #1c1c1c; }
   /* No wrapping anywhere in these lists - long content truncates with an
-     ellipsis instead of growing the row taller. table-layout: fixed is what
-     makes a td's width (and so its ellipsis point) predictable regardless
-     of content; the org and people tables share this same 6-column shape
-     (a narrow flags column, then Name/Country/Type-or-Role/LinkedIn/JPL),
-     so one set of nth-child widths covers both. */
+     ellipsis instead of growing the row taller (a stacked multi-role cell
+     still grows taller line by line - see roleCellHtml/companyCellHtml -
+     just each line truncates on its own). table-layout: fixed is what makes
+     a td's width (and so its ellipsis point) predictable regardless of
+     content. The org table (6 columns: flags/Name/Country/Type/LinkedIn/
+     JPL) and people table (8: flags/Name/Country/Role/Company/LinkedIn/BA/
+     JPL) diverge after column 3, so widths are set per table from there. */
   table.sortable-table { table-layout: fixed; }
   table.sortable-table th, table.sortable-table td {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -262,23 +264,31 @@
   table.sortable-table th:nth-child(1), table.sortable-table td:nth-child(1) { width: 42px; overflow: visible; text-overflow: clip; }
   table.sortable-table th:nth-child(2) { width: 30%; }
   table.sortable-table th:nth-child(3) { width: 18%; }
-  table.sortable-table th:nth-child(4) { width: 20%; }
-  table.sortable-table th:nth-child(5) { width: 17%; }
-  table.sortable-table th:nth-child(6) { width: 10%; }
-  /* peopleTable has one extra column (BA, before JPL) the org table
-     doesn't - override the last two columns' widths specifically, ID
-     selectors beat the class rules above regardless of source order. */
-  #peopleTable th:nth-child(6) { width: 8%; }
-  #peopleTable th:nth-child(7) { width: 10%; }
-  /* JPL (org: 6th column, people: 7th) and BA (people: 6th) hold only an
+  #orgTable th:nth-child(4) { width: 20%; }
+  #orgTable th:nth-child(5) { width: 17%; }
+  #orgTable th:nth-child(6) { width: 10%; }
+  #peopleTable th:nth-child(2) { width: 25%; }
+  #peopleTable th:nth-child(3) { width: 9%; }
+  #peopleTable th:nth-child(4) { width: 18%; }
+  #peopleTable th:nth-child(5) { width: 18%; }
+  #peopleTable th:nth-child(6) { width: 9%; }
+  #peopleTable th:nth-child(7) { width: 7%; }
+  #peopleTable th:nth-child(8) { width: 7%; }
+  /* JPL (org: 6th column, people: 8th) and BA (people: 7th) hold only an
      icon/checkbox, not text - center the header over them too, not just
      the content, so they actually line up. */
   #orgTable th:nth-child(6), #orgTable td:nth-child(6),
-  #peopleTable th:nth-child(6), #peopleTable td:nth-child(6),
-  #peopleTable th:nth-child(7), #peopleTable td:nth-child(7) {
+  #peopleTable th:nth-child(7), #peopleTable td:nth-child(7),
+  #peopleTable th:nth-child(8), #peopleTable td:nth-child(8) {
     text-align: center;
   }
   .ba-cell input[type="checkbox"] { vertical-align: middle; cursor: pointer; }
+  /* Company is only meaningful in the global "all people" list - in a
+     "People at <org>" view every row is that same org, so the whole column
+     (not just its cells) is hidden rather than left blank - see the
+     hide-company class toggled in renderPeopleTableBody. */
+  #peopleTable.hide-company .col-company { display: none; }
+  #peopleTable.hide-company th:nth-child(4) { width: 36%; }  /* Role absorbs Company's freed width */
   .li-meta { font-size: 10.5px; color: #8a877e; }
   .career-link { color: #8a5a2b; text-decoration: none; }
   .career-link:hover { text-decoration: underline; }
@@ -526,6 +536,7 @@
                 <th data-sort="full_name">Name <span class="sort-arrow"></span></th>
                 <th data-sort="country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="title">Role <span class="sort-arrow"></span></th>
+                <th class="col-company">Company</th>
                 <th>LinkedIn</th>
                 <th title="Business angel">BA</th>
                 <th title="Connected to a flagged user">JPL</th>
@@ -648,6 +659,88 @@ const ORG_TYPE_LABEL = {
   media_agency: "Media agency", exec_search: "Exec search", interim_agency: "Interim agency",
   group: "Group", employer: "Past employer",
 };
+
+// Country name (and common alias) -> short code, for the org/people list
+// Country columns - built once here rather than per-country manual entry.
+// Codes are 2-letter, mostly ISO 3166-1 alpha-2, EXCEPT the United Kingdom
+// uses "UK" (not the ISO "GB") to match how hq_country/country free text is
+// actually written in this app. Keys are lowercase; see countryCodeFromName.
+const COUNTRY_CODES = {
+  "afghanistan": "AF", "albania": "AL", "algeria": "DZ", "andorra": "AD", "angola": "AO",
+  "antigua and barbuda": "AG", "antigua": "AG", "argentina": "AR", "armenia": "AM", "australia": "AU",
+  "austria": "AT", "azerbaijan": "AZ", "bahamas": "BS", "bahrain": "BH", "bangladesh": "BD",
+  "barbados": "BB", "belarus": "BY", "belgium": "BE", "belize": "BZ", "benin": "BJ",
+  "bhutan": "BT", "bolivia": "BO", "bosnia and herzegovina": "BA", "bosnia": "BA", "botswana": "BW",
+  "brazil": "BR", "brunei": "BN", "bulgaria": "BG", "burkina faso": "BF", "burundi": "BI",
+  "cambodia": "KH", "cameroon": "CM", "canada": "CA", "cape verde": "CV", "cabo verde": "CV",
+  "central african republic": "CF", "chad": "TD", "chile": "CL", "china": "CN", "colombia": "CO",
+  "comoros": "KM", "congo": "CG", "republic of congo": "CG", "congo-brazzaville": "CG",
+  "democratic republic of congo": "CD", "dr congo": "CD", "drc": "CD", "congo-kinshasa": "CD",
+  "democratic republic of the congo": "CD", "costa rica": "CR", "ivory coast": "CI", "cote d'ivoire": "CI",
+  "côte d'ivoire": "CI", "croatia": "HR", "cuba": "CU", "cyprus": "CY", "czech republic": "CZ",
+  "czechia": "CZ", "denmark": "DK", "djibouti": "DJ", "dominica": "DM", "dominican republic": "DO",
+  "ecuador": "EC", "egypt": "EG", "el salvador": "SV", "equatorial guinea": "GQ", "eritrea": "ER",
+  "estonia": "EE", "eswatini": "SZ", "swaziland": "SZ", "ethiopia": "ET", "fiji": "FJ",
+  "finland": "FI", "france": "FR", "gabon": "GA", "gambia": "GM", "georgia": "GE",
+  "germany": "DE", "ghana": "GH", "greece": "GR", "grenada": "GD", "guatemala": "GT",
+  "guinea": "GN", "guinea-bissau": "GW", "guyana": "GY", "haiti": "HT", "honduras": "HN",
+  "hong kong": "HK", "hungary": "HU", "iceland": "IS", "india": "IN", "indonesia": "ID",
+  "iran": "IR", "iraq": "IQ", "ireland": "IE", "republic of ireland": "IE", "israel": "IL",
+  "italy": "IT", "jamaica": "JM", "japan": "JP", "jordan": "JO", "kazakhstan": "KZ",
+  "kenya": "KE", "kiribati": "KI", "kosovo": "XK", "kuwait": "KW", "kyrgyzstan": "KG",
+  "laos": "LA", "latvia": "LV", "lebanon": "LB", "lesotho": "LS", "liberia": "LR",
+  "libya": "LY", "liechtenstein": "LI", "lithuania": "LT", "luxembourg": "LU", "macau": "MO",
+  "macao": "MO", "madagascar": "MG", "malawi": "MW", "malaysia": "MY", "maldives": "MV",
+  "mali": "ML", "malta": "MT", "marshall islands": "MH", "mauritania": "MR", "mauritius": "MU",
+  "mexico": "MX", "micronesia": "FM", "moldova": "MD", "monaco": "MC", "mongolia": "MN",
+  "montenegro": "ME", "morocco": "MA", "mozambique": "MZ", "myanmar": "MM", "burma": "MM",
+  "namibia": "NA", "nauru": "NR", "nepal": "NP", "netherlands": "NL", "holland": "NL",
+  "the netherlands": "NL", "new zealand": "NZ", "nicaragua": "NI", "niger": "NE", "nigeria": "NG",
+  "north korea": "KP", "north macedonia": "MK", "macedonia": "MK", "norway": "NO", "oman": "OM",
+  "pakistan": "PK", "palau": "PW", "palestine": "PS", "palestinian territories": "PS", "panama": "PA",
+  "papua new guinea": "PG", "paraguay": "PY", "peru": "PE", "philippines": "PH", "poland": "PL",
+  "portugal": "PT", "qatar": "QA", "romania": "RO", "russia": "RU", "russian federation": "RU",
+  "rwanda": "RW", "saint kitts and nevis": "KN", "saint lucia": "LC", "saint vincent and the grenadines": "VC",
+  "samoa": "WS", "san marino": "SM", "sao tome and principe": "ST", "são tomé and príncipe": "ST",
+  "saudi arabia": "SA", "senegal": "SN", "serbia": "RS", "seychelles": "SC", "sierra leone": "SL",
+  "singapore": "SG", "slovakia": "SK", "slovenia": "SI", "solomon islands": "SB", "somalia": "SO",
+  "south africa": "ZA", "south korea": "KR", "korea": "KR", "republic of korea": "KR", "south sudan": "SS",
+  "spain": "ES", "sri lanka": "LK", "sudan": "SD", "suriname": "SR", "sweden": "SE",
+  "switzerland": "CH", "syria": "SY", "taiwan": "TW", "tajikistan": "TJ", "tanzania": "TZ",
+  "thailand": "TH", "timor-leste": "TL", "east timor": "TL", "togo": "TG", "tonga": "TO",
+  "trinidad and tobago": "TT", "tunisia": "TN", "turkey": "TR", "turkiye": "TR", "türkiye": "TR",
+  "turkmenistan": "TM", "tuvalu": "TV", "uganda": "UG", "ukraine": "UA", "united arab emirates": "AE",
+  "uae": "AE", "united kingdom": "UK", "uk": "UK", "great britain": "UK", "britain": "UK",
+  "england": "UK", "scotland": "UK", "wales": "UK", "northern ireland": "UK", "gb": "UK",
+  "united states": "US", "united states of america": "US", "usa": "US", "us": "US",
+  "uruguay": "UY", "uzbekistan": "UZ", "vanuatu": "VU", "vatican city": "VA", "vatican": "VA",
+  "holy see": "VA", "venezuela": "VE", "vietnam": "VN", "viet nam": "VN", "yemen": "YE",
+  "zambia": "ZM", "zimbabwe": "ZW",
+};
+
+// Looks up a free-text country name against COUNTRY_CODES - either the
+// whole string ("France") or, since hq_country/country is often "City,
+// Country" ("Paris, France"), the part after the last comma. Case/period-
+// insensitive. Returns null (never the input itself) when nothing matches,
+// so callers can decide their own fallback.
+function countryCodeFromName(text) {
+  if (!text) return null;
+  const candidates = [text, text.split(",").pop()]
+    .map(s => s.trim().toLowerCase().replace(/\./g, ""))
+    .filter(Boolean);
+  for (const c of candidates) {
+    if (COUNTRY_CODES[c]) return COUNTRY_CODES[c];
+  }
+  return null;
+}
+
+// The org/people list Country column: the manually entered country_code if
+// there is one, else a best-effort code looked up from the free-text
+// hq_country/country field, else that free text as a last resort (still
+// better than a blank cell for a country the lookup doesn't recognize).
+function countryCellFor(entity, freeText) {
+  return entity.country_code || countryCodeFromName(freeText) || freeText || null;
+}
 
 let orgListCache = [];
 let orgViewCache = [];   // currently filtered+sorted org list (what's actually rendered)
@@ -874,7 +967,7 @@ function renderOrgList(orgs) {
     <tr data-id="${o.id}">
       ${flagButtonsHtml(o)}
       <td class="li-name">${o.name}</td>
-      <td>${o.country_code || o.hq_country || '<span class="none">—</span>'}</td>
+      <td>${countryCellFor(o, o.hq_country) || '<span class="none">—</span>'}</td>
       <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
       <td>${linkedinCellFor(o)}</td>
       <td>${connectedCellHtml(o)}</td>
@@ -1788,27 +1881,38 @@ function groupPeopleByPerson(items) {
   return groups;
 }
 
-// The Role column's cell: a single role renders exactly as before; several
-// roles join with " · ", each carrying its own "ex" tag and (in the global
-// list, where the org isn't already implied by context) its own org name.
+// The Role column's cell: a single role renders as before; several roles
+// stack one below the other, each with its own "ex" tag - row for row, the
+// same stacking as companyCellHtml below, so a role and its company line up.
 function roleCellHtml(p) {
   if (!p.roles || p.roles.length <= 1) {
-    return `${exTagHtml(p)}${p.title || '<span class="none">—</span>'}${currentPeopleMode === "global" && p.organization ? `<div class="li-meta">${p.organization.name}</div>` : ""}`;
+    return `${exTagHtml(p)}${p.title || '<span class="none">—</span>'}`;
   }
-  return p.roles.map(r => {
-    const org = currentPeopleMode === "global" && r.organization ? ` – ${r.organization.name}` : "";
-    return `${exTagHtml(r)}${r.title || "—"}${org}`;
-  }).join(" · ");
+  return p.roles.map(r => `<div>${exTagHtml(r)}${r.title || "—"}</div>`).join("");
 }
 
-// Plain-text version of the same multi-role list, for a `title` attribute -
-// the cell itself gets ellipsis-truncated (table.sortable-table), so this is
-// how the full set of roles stays reachable on hover.
+// Plain-text version of the same role list, for a `title` attribute - each
+// line gets ellipsis-truncated (table.sortable-table), so this is how the
+// full set of roles stays reachable on hover.
 function roleCellTitle(p) {
-  return p.roles.map(r => {
-    const org = currentPeopleMode === "global" && r.organization ? ` – ${r.organization.name}` : "";
-    return `${r.is_current === false ? "ex " : ""}${r.title || "—"}${org}`;
-  }).join(" · ").replace(/"/g, "&quot;");
+  return p.roles.map(r => `${r.is_current === false ? "ex " : ""}${r.title || "—"}`).join("\n").replace(/"/g, "&quot;");
+}
+
+// The Company column's cell, to the right of Role - blank in the org-
+// scoped list, since every row there is already that one org (named in the
+// "People at <org>" header, so repeating it per row would just be noise);
+// in the global list, one company per role, stacked to line up with
+// roleCellHtml's role lines above.
+function companyCellHtml(p) {
+  if (currentPeopleMode !== "global") return "";
+  if (!p.roles || p.roles.length <= 1) {
+    return p.organization ? p.organization.name : '<span class="none">—</span>';
+  }
+  return p.roles.map(r => `<div>${r.organization ? r.organization.name : "—"}</div>`).join("");
+}
+
+function companyCellTitle(p) {
+  return p.roles.map(r => r.organization ? r.organization.name : "—").join("\n").replace(/"/g, "&quot;");
 }
 
 let includePastRoles = false;  // "Include ex-employees" toggle next to the people search box
@@ -1908,6 +2012,9 @@ function renderPeopleList(items, mode) {
 function renderPeopleTableBody() {
   const listEl = document.getElementById("peopleList");
   const emptyEl = document.getElementById("emptyPeopleList");
+  // Company only means anything in the global "all people" list - hide the
+  // whole column, not just its cells, in a "People at <org>" view.
+  document.getElementById("peopleTable").classList.toggle("hide-company", currentPeopleMode !== "global");
   if (!currentPeopleItems.length) {
     listEl.innerHTML = "";
     emptyEl.textContent = currentPeopleMode === "global" ? "No matches." : "Select an organization, or search all people.";
@@ -1919,8 +2026,9 @@ function renderPeopleTableBody() {
     <tr data-id="${p.id}">
       ${flagButtonsHtml(p)}
       <td class="li-name">${p.full_name}</td>
-      <td>${p.country_code || p.country || '<span class="none">—</span>'}</td>
+      <td>${countryCellFor(p, p.country) || '<span class="none">—</span>'}</td>
       <td${p.roles && p.roles.length > 1 ? ` title="${roleCellTitle(p)}"` : ""}>${roleCellHtml(p)}</td>
+      <td class="col-company"${currentPeopleMode === "global" && p.roles && p.roles.length > 1 ? ` title="${companyCellTitle(p)}"` : ""}>${companyCellHtml(p)}</td>
       <td>${linkedinCellFor(p)}</td>
       <td class="ba-cell"><input type="checkbox" class="ba-checkbox"${p.is_ba ? " checked" : ""}></td>
       <td>${connectedCellHtml(p)}</td>
