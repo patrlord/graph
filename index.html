@@ -367,6 +367,7 @@
       </div>
       <div class="toggle-row" id="orgTogglesRow">
         <label class="list-toggle"><input type="checkbox" id="orgStarredOnlyToggle"> Starred only</label>
+        <label class="list-toggle"><input type="checkbox" id="orgJplOnlyToggle"> JPL only</label>
         <label class="list-toggle"><input type="checkbox" id="orgShowHiddenToggle"> Show hidden</label>
         <label class="list-toggle"><input type="checkbox" id="includeEmployersToggle"> Include past employers</label>
       </div>
@@ -523,6 +524,7 @@
       <div class="toggle-row" id="peopleTogglesRow">
         <label class="list-toggle"><input type="checkbox" id="peopleStarredOnlyToggle"> Starred only</label>
         <label class="list-toggle"><input type="checkbox" id="peopleBAOnlyToggle"> BAs only</label>
+        <label class="list-toggle"><input type="checkbox" id="peopleJplOnlyToggle"> JPL only</label>
         <label class="list-toggle"><input type="checkbox" id="peopleShowHiddenToggle"> Show hidden</label>
         <label class="list-toggle"><input type="checkbox" id="includePastRolesToggle"> Include ex-employees</label>
       </div>
@@ -899,6 +901,7 @@ let orgSort = { field: "name", dir: "asc" };
 
 let includeEmployers = false;  // "Include past employers" toggle next to the org search box
 let orgStarredOnly = false;    // "Starred only" toggle
+let orgJplOnly = false;        // "JPL only" toggle - only orgs connected_to_user (the JPL column)
 let orgShowHidden = false;     // "Show hidden" toggle - hidden orgs are excluded unless this is checked
 
 async function loadOrgList() {
@@ -922,6 +925,7 @@ function applyOrgFilter() {
   // "starred only" doesn't bring hidden-but-starred orgs back into view.
   if (!orgShowHidden) filtered = filtered.filter(o => !o.is_hidden);
   if (orgStarredOnly) filtered = filtered.filter(o => o.is_starred);
+  if (orgJplOnly) filtered = filtered.filter(o => o.connected_to_user);
   filtered.sort(makeComparator(orgSort, (item, field) => field === "org_type" ? (ORG_TYPE_LABEL[item.org_type] || item.org_type) : undefined));
   orgViewCache = filtered;
   renderOrgList(filtered);
@@ -1918,6 +1922,7 @@ function companyCellTitle(p) {
 let includePastRoles = false;  // "Include ex-employees" toggle next to the people search box
 let peopleStarredOnly = false; // "Starred only" toggle
 let peopleBAOnly = false;      // "BAs only" toggle
+let peopleJplOnly = false;     // "JPL only" toggle - only people connected_to_user (the JPL column)
 let peopleShowHidden = false;  // "Show hidden" toggle - hidden people are excluded unless this is checked
 
 // Best-effort recency from free-text dates ("Jan 2024", "2018", ...) - the
@@ -2000,6 +2005,7 @@ function renderPeopleList(items, mode) {
   if (!peopleShowHidden) filtered = filtered.filter(item => !item.is_hidden);
   if (peopleStarredOnly) filtered = filtered.filter(item => item.is_starred);
   if (peopleBAOnly) filtered = filtered.filter(item => item.is_ba);
+  if (peopleJplOnly) filtered = filtered.filter(item => item.connected_to_user);
   currentPeopleItems = groupPeopleByPerson(filtered);
   wireSortHeaders("peopleTable", peopleSort, () => {
     currentPeopleItems.sort(peopleComparator());
@@ -2877,10 +2883,12 @@ document.getElementById("orgSearchInput").addEventListener("input", applyOrgFilt
 document.getElementById("orgSearchClearBtn").addEventListener("click", () => { document.getElementById("orgSearchInput").value = ""; applyOrgFilter(); });
 document.getElementById("includeEmployersToggle").addEventListener("change", e => { includeEmployers = e.target.checked; loadOrgList(); });
 document.getElementById("orgStarredOnlyToggle").addEventListener("change", e => { orgStarredOnly = e.target.checked; applyOrgFilter(); });
+document.getElementById("orgJplOnlyToggle").addEventListener("change", e => { orgJplOnly = e.target.checked; applyOrgFilter(); });
 document.getElementById("orgShowHiddenToggle").addEventListener("change", e => { orgShowHidden = e.target.checked; applyOrgFilter(); });
 document.getElementById("includePastRolesToggle").addEventListener("change", e => { includePastRoles = e.target.checked; applyPeopleFilter(); });
 document.getElementById("peopleStarredOnlyToggle").addEventListener("change", e => { peopleStarredOnly = e.target.checked; applyPeopleFilter(); });
 document.getElementById("peopleBAOnlyToggle").addEventListener("change", e => { peopleBAOnly = e.target.checked; applyPeopleFilter(); });
+document.getElementById("peopleJplOnlyToggle").addEventListener("change", e => { peopleJplOnly = e.target.checked; applyPeopleFilter(); });
 document.getElementById("peopleShowHiddenToggle").addEventListener("change", e => { peopleShowHidden = e.target.checked; applyPeopleFilter(); });
 document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
