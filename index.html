@@ -1172,11 +1172,14 @@ function updatePeopleHeader() {
 
 // fromPersonProfile is set when navigating here by clicking a company
 // inside a person's own detail pane (their current-role summary or Past
-// roles list): forces past roles on for this render (the person you just
-// clicked through from may only have a past role here - the default filter
-// would otherwise hide them from the very roster you're opening), and
-// leaves the person detail pane exactly as it was instead of clearing it -
-// you didn't ask to stop looking at them, just to see where they worked.
+// roles list), or when refreshing the same org's roster after an edit to
+// one of its people (enrich/delete/merge): leaves the person detail pane
+// exactly as it was instead of clearing it - you didn't ask to stop looking
+// at them, just to see where they worked (or the refresh has nothing to do
+// with what's in the pane). The roster itself still respects the "Include
+// ex-employees" checkbox as normal either way - even if the person you
+// clicked through from only worked here in the past, and so drops out of
+// the list you land on when that checkbox is off.
 async function selectOrg(id, fromPersonProfile) {
   const res = await api(`/organizations/${id}`);
   if (!res.ok) return;
@@ -1185,7 +1188,7 @@ async function selectOrg(id, fromPersonProfile) {
   renderOrgDetail(selectedOrg);
   highlightSelected("orgList", id);
   document.getElementById("peopleSearchInput").value = "";
-  renderPeopleList(selectedOrg.people, "org", fromPersonProfile);
+  renderPeopleList(selectedOrg.people, "org");
   updatePeopleHeader();
   if (!fromPersonProfile) {
     selectedPersonId = null;
@@ -1884,18 +1887,10 @@ function peopleComparator() {
   };
 }
 
-// forceIncludePast shows past roles for this one render regardless of the
-// checkbox - used when navigating to an org from within a person's own
-// profile (their Experience list), where hiding past roles could hide the
-// very person you clicked through from. It's a one-off override, not a
-// change to includePastRoles itself: the checkbox stays exactly as it was,
-// and the next normal render (search, Clear, a different org via the org
-// list) goes back to respecting it.
-function renderPeopleList(items, mode, forceIncludePast) {
+function renderPeopleList(items, mode) {
   currentPeopleMode = mode;
   const normalized = normalizePeopleItems(items, mode);
-  const showPast = forceIncludePast || includePastRoles;
-  let filtered = showPast ? normalized : normalized.filter(item => item.is_current !== false);
+  let filtered = includePastRoles ? normalized : normalized.filter(item => item.is_current !== false);
   // Hidden is an override, independent of "starred only" - same rule as
   // the organizations list (applyOrgFilter).
   if (!peopleShowHidden) filtered = filtered.filter(item => !item.is_hidden);
@@ -2175,9 +2170,9 @@ async function loadPersonCareerSections(person) {
       `</div>`;
     expBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
       e.preventDefault();
-      // Force past roles on for this one navigation - the person you just
-      // clicked through from only worked here in the past, so hiding past
-      // roles by default would hide them from the very list you're opening.
+      // The roster this opens still respects the "Include ex-employees"
+      // checkbox as normal - if it's off, the person you just clicked
+      // through from (who only worked here in the past) won't be in it.
       selectOrg(e.currentTarget.dataset.orgId, true);
     }));
   }
