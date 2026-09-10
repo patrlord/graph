@@ -1050,7 +1050,12 @@ async function toggleOrgFlag(org, field, btnEl) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Save failed");
     org[field] = data[field];
-    if (selectedOrg && selectedOrg.id === org.id) selectedOrg[field] = data[field];
+    if (selectedOrg && selectedOrg.id === org.id) {
+      selectedOrg[field] = data[field];
+      // Keep the detail-pane star in step with the list star (either can be
+      // the one clicked) - applyOrgFilter re-renders the list, not the pane.
+      if (field === "is_starred") syncDetailStar(document.getElementById("detOrgStarBtn"), data[field]);
+    }
     applyOrgFilter();
   } catch (err) {
     alert(err.message);
@@ -1072,14 +1077,29 @@ async function togglePersonFlag(person, field, btnEl) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Save failed");
     person[field] = data[field];
-    if (selectedPersonObj && selectedPersonObj.id === person.id) selectedPersonObj[field] = data[field];
-    const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
-    if (inOrgList) inOrgList.people[field] = data[field];
+    if (selectedPersonObj && selectedPersonObj.id === person.id) {
+      selectedPersonObj[field] = data[field];
+      // Keep the detail-pane star in step with the list star, both ways.
+      if (field === "is_starred") syncDetailStar(document.getElementById("detPersonStarBtn"), data[field]);
+    }
+    syncPersonInOrgList(person.id, field, data[field]);
     applyPeopleFilter();
   } catch (err) {
     alert(err.message);
   } finally {
     btnEl.disabled = false;
+  }
+}
+
+// selectedOrg.people has one row per membership, each with its OWN nested
+// .people object - so a person with several roles at this org appears more
+// than once, and every copy needs the new value. Updating just the first
+// (an earlier .find() bug) left a stale copy behind: if the updated one was
+// a past role the current-only filter then dropped, the surviving current
+// row still showed the old flag state.
+function syncPersonInOrgList(personId, field, value) {
+  for (const m of selectedOrg?.people || []) {
+    if (m.people && m.people.id === personId) m.people[field] = value;
   }
 }
 
@@ -1097,8 +1117,7 @@ async function togglePersonCheckbox(person, field, checkboxEl) {
     if (!res.ok) throw new Error(data.error || "Save failed");
     person[field] = data[field];
     if (selectedPersonObj && selectedPersonObj.id === person.id) selectedPersonObj[field] = data[field];
-    const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
-    if (inOrgList) inOrgList.people[field] = data[field];
+    syncPersonInOrgList(person.id, field, data[field]);
     applyPeopleFilter();
   } catch (err) {
     checkboxEl.checked = !newValue;
@@ -2914,14 +2933,12 @@ document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListV
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
 document.getElementById("orgEditBtn").addEventListener("click", enterOrgEditMode);
 document.getElementById("orgDeleteBtn").addEventListener("click", deleteSelectedOrg);
-document.getElementById("detOrgStarBtn").addEventListener("click", async e => {
+document.getElementById("detOrgStarBtn").addEventListener("click", e => {
   if (!selectedOrg) return;
-  // toggleOrgFlag writes back to the orgListCache row (so applyOrgFilter
-  // re-renders the list right) and to selectedOrg; pass the cache row when
-  // there is one so both stay in sync.
+  // Toggle via the orgListCache row when there is one so the list re-renders
+  // right; toggleOrgFlag itself keeps this detail-pane star in sync.
   const target = orgListCache.find(o => o.id === selectedOrg.id) || selectedOrg;
-  await toggleOrgFlag(target, "is_starred", e.currentTarget);
-  syncDetailStar(e.currentTarget, selectedOrg.is_starred);
+  toggleOrgFlag(target, "is_starred", e.currentTarget);
 });
 document.getElementById("orgMergeToggleBtn").addEventListener("click", () => {
   const form = document.getElementById("orgMergeForm");
@@ -2960,10 +2977,10 @@ document.getElementById("bulkPeopleStartBtn").addEventListener("click", startBul
 document.getElementById("personNewsSearchBtn").addEventListener("click", searchPersonNews);
 document.getElementById("personEditBtn").addEventListener("click", enterPersonEditMode);
 document.getElementById("personCancelBtn").addEventListener("click", exitPersonEditMode);
-document.getElementById("detPersonStarBtn").addEventListener("click", async e => {
+document.getElementById("detPersonStarBtn").addEventListener("click", e => {
   if (!selectedPersonObj) return;
-  await togglePersonFlag(selectedPersonObj, "is_starred", e.currentTarget);
-  syncDetailStar(e.currentTarget, selectedPersonObj.is_starred);
+  // togglePersonFlag keeps this detail-pane star and the list star in sync.
+  togglePersonFlag(selectedPersonObj, "is_starred", e.currentTarget);
 });
 document.getElementById("personEnrichBtn").addEventListener("click", enrichSelectedPerson);
 document.getElementById("personDeleteBtn").addEventListener("click", deleteSelectedPerson);
