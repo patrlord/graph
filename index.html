@@ -49,7 +49,7 @@
 
   .pane-divider { position: relative; }
   .pane-divider::after { content: ""; position: absolute; background: #e2e0dc; }
-  .pane-divider:hover::after, .pane-divider.dragging::after { background: #8a5a2b; }
+  .pane-divider:hover::after, .pane-divider.dragging::after { background: #2b5a8a; }
   #vDivider { grid-column: 2; grid-row: 1 / span 3; cursor: col-resize; }
   #vDivider::after { top: 0; bottom: 0; left: 50%; width: 1px; }
   #vDivider:hover::after, #vDivider.dragging::after { width: 2px; left: calc(50% - 1px); }
@@ -85,10 +85,10 @@
   }
   input[type=text] { font-size: 13px; padding: 7px 9px; border: 1px solid #d8d5cf; border-radius: 6px; }
   button {
-    font-size: 12.5px; padding: 6px 12px; border: 1px solid #8a5a2b; border-radius: 6px;
-    background: #8a5a2b; color: #fff; cursor: pointer; white-space: nowrap;
+    font-size: 12.5px; padding: 6px 12px; border: 1px solid #2b5a8a; border-radius: 6px;
+    background: #2b5a8a; color: #fff; cursor: pointer; white-space: nowrap;
   }
-  button:hover { background: #764a22; }
+  button:hover { background: #224a76; }
   button:disabled { opacity: .5; cursor: default; }
   button.secondary { background: #fbfaf8; color: #1c1c1c; border-color: #d8d5cf; }
   button.secondary:hover { background: #f0eee9; }
@@ -131,7 +131,7 @@
   .about-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .about-clamp.expanded { -webkit-line-clamp: unset; overflow: visible; }
   .about-more { position: absolute; right: 0; bottom: 0; padding-left: 24px; background: linear-gradient(to right, transparent, #fff 16px); }
-  .about-more a { color: #8a5a2b; text-decoration: none; font-size: 11.5px; background: #fff; }
+  .about-more a { color: #2b5a8a; text-decoration: none; font-size: 11.5px; background: #fff; }
   .about-more a:hover { text-decoration: underline; }
 
   .list-view, .add-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
@@ -166,12 +166,12 @@
   .bulk-results { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   .bulk-result-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 2px; font-size: 12.5px; border-bottom: 1px solid #f2f0ec; }
   .bulk-result-row.clickable { cursor: pointer; }
-  .bulk-result-row.clickable:hover { background: #fbf3ea; }
+  .bulk-result-row.clickable:hover { background: #eaf3fb; }
   .bulk-result-row:last-child { border-bottom: none; }
   .bulk-result-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bulk-status { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; flex: 0 0 auto; }
   .bulk-status.pending { background: #f0eee9; color: #8a877e; }
-  .bulk-status.working { background: #fdf0da; color: #8a5a2b; }
+  .bulk-status.working { background: #daf0fd; color: #2b5a8a; }
   .bulk-status.done { background: #e4f2e6; color: #2f7a3d; }
   .bulk-status.failed { background: #fdecec; color: #a33; }
 
@@ -202,10 +202,10 @@
   #detOrgSectors { margin-top: 12px; }
   .sector-tag {
     display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; margin: 2px 3px 2px 0;
-    background: #f5ebe0; color: #8a5a2b; border: 1px solid #ecd9c3;
+    background: #e0ebf5; color: #2b5a8a; border: 1px solid #c3d9ec;
   }
   .entity-links { font-size: 12px; margin-top: 6px; }
-  .entity-links a { color: #8a5a2b; text-decoration: none; margin-right: 12px; }
+  .entity-links a { color: #2b5a8a; text-decoration: none; margin-right: 12px; }
   .entity-links a:hover { text-decoration: underline; }
   .entity-desc { font-size: 12.5px; color: #444; margin-top: 8px; line-height: 1.5; }
   .investor-profile { font-size: 12px; color: #55524c; margin-top: 8px; line-height: 1.6; }
@@ -233,24 +233,24 @@
   .edit-field textarea { resize: vertical; }
   .input-with-link { display: flex; gap: 6px; align-items: center; }
   .input-with-link input { flex: 1; min-width: 0; }
-  a.open-link { flex: none; font-size: 13px; color: #8a5a2b; text-decoration: none; padding: 4px 2px; }
+  a.open-link { flex: none; font-size: 13px; color: #2b5a8a; text-decoration: none; padding: 4px 2px; }
   a.open-link:hover { text-decoration: underline; }
 
   table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12.5px; }
   th, td { text-align: left; padding: 6px 7px; border-bottom: 1px solid #eeece7; vertical-align: top; }
   th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: #8a877e; font-weight: 600; }
-  a.li-link { color: #8a5a2b; text-decoration: none; font-size: 11.5px; }
+  a.li-link { color: #2b5a8a; text-decoration: none; font-size: 11.5px; }
   a.li-link:hover { text-decoration: underline; }
   a.li-link-arrow { font-size: 14px; font-weight: 700; }
 
   .scroll-box table.sortable-table thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
   table.sortable-table th { cursor: pointer; user-select: none; white-space: nowrap; }
-  table.sortable-table th:hover { color: #8a5a2b; }
+  table.sortable-table th:hover { color: #2b5a8a; }
   table.sortable-table th .sort-arrow { font-size: 9px; margin-left: 2px; color: #b5b1a9; }
-  table.sortable-table th.sorted .sort-arrow { color: #8a5a2b; }
+  table.sortable-table th.sorted .sort-arrow { color: #2b5a8a; }
   table.sortable-table tbody tr { cursor: pointer; }
-  table.sortable-table tbody tr:hover { color: #8a5a2b; }
-  table.sortable-table tbody tr.selected { background: #fbf3ea; }
+  table.sortable-table tbody tr:hover { color: #2b5a8a; }
+  table.sortable-table tbody tr.selected { background: #eaf3fb; }
   table.sortable-table td.li-name { font-weight: 500; color: #1c1c1c; }
   /* No wrapping anywhere in these lists - long content truncates with an
      ellipsis instead of growing the row taller (a stacked multi-role cell
@@ -295,16 +295,16 @@
   #peopleTable.hide-company .col-company { display: none; }
   #peopleTable.hide-company th:nth-child(4) { width: 36%; }  /* Role absorbs Company's freed width */
   .li-meta { font-size: 10.5px; color: #8a877e; }
-  .career-link { color: #8a5a2b; text-decoration: none; }
+  .career-link { color: #2b5a8a; text-decoration: none; }
   .career-link:hover { text-decoration: underline; }
-  .people-scope-org { color: #8a5a2b; font-weight: 700; }
+  .people-scope-org { color: #2b5a8a; font-weight: 700; }
   .people-scope-clear {
     display: inline-flex; align-items: center; justify-content: center;
     box-sizing: border-box; width: 15px; height: 15px; padding: 0; margin-left: 6px;
-    border: 1px solid #d9c2a3; border-radius: 3px;
-    color: #8a5a2b; background: #fbf3ea; font-size: 10.5px; line-height: 1; cursor: pointer; vertical-align: middle;
+    border: 1px solid #a3c2d9; border-radius: 3px;
+    color: #2b5a8a; background: #eaf3fb; font-size: 10.5px; line-height: 1; cursor: pointer; vertical-align: middle;
   }
-  .people-scope-clear:hover { background: #f0dfc8; }
+  .people-scope-clear:hover { background: #c8dff0; }
   .empty-note { font-size: 12px; color: #8a877e; padding: 4px 2px; }
 
   .news-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e0dc; }
@@ -1285,7 +1285,7 @@ function highlightSelected(listId, id) {
 function updatePeopleHeader() {
   const titleEl = document.getElementById("peopleListTitle");
   if (selectedOrg && !peopleForceGlobal) {
-    // Same bold-brown treatment as an org's name in the person pane
+    // Same bold-blue treatment as an org's name in the person pane
     // (.career-link's color, just not a link here - there's nothing to
     // navigate to, this org is already what's shown above). The × returns
     // to the full people list without touching the search box - unlike
@@ -1468,6 +1468,13 @@ function renderOrgDetail(org) {
   document.getElementById("orgNewsList").innerHTML = "";
   document.getElementById("enrichOrgViewStatus").textContent = "";
   document.getElementById("enrichOrgViewStatus").className = "status-line";
+  // enrichOrgBtnView is the one shared button behind whichever org this
+  // pane is showing - a background enrich for a DIFFERENT org (one the
+  // user has since navigated away from) leaves it disabled forever
+  // otherwise, since that run's own isCurrent() check never lets it flip
+  // back to false. Always re-enable it here: whoever's now on screen gets
+  // a fresh, clickable button, regardless of what's still running elsewhere.
+  document.getElementById("enrichOrgBtnView").disabled = false;
   toggleOrgMergeForm(false);
   exitOrgEditMode();
 }
@@ -1740,73 +1747,104 @@ async function mergeSelectedOrg() {
 // selectOrg/renderOrgDetail calls along the way each reset the status line
 // themselves - every status.textContent below is deliberately the next
 // line after one of those, not before, so it isn't immediately clobbered.
+// Runs entirely against orgId (captured now) and the orgListCache row for
+// it - never the live selectedOrg, which may point at a different org by
+// the time an await below resolves if the user has since navigated
+// elsewhere. Status text, button state, and any detail-pane repaint only
+// happen while this org is still the one on screen (isCurrent) - a run for
+// an org the user has navigated away from still saves its results (into
+// org, the same object orgListCache renders from), it just does so
+// quietly; they're there - list row included - next time that org is open.
+// A "N options" (multiple LinkedIn candidates, see applyOrgFindResult's
+// caller below) shows up as a badge in the list either way, exactly like a
+// plain row Find button, so there's nothing to resolve immediately.
 async function enrichSelectedOrg() {
   if (!selectedOrg) return;
+  const orgId = selectedOrg.id;
+  const org = orgListCache.find(o => o.id === orgId) || selectedOrg;
   const btn = document.getElementById("enrichOrgBtnView");
   const status = document.getElementById("enrichOrgViewStatus");
-  btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…";
+  const isCurrent = () => selectedOrg && selectedOrg.id === orgId;
+  const showOnScreen = () => { if (isCurrent()) { Object.assign(selectedOrg, org); renderOrgDetail(selectedOrg); } };
+  if (isCurrent()) { btn.disabled = true; status.className = "status-line"; status.textContent = "Researching…"; }
   try {
     const res = await apiWithRetry("/research", {
       method: "POST",
-      body: JSON.stringify({ name: selectedOrg.name, linkedin_url: selectedOrg.linkedin_url || "" }),
+      body: JSON.stringify({ name: org.name, linkedin_url: org.linkedin_url || "" }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Research failed");
     const saveRes = await apiWithRetry("/organizations", { method: "POST", body: JSON.stringify(data) });
     const saveData = await saveRes.json();
     if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
-    await selectOrg(saveData.organization.id);  // resets status via renderOrgDetail
-    loadOrgList();
+    if (saveData.organization.id !== orgId) {
+      // Research matched this name to a different, already-existing org
+      // row (a name collision) - not this org anymore, so there's nothing
+      // more to chain here. That other org's list row picks up the update;
+      // this one's pane (if still open) is left exactly as it was, not
+      // jumped to the other org.
+      loadOrgList();
+      if (isCurrent()) status.textContent = `Matched an existing different organization ("${saveData.organization.name}") by name instead - nothing changed here.`;
+      return;
+    }
+    Object.assign(org, saveData.organization);
+    showOnScreen();
+    if (isCurrent()) status.textContent = "Researching…";
 
-    if (!selectedOrg.linkedin_url) {
-      status.textContent = "Finding LinkedIn URL…";
+    if (!org.linkedin_url) {
+      if (isCurrent()) status.textContent = "Finding LinkedIn URL…";
       const findRes = await api("/organizations/find-linkedin", {
         method: "POST",
         body: JSON.stringify({
-          org_id: selectedOrg.id, name: selectedOrg.name,
-          website_url: selectedOrg.website_url || "", country: selectedOrg.hq_country || "",
+          org_id: org.id, name: org.name,
+          website_url: org.website_url || "", country: org.hq_country || "",
         }),
       });
       const findData = await findRes.json();
       if (findRes.ok && findData.linkedin_url) {
-        applyOrgFindResult(selectedOrg, findData);  // renderOrgDetail below shows the duplicate/name-clash warning banners if set
-        renderOrgDetail(selectedOrg);  // resets status again
-        updatePeopleHeader();  // in case a rename changed "People at <org>"
-        loadOrgList();
+        applyOrgFindResult(org, findData);  // renderOrgDetail below shows the duplicate/name-clash warning banners if set
+        showOnScreen();
+        if (isCurrent()) updatePeopleHeader();  // in case a rename changed "People at <org>"
       } else if (findRes.ok && findData.candidates?.length) {
         // Couldn't confidently tell same/similar-named companies apart -
-        // nothing saved. Show the picker (renderOrgDetail) and stop the
-        // chain here rather than skipping straight to "no URL found".
-        selectedOrg.li_find_candidates = findData.candidates;
-        renderOrgDetail(selectedOrg);
-        status.textContent = `Researched — found ${findData.candidates.length} possible LinkedIn ${findData.candidates.length > 1 ? "pages" : "page"} for this company but couldn't confirm which; pick one above.`;
+        // nothing saved server-side. Left as a "N options" badge on the
+        // list row (applyOrgFilter below); the picker itself only shows
+        // in the detail pane, whenever this org is next open.
+        org.li_find_candidates = findData.candidates;
+        showOnScreen();
+        if (isCurrent()) {
+          status.textContent = `Researched — found ${findData.candidates.length} possible LinkedIn ${findData.candidates.length > 1 ? "pages" : "page"} for this company but couldn't confirm which; pick one above.`;
+        }
+        applyOrgFilter();
         return;
       }
     }
 
-    if (selectedOrg.linkedin_url) {
-      status.textContent = "Fetching LinkedIn profile…";
-      const apifyRes = await api(`/organizations/${selectedOrg.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
+    if (org.linkedin_url) {
+      if (isCurrent()) status.textContent = "Fetching LinkedIn profile…";
+      const apifyRes = await api(`/organizations/${org.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
       const apifyData = await apifyRes.json();
       if (!apifyRes.ok) throw new Error(`Researched, but the LinkedIn profile fetch failed: ${apifyData.error || "unknown error"}`);
       const { name_clash, ...fields } = apifyData;
-      Object.assign(selectedOrg, fields);
-      renderOrgDetail(selectedOrg);  // resets status once more
-      updatePeopleHeader();  // in case the rename changed "People at <org>"
-      loadOrgList();  // name (and/or other list-visible fields) may have changed
-      if (name_clash) {
-        status.className = "status-line error";
-        status.textContent = `LinkedIn calls this "${name_clash}", but that name is already used by another org, so the name wasn't changed.`;
-      } else {
-        status.textContent = formatFetchedDate(selectedOrg.li_profile_fetched_at);
+      Object.assign(org, fields);
+      showOnScreen();
+      if (isCurrent()) {
+        updatePeopleHeader();  // in case the rename changed "People at <org>"
+        if (name_clash) {
+          status.className = "status-line error";
+          status.textContent = `LinkedIn calls this "${name_clash}", but that name is already used by another org, so the name wasn't changed.`;
+        } else {
+          status.textContent = formatFetchedDate(org.li_profile_fetched_at);
+        }
       }
-    } else {
+    } else if (isCurrent()) {
       status.textContent = "Researched — no LinkedIn URL found, so its LinkedIn profile couldn't be fetched.";
     }
+    applyOrgFilter();  // name (and/or other list-visible fields) may have changed
   } catch (err) {
-    status.className = "status-line error"; status.textContent = err.message;
+    if (isCurrent()) { status.className = "status-line error"; status.textContent = err.message; }
   } finally {
-    btn.disabled = false;
+    if (isCurrent()) btn.disabled = false;
   }
 }
 
@@ -1907,6 +1945,16 @@ function groupPeopleByPerson(items) {
       groups.push(group);
     }
     group.roles.push(role);
+  }
+  // Current roles first, then past ones newest to oldest - roleRecencyYear
+  // is the same rough (year-only) recency the "ex" tag and the full-list
+  // sort already use elsewhere, so this lines up with both.
+  for (const group of groups) {
+    group.roles.sort((a, b) => {
+      const currentA = a.is_current !== false, currentB = b.is_current !== false;
+      if (currentA !== currentB) return currentA ? -1 : 1;
+      return roleRecencyYear(b) - roleRecencyYear(a);
+    });
   }
   for (const group of groups) {
     const primary = group.roles.find(r => r.is_current !== false) || group.roles[0];
@@ -2128,11 +2176,11 @@ async function runFindLinkedin(person, btnEl) {
       if (data.renamed_to) person.full_name = data.renamed_to;
       person.linkedin_url = data.linkedin_url;
       if (data.title) person.title = data.title;
-      const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
-      if (membership) {
-        if (data.renamed_to) membership.people.full_name = data.renamed_to;
-        membership.people.linkedin_url = data.linkedin_url;
-        if (data.title) membership.title = data.title;
+      if (data.renamed_to) syncPersonInOrgList(person.id, "full_name", data.renamed_to);
+      syncPersonInOrgList(person.id, "linkedin_url", data.linkedin_url);
+      if (data.title) {
+        const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
+        if (membership) membership.title = data.title;
       }
       renderPeopleTableBody();
       if (data.observed_company && companyName && !data.observed_company.toLowerCase().includes(companyName.toLowerCase())) {
@@ -2158,7 +2206,11 @@ async function runFindLinkedin(person, btnEl) {
 async function refreshAfterPersonMerge(survivingId, oldId) {
   const wasSelected = selectedPersonId === oldId;
   if (currentPeopleMode === "org" && selectedOrg) {
-    await selectOrg(selectedOrg.id);
+    // true: leave the person pane alone here - it's re-shown explicitly
+    // below (as the survivor) only if the merged-away person was the one
+    // showing; otherwise this merge (likely a background find/enrich
+    // outcome) has nothing to do with whoever else is currently open.
+    await selectOrg(selectedOrg.id, true);
   } else {
     await applyPeopleFilter();
   }
@@ -2369,22 +2421,40 @@ function updatePersonEnrichStatus(person) {
   const status = document.getElementById("personEnrichStatus");
   status.className = "status-line";
   status.textContent = formatFetchedDate(person.li_profile_fetched_at);
+  // personEnrichBtn is the one shared button behind whichever person this
+  // pane is showing - a background enrich for someone else (a person the
+  // user has since navigated away from) leaves it disabled forever
+  // otherwise, since that run's own isCurrent() check never lets it flip
+  // back to false. Always re-enable it here: whoever's now on screen gets
+  // a fresh, clickable button, regardless of what's still running elsewhere.
+  document.getElementById("personEnrichBtn").disabled = false;
 }
 
 // One button, same two-step chain as the org detail pane's Enrich: find a
 // LinkedIn URL if there isn't one already, then fetch the full profile once
-// there is one. Every status.textContent below is deliberately the next
-// line after a showPersonDetail/selectOrg/applyPeopleFilter call, never
-// before - each of those resets the status line via updatePersonEnrichStatus,
-// same discipline enrichSelectedOrg follows.
+// there is one. Reads/writes `person` (captured now) throughout, never the
+// live selectedPersonObj, which may point at someone else by the time an
+// await below resolves if the user has since navigated elsewhere. Status
+// text, button state, and any person-pane repaint only happen while this
+// person is still the one on screen (isCurrent) - a run for someone the
+// user has navigated away from still saves its results, just quietly;
+// they're there next time that person is opened. Every status.textContent
+// below is deliberately the next line after a showPersonDetail/selectOrg/
+// applyPeopleFilter call, never before - each of those resets the status
+// line via updatePersonEnrichStatus, same discipline enrichSelectedOrg
+// follows.
 async function enrichSelectedPerson() {
   const person = selectedPersonObj;
   if (!person) return;
+  const personId = person.id;
   const btn = document.getElementById("personEnrichBtn");
   const status = document.getElementById("personEnrichStatus");
-  btn.disabled = true;
-  status.className = "status-line";
-  status.textContent = person.linkedin_url ? "Fetching LinkedIn profile…" : "Finding LinkedIn URL…";
+  const isCurrent = () => selectedPersonObj && selectedPersonObj.id === personId;
+  if (isCurrent()) {
+    btn.disabled = true;
+    status.className = "status-line";
+    status.textContent = person.linkedin_url ? "Fetching LinkedIn profile…" : "Finding LinkedIn URL…";
+  }
   try {
     if (!person.linkedin_url) {
       const companyName = personCompanyName(person);
@@ -2402,27 +2472,28 @@ async function enrichSelectedPerson() {
         // Same real person as an existing different record - person.id no
         // longer exists server-side, it was merged away. Nothing left to
         // fetch under this identity; refreshAfterPersonMerge re-selects
-        // the survivor if this person was the one showing.
+        // the survivor only if this person was still the one showing.
         await refreshAfterPersonMerge(findData.merged_into_person_id, person.id);
         return;
       }
       if (findData.renamed_to) person.full_name = findData.renamed_to;
       if (!findData.linkedin_url) {
-        showPersonDetail(person);  // resets status - picks up a renamed_to name, if any
-        status.textContent = "No LinkedIn URL found, so a profile couldn't be fetched.";
+        if (isCurrent()) {
+          showPersonDetail(person);  // resets status - picks up a renamed_to name, if any
+          status.textContent = "No LinkedIn URL found, so a profile couldn't be fetched.";
+        }
         return;
       }
       person.linkedin_url = findData.linkedin_url;
       if (findData.title) person.title = findData.title;
-      const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
-      if (membership) {
-        if (findData.renamed_to) membership.people.full_name = findData.renamed_to;
-        membership.people.linkedin_url = findData.linkedin_url;
-        if (findData.title) membership.title = findData.title;
+      if (findData.renamed_to) syncPersonInOrgList(person.id, "full_name", findData.renamed_to);
+      syncPersonInOrgList(person.id, "linkedin_url", findData.linkedin_url);
+      if (findData.title) {
+        const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
+        if (membership) membership.title = findData.title;
       }
       renderPeopleTableBody();
-      showPersonDetail(person);  // resets status
-      status.textContent = "Fetching LinkedIn profile…";
+      if (isCurrent()) { showPersonDetail(person); status.textContent = "Fetching LinkedIn profile…"; }
     }
 
     const res = await api(`/people/${person.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
@@ -2434,16 +2505,19 @@ async function enrichSelectedPerson() {
     // the people-table row, with no title/organization to hand-patch cached
     // list rows with, so reload whichever people list could be showing them
     // from the backend instead. currentPeopleItems isn't otherwise touched.
+    // (selectOrg/applyPeopleFilter here only refresh data within whatever
+    // scope is already showing - true keeps selectOrg from also touching
+    // the person pane, which is handled separately below.)
     if (currentPeopleMode === "org" && selectedOrg) {
-      await selectOrg(selectedOrg.id, true);  // true: leave the person detail pane alone
+      await selectOrg(selectedOrg.id, true);
     } else {
       await applyPeopleFilter();
     }
-    showPersonDetail(person);  // also restores the date via updatePersonEnrichStatus
+    if (isCurrent()) showPersonDetail(person);  // also restores the date via updatePersonEnrichStatus
   } catch (err) {
-    status.className = "status-line error"; status.textContent = err.message;
+    if (isCurrent()) { status.className = "status-line error"; status.textContent = err.message; }
   } finally {
-    btn.disabled = false;
+    if (isCurrent()) btn.disabled = false;
   }
 }
 
@@ -2634,10 +2708,13 @@ async function savePersonEdits() {
       }
     }
 
-    // Keep the row(s) behind this person in sync without a full reload.
+    // Keep the row(s) behind this person in sync without a full reload -
+    // every membership row's nested .people needs the person-level fields
+    // (someone with several roles at this org has more than one such row);
+    // title/focus stay scoped to the one membership this edit form was for.
+    for (const field of ["full_name", "country", "linkedin_url", "is_user"]) syncPersonInOrgList(person.id, field, person[field]);
     const inOrgList = selectedOrg?.people?.find(m => m.people.id === person.id);
     if (inOrgList) {
-      Object.assign(inOrgList.people, { full_name: person.full_name, country: person.country, linkedin_url: person.linkedin_url, is_user: person.is_user });
       inOrgList.title = person.title;
       inOrgList.focus = person.focus;
     }
