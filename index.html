@@ -123,6 +123,14 @@
     display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .02em; color: #fff;
     background: #3b6ea5; padding: 1px 5px; border-radius: 4px; margin-right: 5px; vertical-align: middle;
   }
+  /* The Role and Company columns stack one line per role (roleCellHtml/
+     companyCellHtml) and need to line up row for row - but a line carrying
+     an .ex-tag badge (inline-block + vertical-align: middle) naturally
+     renders a touch taller than a plain text line, and that difference
+     compounds going down several lines. A fixed line-height, the same on
+     every line in both columns whether or not it has a badge, pins every
+     line to the same height so the two columns can't drift apart. */
+  .stack-line { line-height: 20px; }
 
   .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
   .status-line.error { color: #a33; }
@@ -1976,7 +1984,7 @@ function roleCellHtml(p) {
   if (!p.roles || p.roles.length <= 1) {
     return `${exTagHtml(p)}${p.title || '<span class="none">—</span>'}`;
   }
-  return p.roles.map(r => `<div>${exTagHtml(r)}${r.title || "—"}</div>`).join("");
+  return p.roles.map(r => `<div class="stack-line">${exTagHtml(r)}${r.title || "—"}</div>`).join("");
 }
 
 // Plain-text version of the same role list, for a `title` attribute - each
@@ -1996,7 +2004,7 @@ function companyCellHtml(p) {
   if (!p.roles || p.roles.length <= 1) {
     return p.organization ? p.organization.name : '<span class="none">—</span>';
   }
-  return p.roles.map(r => `<div>${r.organization ? r.organization.name : "—"}</div>`).join("");
+  return p.roles.map(r => `<div class="stack-line">${r.organization ? r.organization.name : "—"}</div>`).join("");
 }
 
 function companyCellTitle(p) {
