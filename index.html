@@ -125,12 +125,15 @@
   }
   /* The Role and Company columns stack one line per role (roleCellHtml/
      companyCellHtml) and need to line up row for row - but a line carrying
-     an .ex-tag badge (inline-block + vertical-align: middle) naturally
-     renders a touch taller than a plain text line, and that difference
-     compounds going down several lines. A fixed line-height, the same on
-     every line in both columns whether or not it has a badge, pins every
-     line to the same height so the two columns can't drift apart. */
-  .stack-line { line-height: 20px; }
+     an .ex-tag badge mixes two font sizes (the 9px badge, the normal cell
+     text) on one line, and a line-height alone can't pin that to a fixed
+     height: text baseline layout still leaves the taller inline content
+     free to grow the line past it, so a badge line ends up taller than a
+     plain one regardless, and that difference compounds going down several
+     lines. flex + a fixed height sidesteps baseline layout entirely -
+     every line, badge or not, is exactly this tall, so the two columns
+     can't drift apart. */
+  .stack-line { display: flex; align-items: center; height: 23px; }
 
   .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
   .status-line.error { color: #a33; }
