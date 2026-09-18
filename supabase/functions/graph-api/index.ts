@@ -38,7 +38,9 @@
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
 //   PATCH  /organizations/:id   { any subset of organization fields above } -> updated org (direct set, not merge-only-blanks - a
-//     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI)
+//     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI.
+//     A name that collides case-insensitively with a different org is rejected with a clean 409 - "merge into it instead" -
+//     rather than the raw unique-constraint error organizations_name_key would otherwise surface)
 //   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, country_code, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba}, ... ]
 //     (q omitted/empty -> all people, no cap (paginated internally, see supabaseRequestAllPages); include_past=true returns one row per membership - e.g. two past
 //     roles at the same company both show - instead of the default one row per person, their best/current membership only.
@@ -2170,7 +2172,21 @@ Deno.serve(async (req) => {
         "sectors", "ticket_size", "investment_stages", "investment_regions", "fund_type_raw",
         "is_starred", "is_hidden",
       ]);
-      if ("name" in fields && !String(fields.name ?? "").trim()) return json({ error: "name cannot be blank" }, 400);
+      if ("name" in fields) {
+        const newName = String(fields.name ?? "").trim();
+        if (!newName) return json({ error: "name cannot be blank" }, 400);
+        // organizations_name_key is a unique index on lower(name) - check for
+        // a clash up front (same pattern as renameOrgIfPossible, for the
+        // LinkedIn-driven rename) rather than letting a hand-edit hit that
+        // constraint and surface a raw Postgres error to the user.
+        const clash = await supabaseRequest("GET", "organizations", {
+          params: { name: `ilike.${orValue(newName)}`, id: `neq.${orgIdMatch[1]}`, select: "id,name", limit: "1" },
+        });
+        if (clash?.length) {
+          return json({ error: `An organization named "${clash[0].name}" already exists - pick a different name, or merge into it instead.` }, 409);
+        }
+        fields.name = newName;
+      }
       if ("org_type" in fields) {
         if (fields.org_type && !ALL_ORG_TYPE_SLUGS.includes(fields.org_type)) {
           return json({ error: `org_type must be blank or one of ${ALL_ORG_TYPE_SLUGS.join(", ")}` }, 400);
