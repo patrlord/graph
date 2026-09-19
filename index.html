@@ -1495,7 +1495,9 @@ function populateOrgEditForm(org) {
   document.getElementById("editOrgName").value = org.name || "";
   document.getElementById("editOrgType").innerHTML =
     `<option value=""${org.org_type ? "" : " selected"}>Unclassified</option>` +
-    Object.entries(ORG_TYPE_LABEL).map(([v, label]) => `<option value="${v}"${v === org.org_type ? " selected" : ""}>${label}</option>`).join("");
+    Object.entries(ORG_TYPE_LABEL)
+      .sort(([, labelA], [, labelB]) => labelA.localeCompare(labelB))
+      .map(([v, label]) => `<option value="${v}"${v === org.org_type ? " selected" : ""}>${label}</option>`).join("");
   document.getElementById("editOrgWebsite").value = org.website_url || "";
   document.getElementById("editOrgLinkedin").value = org.linkedin_url || "";
   document.getElementById("editOrgHqCountry").value = org.hq_country || "";
@@ -2279,6 +2281,14 @@ function showPersonDetail(person) {
   document.getElementById("detPersonName").textContent = person.full_name;
   syncDetailStar(document.getElementById("detPersonStarBtn"), person.is_starred);
   document.getElementById("detPersonUserBadge").style.display = person.is_user ? "inline-block" : "none";
+  // The people list only ever fetches lean summary fields (see
+  // searchPeopleGlobal) - none of the li_* LinkedIn-profile fields
+  // (photo/headline/about/skills/connection counts/...) are on `person`
+  // yet the first time it's opened. Render everything that IS already
+  // known immediately, then loadPersonLinkedinDetail below fetches the
+  // rest (GET /people/:id, same idea as an org's own detail pane already
+  // doing its own GET /organizations/:id) and fills those parts in once it
+  // arrives - a beat later, not upfront for every person in the list.
   const photoEl = document.getElementById("detPersonPhoto");
   if (person.li_photo_url) { photoEl.src = person.li_photo_url; photoEl.style.display = "block"; }
   else { photoEl.style.display = "none"; photoEl.removeAttribute("src"); }
@@ -2296,6 +2306,36 @@ function showPersonDetail(person) {
   document.getElementById("personNewsList").innerHTML = "";
   loadPersonNews(person);
   exitPersonEditMode();
+  loadPersonLinkedinDetail(person);
+}
+
+// Fetches the full person row (every li_* field) and re-renders just the
+// parts of the pane that depend on it, once it arrives. Guarded by id, not
+// by object reference, since a list re-render (groupPeopleByPerson runs on
+// every filter/sort) replaces `person` with a fresh object even for the
+// same underlying person - so this checks whoever is actually selected
+// right now, not whether it's still literally this same object, and quietly
+// does nothing if the user has since moved on to someone else.
+async function loadPersonLinkedinDetail(person) {
+  const personId = person.id;
+  try {
+    const res = await api(`/people/${personId}`);
+    if (!res.ok) return;
+    const full = await res.json();
+    Object.assign(person, full);
+    if (!selectedPersonObj || selectedPersonObj.id !== personId) return;
+    const photoEl = document.getElementById("detPersonPhoto");
+    if (person.li_photo_url) { photoEl.src = person.li_photo_url; photoEl.style.display = "block"; }
+    else { photoEl.style.display = "none"; photoEl.removeAttribute("src"); }
+    document.getElementById("detPersonLinks").innerHTML =
+      entityLinksHtml(null, person.linkedin_url, person.country) + personNetworkStatsHtml(person);
+    document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
+    setupAboutClamp();
+    updatePersonEnrichStatus(person);
+  } catch {
+    // best-effort - the lean list data is already showing either way, this
+    // just fills in the LinkedIn-profile extras when it succeeds
+  }
 }
 
 // Renders the subset of the Apify-fetched LinkedIn profile worth showing

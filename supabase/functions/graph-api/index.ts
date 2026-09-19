@@ -47,7 +47,10 @@
 //     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
 //     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds.
 //     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id - nothing here filters by them server-side, the frontend does that client-side.
-//     country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from country, which stays free text)
+//     country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from country, which stays free text.
+//     Deliberately lean - no li_* LinkedIn-profile fields (photo, headline, about, experience, ...) - see GET /people/:id for those)
+//   GET    /people/:id          -> full person row (select=*, every li_* field included) - fetched once a person is actually opened
+//     in the detail pane (see loadPersonLinkedinDetail in index.html), not carried by every row in a list of thousands
 //   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, country_code, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
 //   PATCH  /memberships/:id     { any subset of title, focus } -> updated membership (direct set, same as organizations PATCH)
 //   POST   /people/:id/enrich-from-linkedin  { linkedin_url, name?, organization_id? } -> { country, title, observed_company }
@@ -714,7 +717,17 @@ async function createOrgConnection(
 // company).
 async function searchPeopleGlobal(query: string, includePast: boolean) {
   const params: Record<string, string> = {
-    select: "*,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
+    // Lean, list-only fields - NOT select=* - the li_* LinkedIn-profile
+    // columns (photo, headline, about, experience, education, skills, ...)
+    // are the bulk of a person row and aren't used anywhere in the list
+    // itself, only the detail pane, which fetches them for just the one
+    // person actually opened (GET /people/:id, see loadPersonLinkedinDetail
+    // in index.html) rather than every person in the list carrying that
+    // weight whether opened or not - same idea as an org's detail pane
+    // already doing its own GET /organizations/:id instead of reusing its
+    // list row. On a "show everyone" scan (thousands of rows) this was the
+    // single biggest driver of a slow, several-MB response.
+    select: "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
     order: "full_name.asc",
   };
   if (query) params.full_name = `ilike.*${query}*`;
@@ -2222,6 +2235,11 @@ Deno.serve(async (req) => {
     }
 
     const personIdMatch = path.match(/^\/people\/([^/]+)$/);
+    if (personIdMatch && req.method === "GET") {
+      const rows = await supabaseRequest("GET", "people", { params: { id: `eq.${personIdMatch[1]}`, select: "*" } });
+      if (!rows?.length) return json({ error: "person not found" }, 404);
+      return json(rows[0]);
+    }
     if (personIdMatch && req.method === "PATCH") {
       const body = await req.json();
       const fields = pickDefined(body, ["full_name", "linkedin_url", "country", "country_code", "is_user", "is_starred", "is_hidden", "is_ba"]);
