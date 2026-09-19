@@ -589,7 +589,7 @@
                 <th data-sort="country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="title">Role <span class="sort-arrow"></span></th>
                 <th class="col-company">Company</th>
-                <th class="col-li">LI <button class="secondary tiny" id="peopleEnrichAllBtn" title="Find a LinkedIn URL (if missing) and fetch the full profile for everyone below that hasn't been enriched yet">Enrich</button></th>
+                <th class="col-li">LI <button class="secondary tiny" id="peopleEnrichAllBtn" title="Find a LinkedIn URL (if missing) and fetch the full profile for up to 5 people below that haven't been enriched yet - click again for the next 5">Enrich</button></th>
                 <th title="Business angel">BA</th>
                 <th title="Connected to a flagged user">JPL</th>
               </tr>
@@ -2922,10 +2922,18 @@ async function bulkEnrichPerson(person) {
 // its own LinkedIn search plus a profile fetch, both real API calls - so it
 // reports live progress on the button itself and a summary at the end,
 // same as "Find all" does.
+// Capped at BATCH_LIMIT per click for now - each person here is a real,
+// paid LinkedIn search plus a profile fetch, and this can be pointed at a
+// list of thousands (e.g. "JPL only"), so a temporary small cap keeps a
+// single click's time and cost bounded while this is still new - click
+// Enrich again (as many times as needed) to keep working through the rest,
+// since it always skips whoever's already enriched.
 async function runEnrichAllPeople(btnEl) {
   if (btnEl.disabled) return;
-  const targets = currentPeopleItems.filter(p => !p.li_profile_fetched_at);
-  if (!targets.length) { alert("Everyone currently shown has already been enriched."); return; }
+  const BATCH_LIMIT = 5;
+  const allTargets = currentPeopleItems.filter(p => !p.li_profile_fetched_at);
+  if (!allTargets.length) { alert("Everyone currently shown has already been enriched."); return; }
+  const targets = allTargets.slice(0, BATCH_LIMIT);
   const originalText = btnEl.textContent;
   btnEl.disabled = true;
   let done = 0, enriched = 0, noLinkedin = 0, merged = 0, failed = 0;
@@ -2941,9 +2949,11 @@ async function runEnrichAllPeople(btnEl) {
   await applyPeopleFilter();  // authoritative refresh - roles/orgs/names can all have changed along the way
   btnEl.disabled = false;
   btnEl.textContent = originalText;
+  const remaining = allTargets.length - targets.length;
   alert(
-    `Enrich all: ${enriched} enriched, ${noLinkedin} had no LinkedIn URL found, ` +
-    `${merged} turned out to be duplicates of someone else (merged automatically), ${failed} failed.`
+    `Enrich: ${enriched} enriched, ${noLinkedin} had no LinkedIn URL found, ` +
+    `${merged} turned out to be duplicates of someone else (merged automatically), ${failed} failed.` +
+    (remaining > 0 ? `\n\n${remaining} more still need enriching (capped at ${BATCH_LIMIT} per click for now) - click Enrich again to continue.` : "")
   );
 }
 
