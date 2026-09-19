@@ -30,6 +30,10 @@
 //     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true.
 //     connected_to_user: true if any person with a membership at this org - past or current - is themselves flagged
 //     is_user, or is connected to one via a person<->person row in `connections`; see getUserConnectedPersonIds)
+//   GET    /organizations/duplicate-candidates -> [ { orgs: [ {id, name, org_type, linkedin_url, hq_country}, ... ] }, ... ]
+//     (checked ahead of GET /organizations/:id below - same idea as GET /people/duplicate-candidates, grouped by the
+//     same nameFingerprint; includes org_type "employer" stubs regardless of include_employers, since those are exactly
+//     the kind of low-quality, duplicate-prone record most worth merging away)
 //   POST   /organizations       { organization, people } -> saved { organization, people }
 //     organization fields: name, org_type, website_url, linkedin_url, hq_country, description,
 //     sectors[]; plus investor-profile fields not touched by research (ticket_size, investment_stages[],
@@ -546,6 +550,31 @@ async function listOrganizations(includeEmployers: boolean) {
   }
   for (const o of orgs) o.connected_to_user = connectedOrgIds.has(o.id);
   return orgs;
+}
+
+// Same idea as findDuplicatePeopleCandidates (see there for nameFingerprint
+// and its deliberately narrow scope) - groups every organization by a
+// fingerprint of its name and returns any group with more than one org.
+// Single pass, no separate detail query needed: organizations is already a
+// much smaller table than people, and the fields worth showing for context
+// (org_type/linkedin_url/hq_country) are cheap enough to just select
+// up front for everyone rather than fetch in two steps.
+async function findDuplicateOrgCandidates() {
+  const rows = await supabaseRequestAllPages("organizations", {
+    select: "id,name,org_type,linkedin_url,hq_country",
+  });
+  const groups = new Map<string, any[]>();
+  for (const r of rows ?? []) {
+    const key = nameFingerprint(r.name);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
+  }
+  return [...groups.values()]
+    .filter((g) => g.length > 1)
+    .map((g) => ({
+      orgs: g.map((o) => ({ id: o.id, name: o.name, org_type: o.org_type, linkedin_url: o.linkedin_url, hq_country: o.hq_country })),
+    }));
 }
 
 async function getOrganization(id: string) {
@@ -2183,6 +2212,12 @@ Deno.serve(async (req) => {
 
     if (req.method === "GET" && path === "/organizations") {
       return json(await listOrganizations(url.searchParams.get("include_employers") === "true"));
+    }
+
+    // Checked ahead of orgIdMatch below, or "duplicate-candidates" would
+    // itself be parsed as an organization id.
+    if (req.method === "GET" && path === "/organizations/duplicate-candidates") {
+      return json(await findDuplicateOrgCandidates());
     }
 
     if (req.method === "POST" && path === "/organizations") {
