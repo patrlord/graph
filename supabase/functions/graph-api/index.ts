@@ -33,7 +33,13 @@
 //   GET    /organizations/duplicate-candidates -> [ { orgs: [ {id, name, org_type, linkedin_url, hq_country}, ... ] }, ... ]
 //     (checked ahead of GET /organizations/:id below - same idea as GET /people/duplicate-candidates, grouped by the
 //     same nameFingerprint; includes org_type "employer" stubs regardless of include_employers, since those are exactly
-//     the kind of low-quality, duplicate-prone record most worth merging away)
+//     the kind of low-quality, duplicate-prone record most worth merging away; excludes any group already dismissed,
+//     see POST .../dismiss below)
+//   POST   /organizations/duplicate-candidates/dismiss { ids: [id, id, ...] } -> { ok: true }
+//     (records that this exact set of orgs was judged NOT duplicates - dismissed_duplicate_groups, migration_022 -
+//     so it stops showing up in future duplicate-candidates checks; idempotent, dismissing an already-dismissed
+//     group is fine. A different combination sharing the same name fingerprint - e.g. a third org added later -
+//     still surfaces, since that's a genuinely new set the user hasn't judged)
 //   POST   /organizations       { organization, people } -> saved { organization, people }
 //     organization fields: name, org_type, website_url, linkedin_url, hq_country, description,
 //     sectors[]; plus investor-profile fields not touched by research (ticket_size, investment_stages[],
@@ -59,8 +65,11 @@
 //     (checked ahead of GET /people/:id below - groups everyone by a case/accent/punctuation/spacing-insensitive fingerprint of their
 //     name (nameFingerprint) and returns any group with more than one person - "Alexis Le Portz" and "Alexis Leportz" collide, reordered
 //     names or genuine misspellings don't; each person's current roles are included so the frontend can show enough context to tell at
-//     a glance whether a group really is the same person. Runs client-side on every people-list load, see the frontend's
-//     checkForDuplicatePeople)
+//     a glance whether a group really is the same person. Excludes any group already dismissed, see POST .../dismiss below. Runs
+//     client-side on every people-list load, see the frontend's checkForDuplicatePeople)
+//   POST   /people/duplicate-candidates/dismiss { ids: [id, id, ...] } -> { ok: true }
+//     (same idea as the organizations version above - records that this exact set of people was judged NOT duplicates so it
+//     stops resurfacing; idempotent; a different combination sharing the same fingerprint still surfaces)
 //   GET    /people/:id          -> full person row (select=*, every li_* field included) - fetched once a person is actually opened
 //     in the detail pane (see loadPersonLinkedinDetail in index.html), not carried by every row in a list of thousands
 //   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, country_code, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
@@ -117,7 +126,8 @@
 //   GET    /news?entity_type=organization|person&entity_id=uuid -> [ news_item, ... ]
 //   POST   /news/search         { entity_type, entity_id, name, org_context? } -> [ news_item, ... ] (saved + deduped)
 //   GET    /organizations/:id/connections -> [ {id, relationship_type, notes, direction, other: {id,name,org_type}}, ... ]
-//   POST   /organizations/:id/connections { relationship_type, other_org_id? | other_org_name?, notes? } -> created connection (other_org_name finds-or-creates, org_type "group" if new)
+//   POST   /organizations/:id/connections { relationship_type, other_org_id? | other_org_name?, notes? } -> created connection (other_org_name
+//     finds-or-creates via findExistingOrganization - accent-insensitive, see migration_021 - org_type "group" if new)
 //   DELETE /connections/:id     -> { ok: true }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -347,13 +357,27 @@ function pickDefined(body: Record<string, any>, keys: string[]): Record<string, 
 // slightly different name (or via a LinkedIn-URL add) still merges into the
 // existing record instead of creating a duplicate.
 async function findExistingOrganization(name: string, websiteUrl?: string | null, linkedinUrl?: string | null) {
-  const orParts = [`name.ilike.${orValue(name)}`];
-  if (websiteUrl) orParts.push(`website_url.eq.${orValue(websiteUrl)}`);
-  if (linkedinUrl) orParts.push(`linkedin_url.eq.${orValue(linkedinUrl)}`);
-  const rows = await supabaseRequest("GET", "organizations", {
-    params: { or: `(${orParts.join(",")})`, select: "*", limit: "5" },
+  // A matching website/LinkedIn URL is checked first - a stronger identity
+  // signal than a name string, and a plain eq filter (URLs aren't the kind
+  // of thing accents show up in, no folding needed).
+  const urlParts: string[] = [];
+  if (websiteUrl) urlParts.push(`website_url.eq.${orValue(websiteUrl)}`);
+  if (linkedinUrl) urlParts.push(`linkedin_url.eq.${orValue(linkedinUrl)}`);
+  if (urlParts.length) {
+    const urlMatch = await supabaseRequest("GET", "organizations", {
+      params: { or: `(${urlParts.join(",")})`, select: "*", limit: "5" },
+    });
+    if (urlMatch?.length) return urlMatch[0];
+  }
+  // Falls back to name - via the find_organization_by_name RPC
+  // (migration_021) rather than a plain ilike filter, so it's accent-
+  // insensitive: typing (or picking from a dropdown) an accented name that
+  // resolves differently than what's on file - or vice versa - still finds
+  // the same org instead of silently creating a duplicate.
+  const nameMatch = await supabaseRequest("GET", "rpc/find_organization_by_name", {
+    params: { search_name: name, select: "*", limit: "5" },
   });
-  return rows?.[0] ?? null;
+  return nameMatch?.[0] ?? null;
 }
 
 // Same idea for people: same name OR same LinkedIn URL counts as the same person.
@@ -562,9 +586,10 @@ async function listOrganizations(includeEmployers: boolean) {
 // (org_type/linkedin_url/hq_country) are cheap enough to just select
 // up front for everyone rather than fetch in two steps.
 async function findDuplicateOrgCandidates() {
-  const rows = await supabaseRequestAllPages("organizations", {
-    select: "id,name,org_type,linkedin_url,hq_country",
-  });
+  const [rows, dismissed] = await Promise.all([
+    supabaseRequestAllPages("organizations", { select: "id,name,org_type,linkedin_url,hq_country" }),
+    getDismissedDuplicateKeys("organization"),
+  ]);
   const groups = new Map<string, any[]>();
   for (const r of rows ?? []) {
     const key = nameFingerprint(r.name);
@@ -573,7 +598,7 @@ async function findDuplicateOrgCandidates() {
     groups.get(key)!.push(r);
   }
   return [...groups.values()]
-    .filter((g) => g.length > 1)
+    .filter((g) => g.length > 1 && !dismissed.has(groupMemberKey(g.map((o) => o.id))))
     .map((g) => ({
       orgs: g.map((o) => ({ id: o.id, name: o.name, org_type: o.org_type, linkedin_url: o.linkedin_url, hq_country: o.hq_country })),
     }));
@@ -820,6 +845,34 @@ function nameFingerprint(name: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// "Not duplicates" in the merge-candidates pop-up (people and orgs both) -
+// dismissed_duplicate_groups (migration_022) remembers that decision so the
+// same group doesn't keep resurfacing. Keyed on the exact set of member ids
+// (sorted, comma-joined), not the name fingerprint that grouped them - if a
+// third record with the same fingerprint shows up later, that's a new
+// combination the user hasn't judged yet, so it surfaces again even though
+// the original pair stays dismissed.
+function groupMemberKey(ids: string[]): string {
+  return [...ids].sort().join(",");
+}
+
+async function getDismissedDuplicateKeys(entityType: "person" | "organization"): Promise<Set<string>> {
+  const rows = await supabaseRequest("GET", "dismissed_duplicate_groups", {
+    params: { entity_type: `eq.${entityType}`, select: "member_ids" },
+  });
+  return new Set((rows ?? []).map((r: any) => r.member_ids));
+}
+
+async function dismissDuplicateGroup(entityType: "person" | "organization", ids: string[]) {
+  if (!Array.isArray(ids) || ids.length < 2) throw new HttpError(400, "ids must be an array of at least two ids");
+  await supabaseRequest("POST", "dismissed_duplicate_groups", {
+    params: { on_conflict: "entity_type,member_ids" },
+    body: { entity_type: entityType, member_ids: groupMemberKey(ids) },
+    prefer: "resolution=ignore-duplicates",  // already dismissed - fine, not an error
+  });
+  return { ok: true };
+}
+
 // Groups every person by nameFingerprint and returns any group with more
 // than one person, each with enough context (current roles) for a human to
 // tell at a glance whether they're really the same person. Two passes: a
@@ -828,7 +881,10 @@ function nameFingerprint(name: string): string {
 // second, detail query scoped to only the handful of people who actually
 // landed in a group, not the whole table.
 async function findDuplicatePeopleCandidates() {
-  const rows = await supabaseRequestAllPages("people", { select: "id,full_name" });
+  const [rows, dismissed] = await Promise.all([
+    supabaseRequestAllPages("people", { select: "id,full_name" }),
+    getDismissedDuplicateKeys("person"),
+  ]);
   const groups = new Map<string, { id: string; full_name: string }[]>();
   for (const r of rows ?? []) {
     const key = nameFingerprint(r.full_name);
@@ -836,7 +892,8 @@ async function findDuplicatePeopleCandidates() {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(r);
   }
-  const dupeGroups = [...groups.values()].filter((g) => g.length > 1);
+  const dupeGroups = [...groups.values()]
+    .filter((g) => g.length > 1 && !dismissed.has(groupMemberKey(g.map((p) => p.id))));
   if (!dupeGroups.length) return [];
 
   const allIds = dupeGroups.flatMap((g) => g.map((p) => p.id));
@@ -2228,6 +2285,10 @@ Deno.serve(async (req) => {
     if (req.method === "GET" && path === "/organizations/duplicate-candidates") {
       return json(await findDuplicateOrgCandidates());
     }
+    if (req.method === "POST" && path === "/organizations/duplicate-candidates/dismiss") {
+      const body = await req.json();
+      return json(await dismissDuplicateGroup("organization", body.ids));
+    }
 
     if (req.method === "POST" && path === "/organizations") {
       const body = await req.json();
@@ -2243,6 +2304,10 @@ Deno.serve(async (req) => {
     // candidates" would itself be parsed as a person id.
     if (req.method === "GET" && path === "/people/duplicate-candidates") {
       return json(await findDuplicatePeopleCandidates());
+    }
+    if (req.method === "POST" && path === "/people/duplicate-candidates/dismiss") {
+      const body = await req.json();
+      return json(await dismissDuplicateGroup("person", body.ids));
     }
 
     if (req.method === "GET" && path === "/news") {

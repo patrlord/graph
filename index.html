@@ -878,8 +878,21 @@ function showLogin() {
   document.getElementById("signOutBtn").style.display = "none";
 }
 
-sb.auth.onAuthStateChange((_event, session) => {
-  if (session) showApp(session.user); else showLogin();
+// The Supabase client silently refreshes the access token in the background
+// on a timer, well before it expires, for as long as the tab stays open -
+// firing this same callback with event "TOKEN_REFRESHED" (session present,
+// nothing the user did). Re-running showApp() for that was resetting the
+// people/org lists - back to "all people", any active search or org scope
+// cleared - out of nowhere. Only actually (re)initialize the app view on a
+// real sign-in: SIGNED_IN (the login form), or INITIAL_SESSION (the one
+// event that fires once on a fresh page load, with an already-stored
+// session if there is one - so a real page refresh still works correctly).
+// Every other event with a session (TOKEN_REFRESHED, USER_UPDATED, ...)
+// is left alone; the api() helper reads a fresh token from sb.auth on
+// every call regardless, so there's nothing more to do for those anyway.
+sb.auth.onAuthStateChange((event, session) => {
+  if (event === "SIGNED_OUT" || !session) { showLogin(); return; }
+  if (event === "SIGNED_IN" || event === "INITIAL_SESSION") showApp(session.user);
 });
 
 // ---------- shared render helpers ----------
@@ -1799,14 +1812,16 @@ async function refreshOrgMergeDatalist() {
 
 // Resolves the typed name against orgMergeCache (same list the datalist
 // itself is built from, so an option actually picked from it always
-// resolves) - an exact, case-insensitive match, same rule the backend's
-// own name-based org lookups use elsewhere.
+// resolves) - an exact, case/accent-insensitive match (foldAccents), same
+// rule the backend's own name-based org lookups use elsewhere
+// (findExistingOrganization, migration_021).
 async function mergeSelectedOrg() {
   if (!selectedOrg) return;
   const status = document.getElementById("orgMergeStatus");
   const typed = document.getElementById("orgMergeTarget").value.trim();
   if (!typed) { status.className = "status-line error"; status.textContent = "Type or pick an organization to merge into."; return; }
-  const target = (orgMergeCache || orgListCache).find(o => o.name.toLowerCase() === typed.toLowerCase());
+  const typedFolded = foldAccents(typed.toLowerCase());
+  const target = (orgMergeCache || orgListCache).find(o => foldAccents(o.name.toLowerCase()) === typedFolded);
   if (!target) { status.className = "status-line error"; status.textContent = "No organization found with that exact name - pick one from the list."; return; }
   if (target.id === selectedOrg.id) { status.className = "status-line error"; status.textContent = "That's this organization - pick a different one to merge into."; return; }
   if (!confirm(
@@ -2371,12 +2386,31 @@ function dupeOrgSubtitle(o) {
   return bits.join(" — ");
 }
 
-// A group the user looked at and decided isn't actually a duplicate - just
-// drops it from view (and the button's count) without touching any data.
-function dismissDupeGroup(groupIndex) {
-  currentDupeGroups().splice(groupIndex, 1);
-  renderDupeModal();
-  updateMergeCandidatesBtn(dupeModalMode);
+// A group the user looked at and decided isn't actually a duplicate -
+// records that (so it stops resurfacing on future checks - see
+// dismissed_duplicate_groups, migration_022) and drops it from view, but
+// touches no other data. Left in the list (with an error in its own status
+// line) if saving the dismissal fails, rather than removing it from view
+// and losing that decision.
+async function dismissDupeGroup(groupIndex) {
+  const groups = currentDupeGroups();
+  const group = groups[groupIndex];
+  if (!group) return;
+  const isOrgs = dupeModalMode === "orgs";
+  const items = isOrgs ? group.orgs : group.people;
+  const status = document.getElementById(`dupeGroupStatus-${groupIndex}`);
+  status.className = "status-line"; status.textContent = "Saving…";
+  try {
+    const res = await api(`${isOrgs ? "/organizations" : "/people"}/duplicate-candidates/dismiss`, {
+      method: "POST", body: JSON.stringify({ ids: items.map(x => x.id) }),
+    });
+    if (!res.ok) { const data = await res.json(); throw new Error(data.error || "Failed to save"); }
+    groups.splice(groupIndex, 1);
+    renderDupeModal();
+    updateMergeCandidatesBtn(dupeModalMode);
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  }
 }
 
 async function mergeDupeGroup(groupIndex) {
@@ -2894,18 +2928,19 @@ async function ensurePeopleNamesCache(forceRefresh) {
 }
 
 // Resolves the typed name against peopleNamesCache - an exact,
-// case-insensitive match, same rule mergeSelectedOrg uses (and the same
-// simplicity: if more than one person happens to share that exact name,
-// this just takes the first one, same as the org version would for a
-// duplicate org name).
+// case/accent-insensitive match (foldAccents), same rule mergeSelectedOrg
+// uses (and the same simplicity: if more than one person happens to share
+// that exact name, this just takes the first one, same as the org version
+// would for a duplicate org name).
 async function mergeSelectedPerson() {
   const person = selectedPersonObj;
   if (!person) return;
   const status = document.getElementById("personMergeStatus");
   const typed = document.getElementById("personMergeTarget").value.trim();
   if (!typed) { status.className = "status-line error"; status.textContent = "Type or pick a person to merge into."; return; }
+  const typedFolded = foldAccents(typed.toLowerCase());
   const names = await ensurePeopleNamesCache();
-  const target = names.find(p => p.full_name.toLowerCase() === typed.toLowerCase() && p.id !== person.id);
+  const target = names.find(p => foldAccents(p.full_name.toLowerCase()) === typedFolded && p.id !== person.id);
   if (!target) { status.className = "status-line error"; status.textContent = "No other person found with that exact name - pick one from the list."; return; }
   if (!confirm(
     `Merge ${person.full_name} into ${target.full_name}?\n\n` +
