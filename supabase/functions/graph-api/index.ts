@@ -48,6 +48,8 @@
 //   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, country_code, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba}, ... ]
 //     (q omitted/empty -> all people, no cap (paginated internally, see supabaseRequestAllPages); include_past=true returns one row per membership - e.g. two past
 //     roles at the same company both show - instead of the default one row per person, their best/current membership only.
+//     q, when given, matches via the search_people_by_name RPC (migration_020) rather than a plain ilike filter, so it's
+//     accent-insensitive - "kart" matches "Kärt", "romeo" matches "Roméo" - via Postgres's own unaccent().
 //     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
 //     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds.
 //     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id - nothing here filters by them server-side, the frontend does that client-side.
@@ -766,14 +768,21 @@ async function searchPeopleGlobal(query: string, includePast: boolean) {
     select: "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
     order: "full_name.asc",
   };
-  if (query) params.full_name = `ilike.*${query}*`;
   // A real search stays capped at 25 (a search box result list, not meant to
   // return everything) - but "all people" (empty query) is a genuine full
   // table scan, long since past the 1000-row single-request cap, so it
   // needs to page through rather than silently truncating alphabetically
-  // (see supabaseRequestAllPages).
+  // (see supabaseRequestAllPages). A real search also goes through the
+  // search_people_by_name RPC (migration_020) instead of a plain ilike
+  // filter, so it's accent-insensitive - "kart" matches "Kärt", "romeo"
+  // matches "Roméo" - via Postgres's own unaccent() rather than
+  // reimplementing accent folding here; select=/order=/limit= still work
+  // on it the same as a normal table query since it's STABLE and returns
+  // setof people.
   const [people, connectedIds] = await Promise.all([
-    query ? supabaseRequest("GET", "people", { params: { ...params, limit: "25" } }) : supabaseRequestAllPages("people", params),
+    query
+      ? supabaseRequest("GET", "rpc/search_people_by_name", { params: { ...params, search_query: query, limit: "25" } })
+      : supabaseRequestAllPages("people", params),
     getUserConnectedPersonIds(),
   ]);
   const rows: any[] = [];

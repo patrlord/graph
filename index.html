@@ -976,13 +976,26 @@ async function loadOrgList() {
     orgListCache.map(o => `<option value="${o.name}">`).join("");
 }
 
+// Strips accents so search can be typed without them - "cafe" matches
+// "Café", "moller" matches "Möller" - same technique (and reasoning) as
+// the backend's nameFingerprint for duplicate detection, just applied here
+// to a search match instead of an exact-fingerprint match. The org list is
+// always fully loaded client-side already, so this runs in the browser
+// rather than needing a server round-trip (unlike people search, which
+// goes through the search_people_by_name Postgres function instead, see
+// migration_020 - the org list has no equivalent DB-side search step to
+// intercept, it's plain Array.filter over orgListCache).
+function foldAccents(s) {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
 function applyOrgFilter() {
-  const q = document.getElementById("orgSearchInput").value.trim().toLowerCase();
+  const q = foldAccents(document.getElementById("orgSearchInput").value.trim().toLowerCase());
   let filtered = !q ? orgListCache.slice() : orgListCache.filter(o =>
-    o.name.toLowerCase().includes(q) ||
-    (o.hq_country || "").toLowerCase().includes(q) ||
-    (ORG_TYPE_LABEL[o.org_type] || o.org_type || "").toLowerCase().includes(q) ||
-    (o.sectors || []).some(s => s.toLowerCase().includes(q))
+    foldAccents(o.name.toLowerCase()).includes(q) ||
+    foldAccents((o.hq_country || "").toLowerCase()).includes(q) ||
+    foldAccents((ORG_TYPE_LABEL[o.org_type] || o.org_type || "").toLowerCase()).includes(q) ||
+    (o.sectors || []).some(s => foldAccents(s.toLowerCase()).includes(q))
   );
   // Hidden is an override, independent of "starred only" - checking
   // "starred only" doesn't bring hidden-but-starred orgs back into view.
