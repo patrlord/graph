@@ -72,6 +72,8 @@
   #quadGrid > .card { height: 100%; min-height: 0; overflow: hidden; }
   .panel-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; flex: 0 0 auto; }
   .panel-header h2 { font-size: 13.5px; margin: 0; font-weight: 600; white-space: nowrap; }
+  .panel-title-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .list-count { font-size: 11.5px; color: #8a877e; }
   .panel-tools { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; justify-content: flex-end; }
   .panel-tools input[type=text] {
     font-size: 12.5px; padding: 6px 8px; border: 1px solid #d8d5cf; border-radius: 6px; width: 130px; min-width: 0;
@@ -340,6 +342,28 @@
   .detail-empty { font-size: 12.5px; color: #8a877e; padding: 20px 0; text-align: center; }
   .detail-content { display: none; flex-direction: column; flex: 1 1 auto; min-height: 0; }
   .detail-content.shown { display: flex; }
+
+  /* "Merge candidates" pop-up (checkForDuplicatePeople/openDupeModal) */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(28,28,28,.45);
+    display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px;
+  }
+  .modal-card {
+    background: #fff; border-radius: 10px; width: 100%; max-width: 640px; max-height: 84vh;
+    display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,.25);
+  }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid #eeece7; flex: 0 0 auto; }
+  .modal-header h3 { margin: 0; font-size: 14.5px; font-weight: 600; }
+  .modal-body { padding: 14px 18px; overflow-y: auto; }
+  .dupe-group { border: 1px solid #eeece7; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .dupe-group:last-child { margin-bottom: 0; }
+  .dupe-group-hint { font-size: 11px; color: #8a877e; margin: 0 0 8px; }
+  .dupe-person { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f6f5f3; }
+  .dupe-person:last-of-type { border-bottom: none; }
+  .dupe-person input[type=radio] { margin-top: 3px; flex: none; }
+  .dupe-person-name { font-weight: 500; }
+  .dupe-person-roles { font-size: 11.5px; color: #8a877e; margin-top: 1px; }
+  .dupe-group-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -532,7 +556,11 @@
     <!-- Bottom-left: people list -->
     <div class="card" id="peopleListCard">
       <div class="panel-header" id="peopleListHeader">
-        <h2 id="peopleListTitle">People</h2>
+        <div class="panel-title-group">
+          <h2 id="peopleListTitle">People</h2>
+          <span class="list-count" id="peopleListCount"></span>
+          <button class="secondary tiny" id="mergeCandidatesBtn" style="display:none">Merge candidates</button>
+        </div>
         <div class="panel-tools">
           <input type="text" id="peopleSearchInput" placeholder="Search…">
           <button class="secondary tiny" id="peopleSearchClearBtn">Clear</button>
@@ -657,6 +685,16 @@
       </div>
     </div>
 
+  </div>
+</div>
+
+<div id="dupeModalOverlay" class="modal-overlay" style="display:none">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>Possible duplicate people</h3>
+      <button class="close-x" id="dupeModalCloseBtn" title="Close">✕</button>
+    </div>
+    <div class="modal-body" id="dupeModalBody"></div>
   </div>
 </div>
 
@@ -825,6 +863,7 @@ function showApp(user) {
   peopleForceGlobal = true;
   updatePeopleHeader();
   applyPeopleFilter();
+  checkForDuplicatePeople();
 }
 
 function showLogin() {
@@ -1719,22 +1758,36 @@ function toggleOrgMergeForm(show) {
 // form) so this one can leave the org being merged out of its own dropdown,
 // since merging it into itself isn't a real option (mergeSelectedOrg
 // already rejects it, but there's no reason to offer it in the first place).
+// orgListCache (what loadOrgList populates, and the merge dropdown used to
+// be built from directly) excludes org_type "employer" - auto-created
+// past-employer stubs - unless "Include past employers" is checked, since
+// the main org list is meant for browsing real organizations, not the
+// noise of everyone's past jobs. But those stubs are exactly the kind of
+// low-quality, duplicate-prone record most worth merging away (reported
+// bug: "Capgemini" - an employer stub - didn't show up as a merge target
+// at all) - so the merge dropdown needs its own always-everything fetch,
+// independent of that toggle, cached here so mergeSelectedOrg can resolve
+// against the same list the dropdown was actually built from.
+let orgMergeCache = null;  // [{id, name}, ...] | null
 async function refreshOrgMergeDatalist() {
-  await loadOrgList();
-  document.getElementById("orgMergeNamesDatalist").innerHTML = orgListCache
+  await loadOrgList();  // keeps the main org list + its own datalist fresh too
+  const res = await api("/organizations?include_employers=true");
+  orgMergeCache = res.ok ? await res.json() : orgListCache;
+  document.getElementById("orgMergeNamesDatalist").innerHTML = orgMergeCache
     .filter(o => !selectedOrg || o.id !== selectedOrg.id)
     .map(o => `<option value="${o.name}">`).join("");
 }
 
-// Resolves the typed name against orgListCache (same list the datalist
-// itself is built from) - an exact, case-insensitive match, same rule the
-// backend's own name-based org lookups use elsewhere.
+// Resolves the typed name against orgMergeCache (same list the datalist
+// itself is built from, so an option actually picked from it always
+// resolves) - an exact, case-insensitive match, same rule the backend's
+// own name-based org lookups use elsewhere.
 async function mergeSelectedOrg() {
   if (!selectedOrg) return;
   const status = document.getElementById("orgMergeStatus");
   const typed = document.getElementById("orgMergeTarget").value.trim();
   if (!typed) { status.className = "status-line error"; status.textContent = "Type or pick an organization to merge into."; return; }
-  const target = orgListCache.find(o => o.name.toLowerCase() === typed.toLowerCase());
+  const target = (orgMergeCache || orgListCache).find(o => o.name.toLowerCase() === typed.toLowerCase());
   if (!target) { status.className = "status-line error"; status.textContent = "No organization found with that exact name - pick one from the list."; return; }
   if (target.id === selectedOrg.id) { status.className = "status-line error"; status.textContent = "That's this organization - pick a different one to merge into."; return; }
   if (!confirm(
@@ -2129,9 +2182,20 @@ function renderPeopleList(items, mode) {
   renderPeopleTableBody();
 }
 
+// The count next to the "People" title - whatever's actually in the list
+// right now, post-filter (so a search or a starred/BA/JPL/hidden toggle
+// narrows it exactly like the visible rows do). Blank rather than "0" for
+// the initial "no org selected yet, nothing searched" placeholder state -
+// there's no real list to count there, not an empty one.
+function updatePeopleListCount() {
+  const countEl = document.getElementById("peopleListCount");
+  countEl.textContent = currentPeopleMode === "empty" ? "" : String(currentPeopleItems.length);
+}
+
 function renderPeopleTableBody() {
   const listEl = document.getElementById("peopleList");
   const emptyEl = document.getElementById("emptyPeopleList");
+  updatePeopleListCount();
   // Company only means anything in the global "all people" list - hide the
   // whole column, not just its cells, in a "People at <org>" view.
   document.getElementById("peopleTable").classList.toggle("hide-company", currentPeopleMode !== "global");
@@ -2169,6 +2233,134 @@ function renderPeopleTableBody() {
     wireFlagButtons(tr, currentPeopleItems[i], togglePersonFlag);
   });
   if (selectedPersonId) highlightSelected("peopleList", selectedPersonId);
+}
+
+// ---------- duplicate-people detection + merge ----------
+
+let dupeGroups = [];  // [{ people: [{id, full_name, linkedin_url, country, roles}, ...] }, ...] from the last check
+
+// Fire-and-forget, called once when the app loads (see showApp) - not on
+// every filter/search, "every time the people list is loaded" means the
+// list itself, not each keystroke narrowing it. Silently does nothing on
+// failure (network hiccup, whatever) rather than surfacing an error for a
+// background check nobody asked to watch.
+async function checkForDuplicatePeople() {
+  try {
+    const res = await api("/people/duplicate-candidates");
+    if (!res.ok) return;
+    dupeGroups = await res.json();
+  } catch {
+    return;
+  }
+  updateMergeCandidatesBtn();
+}
+
+function openDupeModal() {
+  renderDupeModal();
+  document.getElementById("dupeModalOverlay").style.display = "flex";
+}
+
+function closeDupeModal() {
+  document.getElementById("dupeModalOverlay").style.display = "none";
+}
+
+// One radio-button group per candidate group (name="dupe-group-<i>") picks
+// the survivor; everyone else in that group merges into whoever's picked
+// when its own Merge button is clicked - groups are independent (a person's
+// name fingerprint puts them in exactly one group), so merging one doesn't
+// affect the others still listed.
+function renderDupeModal() {
+  const body = document.getElementById("dupeModalBody");
+  if (!dupeGroups.length) {
+    body.innerHTML = `<p class="dupe-group-hint">No duplicate candidates found.</p>`;
+    return;
+  }
+  body.innerHTML = dupeGroups.map((g, gi) => `
+    <div class="dupe-group" data-group-index="${gi}">
+      <p class="dupe-group-hint">Pick which record to keep - the others merge into it and are deleted.</p>
+      ${g.people.map((p, pi) => `
+        <label class="dupe-person">
+          <input type="radio" name="dupe-group-${gi}" value="${pi}"${pi === 0 ? " checked" : ""}>
+          <span>
+            <div class="dupe-person-name">${p.full_name}</div>
+            <div class="dupe-person-roles">${dupePersonSubtitle(p)}</div>
+          </span>
+        </label>
+      `).join("")}
+      <div class="dupe-group-actions">
+        <button class="secondary tiny dupe-merge-btn" data-group-index="${gi}">Merge</button>
+        <button class="secondary tiny dupe-skip-btn" data-group-index="${gi}">Not duplicates</button>
+        <span class="status-line" id="dupeGroupStatus-${gi}"></span>
+      </div>
+    </div>
+  `).join("");
+  body.querySelectorAll(".dupe-merge-btn").forEach(btn => {
+    btn.addEventListener("click", () => mergeDupeGroup(parseInt(btn.dataset.groupIndex, 10)));
+  });
+  body.querySelectorAll(".dupe-skip-btn").forEach(btn => {
+    btn.addEventListener("click", () => dismissDupeGroup(parseInt(btn.dataset.groupIndex, 10)));
+  });
+}
+
+function dupePersonSubtitle(p) {
+  const bits = [];
+  if (p.roles && p.roles.length) {
+    bits.push(p.roles.map(r => r.organization ? `${r.title || "—"} at ${r.organization}` : (r.title || "—")).join(" · "));
+  }
+  if (p.country) bits.push(p.country);
+  return bits.length ? bits.join(" — ") : "No current role on file";
+}
+
+// A group the user looked at and decided isn't actually a duplicate - just
+// drops it from view (and the button's count) without touching any data.
+function dismissDupeGroup(groupIndex) {
+  dupeGroups.splice(groupIndex, 1);
+  renderDupeModal();
+  updateMergeCandidatesBtn();
+}
+
+function updateMergeCandidatesBtn() {
+  const btn = document.getElementById("mergeCandidatesBtn");
+  if (dupeGroups.length) {
+    btn.textContent = `Merge candidates (${dupeGroups.length})`;
+    btn.style.display = "inline-block";
+  } else {
+    btn.style.display = "none";
+  }
+}
+
+async function mergeDupeGroup(groupIndex) {
+  const group = dupeGroups[groupIndex];
+  if (!group) return;
+  const status = document.getElementById(`dupeGroupStatus-${groupIndex}`);
+  const picked = document.querySelector(`input[name="dupe-group-${groupIndex}"]:checked`);
+  const targetIdx = picked ? parseInt(picked.value, 10) : 0;
+  const target = group.people[targetIdx];
+  const others = group.people.filter((_, i) => i !== targetIdx);
+  if (!confirm(
+    `Merge ${others.map(p => p.full_name).join(", ")} into ${target.full_name}?\n\n` +
+    `Their roles, connections, and event attendance move onto ${target.full_name}; the others are deleted. This can't be undone.`
+  )) return;
+  status.className = "status-line"; status.textContent = "Merging…";
+  try {
+    // Sequential, not parallel - each merge deletes a person row, and the
+    // backend has no way to know two concurrent requests both target the
+    // same survivor.
+    for (const other of others) {
+      const res = await api(`/people/${other.id}/merge-into`, {
+        method: "POST", body: JSON.stringify({ target_id: target.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed to merge ${other.full_name}`);
+    }
+    dupeGroups.splice(groupIndex, 1);
+    renderDupeModal();
+    updateMergeCandidatesBtn();
+    peopleNamesCache = null;  // stale now - refreshed lazily next time a merge form opens
+    applyPeopleFilter();
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
+  }
 }
 
 function personCompanyName(p) {
@@ -3110,6 +3302,11 @@ document.getElementById("peopleSearchClearBtn").addEventListener("click", () => 
   peopleForceGlobal = true;
   updatePeopleHeader();
   applyPeopleFilter();
+});
+document.getElementById("mergeCandidatesBtn").addEventListener("click", openDupeModal);
+document.getElementById("dupeModalCloseBtn").addEventListener("click", closeDupeModal);
+document.getElementById("dupeModalOverlay").addEventListener("click", e => {
+  if (e.target.id === "dupeModalOverlay") closeDupeModal();
 });
 document.getElementById("personAddToggleBtn").addEventListener("click", () => {
   showPeopleAddView();

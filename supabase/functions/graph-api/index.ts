@@ -49,6 +49,12 @@
 //     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id - nothing here filters by them server-side, the frontend does that client-side.
 //     country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from country, which stays free text.
 //     Deliberately lean - no li_* LinkedIn-profile fields (photo, headline, about, experience, ...) - see GET /people/:id for those)
+//   GET    /people/duplicate-candidates -> [ { people: [ {id, full_name, linkedin_url, country, roles: [{title, organization}]}, ... ] }, ... ]
+//     (checked ahead of GET /people/:id below - groups everyone by a case/accent/punctuation/spacing-insensitive fingerprint of their
+//     name (nameFingerprint) and returns any group with more than one person - "Alexis Le Portz" and "Alexis Leportz" collide, reordered
+//     names or genuine misspellings don't; each person's current roles are included so the frontend can show enough context to tell at
+//     a glance whether a group really is the same person. Runs client-side on every people-list load, see the frontend's
+//     checkForDuplicatePeople)
 //   GET    /people/:id          -> full person row (select=*, every li_* field included) - fetched once a person is actually opened
 //     in the detail pane (see loadPersonLinkedinDetail in index.html), not carried by every row in a list of thousands
 //   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, country_code, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
@@ -68,10 +74,11 @@
 //     for a human to classify - unlike past jobs, this is likely an org the tool actually cares about))
 //   POST   /people/:id/merge-into  { target_id } -> updated target person (full row)
 //     (moves :id's memberships across every org onto target_id - dropping any that would collide with a membership
-//     target_id already has at that exact org+title - and its person<->person/person<->org connections too - dropping
-//     any that would become a self-loop once remapped; backfills every field target_id is currently blank on from :id,
-//     its own full_name untouched; then deletes :id. Irreversible - the frontend confirms before calling this. Unlike
-//     org merge, no uniqueness constraint on full_name to guard, so no name-clash case here)
+//     target_id already has at that exact org+title - and its event_attendees rows the same way (dropping any for an
+//     event target_id already attended) - and its person<->person/person<->org connections too - dropping any that
+//     would become a self-loop once remapped; backfills every field target_id is currently blank on from :id, its own
+//     full_name untouched; then deletes :id. Irreversible - the frontend confirms before calling this. Unlike org
+//     merge, no uniqueness constraint on full_name to guard, so no name-clash case here)
 //   DELETE /people/:id -> { ok: true }
 //   GET    /people/:id/education          -> [ {id, degree, period, start_date, end_date, schools: {id, name, linkedin_url}}, ... ]
 //   GET    /people/:id/employment-history -> [ {id, title, focus, is_current, start_date, end_date, employment_type, experience_order, organizations: {id, name, org_type}}, ... ]
@@ -758,6 +765,64 @@ async function searchPeopleGlobal(query: string, includePast: boolean) {
     }
   }
   return rows;
+}
+
+// Case/accent/punctuation/spacing-insensitive fingerprint of a name - two
+// people collide here if they're spelled the same once you ignore how
+// they're spelled ("Alexis Le Portz" and "Alexis Leportz" both become
+// "alexisleportz"; an accented "Möller" and a plain "Moller" both become
+// "moller"). Deliberately narrow: catches spacing/accent/punctuation
+// variants and exact-name duplicates, NOT reordered names, nicknames, or
+// misspellings a human would still recognize - a human still confirms each
+// group before merging, this is just what surfaces candidates worth a look.
+function nameFingerprint(name: string): string {
+  return name
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")  // strip accents
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+// Groups every person by nameFingerprint and returns any group with more
+// than one person, each with enough context (current roles) for a human to
+// tell at a glance whether they're really the same person. Two passes: a
+// cheap id+name scan of the whole table first (this is what runs on every
+// people-list load, so it stays light - just two short columns), then a
+// second, detail query scoped to only the handful of people who actually
+// landed in a group, not the whole table.
+async function findDuplicatePeopleCandidates() {
+  const rows = await supabaseRequestAllPages("people", { select: "id,full_name" });
+  const groups = new Map<string, { id: string; full_name: string }[]>();
+  for (const r of rows ?? []) {
+    const key = nameFingerprint(r.full_name);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
+  }
+  const dupeGroups = [...groups.values()].filter((g) => g.length > 1);
+  if (!dupeGroups.length) return [];
+
+  const allIds = dupeGroups.flatMap((g) => g.map((p) => p.id));
+  const detailRows = await supabaseRequest("GET", "people", {
+    params: {
+      id: `in.(${allIds.join(",")})`,
+      select: "id,full_name,linkedin_url,country,memberships(title,is_current,organizations(name))",
+    },
+  });
+  const byId = new Map((detailRows ?? []).map((r: any) => [r.id, r]));
+
+  return dupeGroups.map((g) => ({
+    people: g.map((p) => {
+      const full: any = byId.get(p.id) ?? {};
+      const currentRoles = (full.memberships ?? [])
+        .filter((m: any) => m.is_current)
+        .map((m: any) => ({ title: m.title, organization: m.organizations?.name ?? null }));
+      return {
+        id: p.id, full_name: p.full_name,
+        linkedin_url: full.linkedin_url ?? null, country: full.country ?? null,
+        roles: currentRoles,
+      };
+    }),
+  }));
 }
 
 // ---------- Apollo (free organizations/enrich backfill only) ----------
@@ -1852,9 +1917,12 @@ async function mergePersonInto(
 // dedup, scoped to a single organization's membership), this moves every
 // membership across every org, not just one. Same shape as mergeOrgInto:
 // dedup memberships by (organization, title) instead of (org has this
-// person already), remap connections with a self-loop guard, backfill
-// every blank field on target from source (full_name excluded - target's
-// is the one being kept, same as an org's name), then delete source.
+// person already), move event_attendees the same way (dedup by event -
+// source's event_attendees would otherwise just cascade-delete along with
+// source, silently losing which events they attended), remap connections
+// with a self-loop guard, backfill every blank field on target from source
+// (full_name excluded - target's is the one being kept, same as an org's
+// name), then delete source.
 async function mergePersonRecordInto(sourceId: string, targetId: string) {
   if (sourceId === targetId) throw new HttpError(400, "Can't merge a person into themselves.");
   const [sourceRows, targetRows] = await Promise.all([
@@ -1877,6 +1945,19 @@ async function mergePersonRecordInto(sourceId: string, targetId: string) {
       await supabaseRequest("DELETE", "memberships", { params: { id: `eq.${m.id}` } });
     } else {
       await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${m.id}` }, body: { person_id: targetId } });
+    }
+  }
+
+  const [sourceEvents, targetEvents] = await Promise.all([
+    supabaseRequest("GET", "event_attendees", { params: { person_id: `eq.${sourceId}`, select: "id,event_id" } }),
+    supabaseRequest("GET", "event_attendees", { params: { person_id: `eq.${targetId}`, select: "event_id" } }),
+  ]);
+  const targetHasEvent = new Set((targetEvents ?? []).map((e: any) => e.event_id));
+  for (const e of sourceEvents ?? []) {
+    if (targetHasEvent.has(e.event_id)) {
+      await supabaseRequest("DELETE", "event_attendees", { params: { id: `eq.${e.id}` } });
+    } else {
+      await supabaseRequest("PATCH", "event_attendees", { params: { id: `eq.${e.id}` }, body: { person_id: targetId } });
     }
   }
 
@@ -2112,6 +2193,12 @@ Deno.serve(async (req) => {
     if (req.method === "GET" && path === "/people") {
       const q = (url.searchParams.get("q") ?? "").trim();
       return json(await searchPeopleGlobal(q, url.searchParams.get("include_past") === "true"));
+    }
+
+    // Checked ahead of the generic personIdMatch GET below, or "duplicate-
+    // candidates" would itself be parsed as a person id.
+    if (req.method === "GET" && path === "/people/duplicate-candidates") {
+      return json(await findDuplicatePeopleCandidates());
     }
 
     if (req.method === "GET" && path === "/news") {
