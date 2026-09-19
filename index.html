@@ -133,7 +133,7 @@
      lines. flex + a fixed height sidesteps baseline layout entirely -
      every line, badge or not, is exactly this tall, so the two columns
      can't drift apart. */
-  .stack-line { display: flex; align-items: center; height: 23px; }
+  .stack-line { display: flex; align-items: center; height: 18px; }
 
   .status-line { font-size: 12px; color: #6b6862; margin-top: 8px; min-height: 15px; }
   .status-line.error { color: #a33; }
@@ -467,7 +467,7 @@
             </div>
             <div id="orgMergeForm" style="display:none;margin-top:10px;">
               <div class="form-row">
-                <input type="text" id="orgMergeTarget" placeholder="Organization to merge into…" list="orgNamesDatalist">
+                <input type="text" id="orgMergeTarget" placeholder="Organization to merge into…" list="orgMergeNamesDatalist">
                 <button class="danger tiny" id="orgMergeBtn">Merge</button>
                 <button class="secondary tiny" id="orgMergeCancelBtn">Cancel</button>
               </div>
@@ -526,6 +526,7 @@
       </div>
     </div>
     <datalist id="orgNamesDatalist"></datalist>
+    <datalist id="orgMergeNamesDatalist"></datalist>
     <datalist id="peopleNamesDatalist"></datalist>
 
     <!-- Bottom-left: people list -->
@@ -1704,7 +1705,23 @@ function toggleOrgMergeForm(show) {
     document.getElementById("orgMergeTarget").value = "";
     document.getElementById("orgMergeStatus").textContent = "";
     document.getElementById("orgMergeStatus").className = "status-line";
+  } else {
+    refreshOrgMergeDatalist();
   }
+}
+
+// Refreshes orgListCache from the server (loadOrgList - same call the org
+// list itself uses) so anything added since the page loaded shows up here
+// too, then rebuilds the merge-target datalist from it - a separate list
+// from the general-purpose orgNamesDatalist (shared with the connection-add
+// form) so this one can leave the org being merged out of its own dropdown,
+// since merging it into itself isn't a real option (mergeSelectedOrg
+// already rejects it, but there's no reason to offer it in the first place).
+async function refreshOrgMergeDatalist() {
+  await loadOrgList();
+  document.getElementById("orgMergeNamesDatalist").innerHTML = orgListCache
+    .filter(o => !selectedOrg || o.id !== selectedOrg.id)
+    .map(o => `<option value="${o.name}">`).join("");
 }
 
 // Resolves the typed name against orgListCache (same list the datalist
