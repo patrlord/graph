@@ -23,8 +23,15 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
-//     (is_starred/is_hidden are purely manual flags, set via PATCH /organizations/:id - nothing here filters by them server-side, the frontend does that client-side)
+//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc
+//     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
+//     (is_starred/is_hidden filter server-side here now (starred_only/show_hidden), same for jpl_only (connected_to_user) - the main org list is
+//     paginated (see limit/offset below) so it can no longer filter client-side against data it hasn't loaded. q searches name or hq_country,
+//     accent-insensitive, via search_organizations_by_text (migration_023) instead of a plain filter. sort is one of name/hq_country/org_type/
+//     updated_at (default name), dir asc/desc (default asc). limit/offset: when limit is given, returns exactly one page - the frontend's
+//     infinite scroll (index.html) decides there's a next page only when a page comes back full. limit OMITTED (not limit=0): returns
+//     everything, paginated internally (supabaseRequestAllPages) - the pre-pagination behavior, still used by callers that need the full list
+//     in one shot regardless of what the main list is showing (the merge-target dropdown, the add-connection org picker).
 //     (country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from
 //     hq_country, which stays free text (e.g. "Paris, France") for the detail pane and research prompts)
 //     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true.
@@ -51,14 +58,20 @@
 //     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI.
 //     A name that collides case-insensitively with a different org is rejected with a clean 409 - "merge into it instead" -
 //     rather than the raw unique-constraint error organizations_name_key would otherwise surface)
-//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, country_code, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba, li_profile_fetched_at}, ... ]
-//     (q omitted/empty -> all people, no cap (paginated internally, see supabaseRequestAllPages); include_past=true returns one row per membership - e.g. two past
+//   GET    /people?q=term&include_past=true&limit=100&offset=0&starred_only=true&ba_only=true&show_hidden=true&jpl_only=true
+//     -> [ {id, full_name, linkedin_url, country, country_code, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba, li_profile_fetched_at}, ... ]
+//     (q omitted/empty -> all people; include_past=true returns one row per membership - e.g. two past
 //     roles at the same company both show - instead of the default one row per person, their best/current membership only.
 //     q, when given, matches via the search_people_by_name RPC (migration_020) rather than a plain ilike filter, so it's
 //     accent-insensitive - "kart" matches "Kärt", "romeo" matches "Roméo" - via Postgres's own unaccent().
+//     starred_only/ba_only/show_hidden/jpl_only (connected_to_user) filter server-side here now - the main people list is paginated (see
+//     limit/offset below) so it can no longer filter client-side against data it hasn't loaded. limit given: returns exactly one page - the
+//     frontend's infinite scroll (index.html) decides there's a next page only when a page comes back full. limit OMITTED (not limit=0):
+//     returns everything, paginated internally (supabaseRequestAllPages) - the pre-pagination behavior, still used by callers that need the
+//     full list in one shot regardless of what the main list is showing (the merge-target dropdown, see ensurePeopleNamesCache).
 //     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
 //     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds.
-//     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id - nothing here filters by them server-side, the frontend does that client-side.
+//     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id.
 //     country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from country, which stays free text.
 //     Deliberately lean - no li_* LinkedIn-profile fields (photo, headline, about, experience, ...) - see GET /people/:id for those)
 //   GET    /people/duplicate-candidates -> [ { people: [ {id, full_name, linkedin_url, country, roles: [{title, organization}]}, ... ] }, ... ]
@@ -548,36 +561,86 @@ async function getUserConnectedPersonIds(): Promise<Set<string>> {
 // investment organizations and would otherwise flood the primary list this
 // tool is actually about. includeEmployers is the escape hatch for browsing
 // them directly when wanted.
-async function listOrganizations(includeEmployers: boolean) {
+// Every org with at least one person (current or past) who is themselves
+// flagged is_user, or connected to one via `connections` - the JPL column,
+// and (below) the jpl_only filter. A flat scan of (organization_id,
+// person_id) pairs, cheap regardless of how many orgs are actually being
+// asked about, so it's not worth scoping to just one page's ids (that
+// would mean an in.(...) list of up to ~1500 UUIDs in the query string
+// instead) - computed the same way whether or not jpl_only is set.
+async function computeConnectedOrgIds(): Promise<Set<string>> {
+  const connectedIds = await getUserConnectedPersonIds();
+  const connectedOrgIds = new Set<string>();
+  if (!connectedIds.size) return connectedOrgIds;
+  const memberships = await supabaseRequestAllPages("memberships", { select: "organization_id,person_id" });
+  for (const m of memberships) {
+    if (connectedIds.has(m.person_id)) connectedOrgIds.add(m.organization_id);
+  }
+  return connectedOrgIds;
+}
+
+const ORG_SORT_COLUMNS = new Set(["name", "hq_country", "org_type", "updated_at"]);
+
+type ListOrganizationsOptions = {
+  includeEmployers: boolean;
+  q?: string;
+  limit?: number;
+  offset?: number;
+  starredOnly?: boolean;
+  showHidden?: boolean;
+  jplOnly?: boolean;
+  sort?: string;
+  dir?: "asc" | "desc";
+};
+
+// limit omitted (undefined): returns everything (supabaseRequestAllPages) -
+// the pre-pagination behavior, still relied on by callers that need the
+// full list in one shot regardless of what the main org list is currently
+// showing (the merge-target dropdown, the add-connection org picker; see
+// index.html). limit given: a single page, for the main org list's
+// infinite scroll - the caller decides whether there's a next page by
+// whether this one came back full. q, when given, searches via
+// search_organizations_by_text (migration_023) - accent-insensitive name
+// or hq_country match - instead of the old client-side filter, since a
+// paginated list can't be searched against data it hasn't loaded yet.
+async function listOrganizations(opts: ListOrganizationsOptions) {
+  const sortColumn = opts.sort && ORG_SORT_COLUMNS.has(opts.sort) ? opts.sort : "name";
+  const sortDir = opts.dir === "desc" ? "desc" : "asc";
   const params: Record<string, string> = {
     // li_profile_fetched_at is a single cheap timestamp (not one of the
     // heavier li_* profile fields) - included so the list can compute
     // "enriched in the last month" for the count tooltip (index.html)
     // without a separate fetch.
     select: "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,updated_at,is_starred,is_hidden,li_profile_fetched_at",
-    order: "name.asc",
+    order: `${sortColumn}.${sortDir}`,
   };
   // org_type <> 'employer' would silently also exclude NULL org_type rows -
   // SQL comparisons against NULL are never true, not false - which would
   // hide newly-discovered-but-not-yet-classified orgs from the list they're
   // specifically meant to show up in for classification. Include NULL
   // explicitly instead of relying on neq alone.
-  if (!includeEmployers) params.or = "(org_type.is.null,org_type.neq.employer)";
-  const orgs = await supabaseRequestAllPages("organizations", params);
+  if (!opts.includeEmployers) params.or = "(org_type.is.null,org_type.neq.employer)";
+  if (opts.starredOnly) params.is_starred = "eq.true";
+  if (!opts.showHidden) params.is_hidden = "eq.false";
+
+  let connectedOrgIds: Set<string> | null = null;
+  if (opts.jplOnly) {
+    connectedOrgIds = await computeConnectedOrgIds();
+    if (!connectedOrgIds.size) return [];
+    params.id = `in.(${[...connectedOrgIds].join(",")})`;
+  }
+
+  const resourcePath = opts.q ? "rpc/search_organizations_by_text" : "organizations";
+  if (opts.q) params.search_query = opts.q;
+
+  const orgs = opts.limit !== undefined
+    ? (await supabaseRequest("GET", resourcePath, {
+        params: { ...params, limit: String(opts.limit), offset: String(opts.offset ?? 0) },
+      })) ?? []
+    : await supabaseRequestAllPages(resourcePath, params);
   if (!orgs.length) return orgs;
 
-  const connectedIds = await getUserConnectedPersonIds();
-  const connectedOrgIds = new Set<string>();
-  if (connectedIds.size) {
-    // Unfiltered on purpose: filtering by this page's org ids would mean an
-    // `in.(...)` list of up to ~1500 UUIDs in the query string. A flat scan
-    // of (organization_id, person_id) pairs is cheap either way - paginated,
-    // since it's already well past 1000 rows.
-    const memberships = await supabaseRequestAllPages("memberships", { select: "organization_id,person_id" });
-    for (const m of memberships) {
-      if (connectedIds.has(m.person_id)) connectedOrgIds.add(m.organization_id);
-    }
-  }
+  if (!connectedOrgIds) connectedOrgIds = await computeConnectedOrgIds();
   for (const o of orgs) o.connected_to_user = connectedOrgIds.has(o.id);
   return orgs;
 }
@@ -782,7 +845,29 @@ async function createOrgConnection(
 // client-side. includePast=true: one row per membership regardless of
 // is_current, so past roles show too (e.g. two past stints at the same
 // company).
-async function searchPeopleGlobal(query: string, includePast: boolean) {
+type SearchPeopleOptions = {
+  query: string;
+  includePast: boolean;
+  limit?: number;
+  offset?: number;
+  starredOnly?: boolean;
+  baOnly?: boolean;
+  showHidden?: boolean;
+  jplOnly?: boolean;
+};
+
+// limit omitted: returns everything, paginated internally
+// (supabaseRequestAllPages) - the pre-pagination behavior, still relied on
+// by callers that need the full list in one shot regardless of what the
+// main people list is currently showing (the merge-target dropdown, see
+// ensurePeopleNamesCache in index.html). limit given: a single page, for
+// the main list's infinite scroll - the caller decides whether there's a
+// next page by whether this one came back full. starred_only/ba_only/
+// show_hidden/jpl_only filter server-side here now, for the same reason
+// the org list's toggles do - a paginated list can't be filtered
+// client-side against data it hasn't loaded yet.
+async function searchPeopleGlobal(opts: SearchPeopleOptions) {
+  const { query, includePast } = opts;
   const params: Record<string, string> = {
     // Lean, list-only fields - NOT select=* - the li_* LinkedIn-profile
     // columns (photo, headline, about, experience, education, skills, ...)
@@ -801,23 +886,34 @@ async function searchPeopleGlobal(query: string, includePast: boolean) {
     select: "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,li_profile_fetched_at,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
     order: "full_name.asc",
   };
-  // A real search stays capped at 25 (a search box result list, not meant to
-  // return everything) - but "all people" (empty query) is a genuine full
-  // table scan, long since past the 1000-row single-request cap, so it
-  // needs to page through rather than silently truncating alphabetically
-  // (see supabaseRequestAllPages). A real search also goes through the
-  // search_people_by_name RPC (migration_020) instead of a plain ilike
-  // filter, so it's accent-insensitive - "kart" matches "Kärt", "romeo"
-  // matches "Roméo" - via Postgres's own unaccent() rather than
-  // reimplementing accent folding here; select=/order=/limit= still work
-  // on it the same as a normal table query since it's STABLE and returns
-  // setof people.
-  const [people, connectedIds] = await Promise.all([
-    query
-      ? supabaseRequest("GET", "rpc/search_people_by_name", { params: { ...params, search_query: query, limit: "25" } })
-      : supabaseRequestAllPages("people", params),
-    getUserConnectedPersonIds(),
-  ]);
+  if (opts.starredOnly) params.is_starred = "eq.true";
+  if (opts.baOnly) params.is_ba = "eq.true";
+  if (!opts.showHidden) params.is_hidden = "eq.false";
+
+  // connectedIds is needed for connected_to_user on every row regardless of
+  // jpl_only, so it's always computed - jpl_only just also uses it as an id
+  // filter on the query below.
+  const connectedIds = await getUserConnectedPersonIds();
+  if (opts.jplOnly) {
+    if (!connectedIds.size) return [];
+    params.id = `in.(${[...connectedIds].join(",")})`;
+  }
+
+  // A real search goes through the search_people_by_name RPC (migration_020)
+  // instead of a plain ilike filter, so it's accent-insensitive - "kart"
+  // matches "Kärt", "romeo" matches "Roméo" - via Postgres's own unaccent()
+  // rather than reimplementing accent folding here; select=/order=/limit=
+  // still work on it the same as a normal table query since it's STABLE and
+  // returns setof people.
+  const resourcePath = query ? "rpc/search_people_by_name" : "people";
+  if (query) params.search_query = query;
+
+  const people = opts.limit !== undefined
+    ? (await supabaseRequest("GET", resourcePath, {
+        params: { ...params, limit: String(opts.limit), offset: String(opts.offset ?? 0) },
+      })) ?? []
+    : await supabaseRequestAllPages(resourcePath, params);
+
   const rows: any[] = [];
   for (const p of people ?? []) {
     const { memberships, ...rest } = p;
@@ -2285,7 +2381,19 @@ Deno.serve(async (req) => {
     }
 
     if (req.method === "GET" && path === "/organizations") {
-      return json(await listOrganizations(url.searchParams.get("include_employers") === "true"));
+      const limitParam = url.searchParams.get("limit");
+      const offsetParam = url.searchParams.get("offset");
+      return json(await listOrganizations({
+        includeEmployers: url.searchParams.get("include_employers") === "true",
+        q: (url.searchParams.get("q") ?? "").trim() || undefined,
+        limit: limitParam !== null ? parseInt(limitParam, 10) : undefined,
+        offset: offsetParam !== null ? parseInt(offsetParam, 10) : undefined,
+        starredOnly: url.searchParams.get("starred_only") === "true",
+        showHidden: url.searchParams.get("show_hidden") === "true",
+        jplOnly: url.searchParams.get("jpl_only") === "true",
+        sort: url.searchParams.get("sort") ?? undefined,
+        dir: url.searchParams.get("dir") === "desc" ? "desc" : "asc",
+      }));
     }
 
     // Checked ahead of orgIdMatch below, or "duplicate-candidates" would
@@ -2304,8 +2412,18 @@ Deno.serve(async (req) => {
     }
 
     if (req.method === "GET" && path === "/people") {
-      const q = (url.searchParams.get("q") ?? "").trim();
-      return json(await searchPeopleGlobal(q, url.searchParams.get("include_past") === "true"));
+      const limitParam = url.searchParams.get("limit");
+      const offsetParam = url.searchParams.get("offset");
+      return json(await searchPeopleGlobal({
+        query: (url.searchParams.get("q") ?? "").trim(),
+        includePast: url.searchParams.get("include_past") === "true",
+        limit: limitParam !== null ? parseInt(limitParam, 10) : undefined,
+        offset: offsetParam !== null ? parseInt(offsetParam, 10) : undefined,
+        starredOnly: url.searchParams.get("starred_only") === "true",
+        baOnly: url.searchParams.get("ba_only") === "true",
+        showHidden: url.searchParams.get("show_hidden") === "true",
+        jplOnly: url.searchParams.get("jpl_only") === "true",
+      }));
     }
 
     // Checked ahead of the generic personIdMatch GET below, or "duplicate-

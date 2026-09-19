@@ -319,6 +319,7 @@
   }
   .people-scope-clear:hover { background: #c8dff0; }
   .empty-note { font-size: 12px; color: #8a877e; padding: 4px 2px; }
+  .list-loading-more { font-size: 11.5px; color: #8a877e; text-align: center; padding: 8px 0; }
 
   .news-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e2e0dc; }
   .header-divider { margin-top: 10px; border-top: 1px dashed #e2e0dc; }
@@ -405,6 +406,7 @@
         </div>
         <div class="panel-tools">
           <input type="text" id="orgSearchInput" placeholder="Search…">
+          <button class="secondary tiny" id="orgSearchBtn">Search</button>
           <button class="secondary tiny" id="orgSearchClearBtn">Clear</button>
           <button class="tiny" id="orgAddToggleBtn">+ Add</button>
         </div>
@@ -417,7 +419,7 @@
       </div>
 
       <div id="orgListView" class="list-view">
-        <div class="scroll-box">
+        <div class="scroll-box" id="orgListScrollBox">
           <table class="sortable-table" id="orgTable">
             <thead>
               <tr>
@@ -431,6 +433,7 @@
             </thead>
             <tbody id="orgList"></tbody>
           </table>
+          <div class="list-loading-more" id="orgLoadingMore" style="display:none">Loading more…</div>
         </div>
         <div class="empty-note" id="emptyOrgList" style="display:none">None saved yet.</div>
       </div>
@@ -533,7 +536,7 @@
                   <option value="division_of">Division of…</option>
                   <option value="other">Other relationship…</option>
                 </select>
-                <input type="text" id="connOtherName" placeholder="Organization name" list="orgNamesDatalist">
+                <input type="text" id="connOtherName" placeholder="Organization name" list="orgMergeNamesDatalist">
               </div>
               <div style="display:flex;gap:10px;align-items:center;">
                 <button class="secondary tiny" id="connSaveBtn">Save</button>
@@ -553,7 +556,6 @@
         </div>
       </div>
     </div>
-    <datalist id="orgNamesDatalist"></datalist>
     <datalist id="orgMergeNamesDatalist"></datalist>
     <datalist id="peopleNamesDatalist"></datalist>
 
@@ -567,6 +569,7 @@
         </div>
         <div class="panel-tools">
           <input type="text" id="peopleSearchInput" placeholder="Search…">
+          <button class="secondary tiny" id="peopleSearchBtn">Search</button>
           <button class="secondary tiny" id="peopleSearchClearBtn">Clear</button>
           <button class="tiny" id="personAddToggleBtn">+ Add</button>
         </div>
@@ -580,7 +583,7 @@
       </div>
 
       <div id="peopleListView" class="list-view">
-        <div class="scroll-box">
+        <div class="scroll-box" id="peopleListScrollBox">
           <table class="sortable-table" id="peopleTable">
             <thead>
               <tr>
@@ -596,6 +599,7 @@
             </thead>
             <tbody id="peopleList"></tbody>
           </table>
+          <div class="list-loading-more" id="peopleLoadingMore" style="display:none">Loading more…</div>
         </div>
         <div class="empty-note" id="emptyPeopleList" style="display:none">Select an organization, or search all people.</div>
       </div>
@@ -805,8 +809,7 @@ function countryCellFor(entity, freeText) {
   return entity.country_code || countryCodeFromName(freeText) || freeText || null;
 }
 
-let orgListCache = [];
-let orgViewCache = [];   // currently filtered+sorted org list (what's actually rendered)
+let orgListCache = [];   // whatever's currently loaded (search/filter/sort already applied server-side, see reloadOrgList/loadMoreOrgs)
 let selectedOrg = null;   // full org detail incl. .people (membership rows)
 let selectedPersonId = null;
 let peopleForceGlobal = false;  // true after "Clear" is pressed: show all people regardless of org selection
@@ -860,14 +863,14 @@ function showApp(user) {
   document.getElementById("signedInAs").textContent = user.email;
   document.getElementById("signedInAs").style.display = "inline";
   document.getElementById("signOutBtn").style.display = "inline";
-  loadOrgList();
+  reloadOrgList();
   checkForDuplicateOrgs();
   // Same as pressing "Clear" next to the people search box - no org
   // selected yet, so without this the list would otherwise start on its
   // "Select an organization, or search all people." empty state.
   peopleForceGlobal = true;
   updatePeopleHeader();
-  applyPeopleFilter();
+  reloadPeopleList();
   checkForDuplicatePeople();
 }
 
@@ -973,6 +976,8 @@ function renderNewsList(containerId, items) {
 
 // ---------- organizations: list + search + sort ----------
 
+const LIST_PAGE_SIZE = 100;
+
 let orgSort = { field: "name", dir: "asc" };
 
 let includeEmployers = false;  // "Include past employers" toggle next to the org search box
@@ -980,44 +985,85 @@ let orgStarredOnly = false;    // "Starred only" toggle
 let orgJplOnly = false;        // "JPL only" toggle - only orgs connected_to_user (the JPL column)
 let orgShowHidden = false;     // "Show hidden" toggle - hidden orgs are excluded unless this is checked
 
-async function loadOrgList() {
-  const res = await api(`/organizations${includeEmployers ? "?include_employers=true" : ""}`);
-  if (!res.ok) { orgListCache = []; renderOrgList([]); return; }
-  orgListCache = await res.json();
-  applyOrgFilter();
-  document.getElementById("orgNamesDatalist").innerHTML =
-    orgListCache.map(o => `<option value="${o.name}">`).join("");
-}
+let orgOffset = 0;
+let orgHasMore = true;
+let orgLoadingMore = false;
 
 // Strips accents so search can be typed without them - "cafe" matches
-// "Café", "moller" matches "Möller" - same technique (and reasoning) as
-// the backend's nameFingerprint for duplicate detection, just applied here
-// to a search match instead of an exact-fingerprint match. The org list is
-// always fully loaded client-side already, so this runs in the browser
-// rather than needing a server round-trip (unlike people search, which
-// goes through the search_people_by_name Postgres function instead, see
-// migration_020 - the org list has no equivalent DB-side search step to
-// intercept, it's plain Array.filter over orgListCache).
+// "Café", "moller" matches "Möller" - same technique (and reasoning) as the
+// backend's nameFingerprint for duplicate detection. Org search itself is
+// server-side now (search_organizations_by_text, migration_023 - the org
+// list is paginated, see below, so it can't filter client-side against
+// data it hasn't loaded), but this is still used for the org-scoped
+// people-list search and the merge/connection dropdown resolution.
 function foldAccents(s) {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
-function applyOrgFilter() {
-  const q = foldAccents(document.getElementById("orgSearchInput").value.trim().toLowerCase());
-  let filtered = !q ? orgListCache.slice() : orgListCache.filter(o =>
-    foldAccents(o.name.toLowerCase()).includes(q) ||
-    foldAccents((o.hq_country || "").toLowerCase()).includes(q) ||
-    foldAccents((ORG_TYPE_LABEL[o.org_type] || o.org_type || "").toLowerCase()).includes(q) ||
-    (o.sectors || []).some(s => foldAccents(s.toLowerCase()).includes(q))
-  );
-  // Hidden is an override, independent of "starred only" - checking
-  // "starred only" doesn't bring hidden-but-starred orgs back into view.
-  if (!orgShowHidden) filtered = filtered.filter(o => !o.is_hidden);
-  if (orgStarredOnly) filtered = filtered.filter(o => o.is_starred);
-  if (orgJplOnly) filtered = filtered.filter(o => o.connected_to_user);
-  filtered.sort(makeComparator(orgSort, (item, field) => field === "org_type" ? (ORG_TYPE_LABEL[item.org_type] || item.org_type) : undefined));
-  orgViewCache = filtered;
-  renderOrgList(filtered);
+// Only the columns the backend actually supports sorting by server-side
+// (listOrganizations's ORG_SORT_COLUMNS) - clicking any other header (there
+// aren't currently any) would be a no-op rather than silently sorting only
+// whatever page happens to be loaded.
+const ORG_SERVER_SORT_FIELDS = new Set(["name", "hq_country", "org_type"]);
+
+// A real reload from the server, page 1, with whatever search/toggle/sort
+// state is currently set - used for anything that changes WHAT should be
+// showing (the Search button/Enter, a toggle, a sort header, the initial
+// load) as opposed to something that only changed a field on an
+// already-loaded row (see refreshOrgListDisplay for that case, which is
+// cheap and doesn't touch the network).
+async function reloadOrgList() {
+  orgOffset = 0;
+  orgHasMore = true;
+  const page = await fetchOrgPage(0);
+  orgListCache = page;
+  orgOffset = page.length;
+  orgHasMore = page.length === LIST_PAGE_SIZE;
+  renderOrgList(orgListCache);
+}
+
+// Appends the next page - called when the list is scrolled near the bottom
+// (see the orgListScrollBox listener). A person's/org's own row can't be
+// split across pages since limit/offset apply to the outer query, so this
+// is always safe to just concatenate.
+async function loadMoreOrgs() {
+  if (orgLoadingMore || !orgHasMore) return;
+  orgLoadingMore = true;
+  document.getElementById("orgLoadingMore").style.display = "block";
+  try {
+    const page = await fetchOrgPage(orgOffset);
+    orgListCache = orgListCache.concat(page);
+    orgOffset += page.length;
+    orgHasMore = page.length === LIST_PAGE_SIZE;
+    renderOrgList(orgListCache);
+  } finally {
+    orgLoadingMore = false;
+    document.getElementById("orgLoadingMore").style.display = "none";
+  }
+}
+
+async function fetchOrgPage(offset) {
+  const params = new URLSearchParams({ limit: String(LIST_PAGE_SIZE), offset: String(offset) });
+  const q = document.getElementById("orgSearchInput").value.trim();
+  if (q) params.set("q", q);
+  if (includeEmployers) params.set("include_employers", "true");
+  if (orgStarredOnly) params.set("starred_only", "true");
+  if (orgShowHidden) params.set("show_hidden", "true");
+  if (orgJplOnly) params.set("jpl_only", "true");
+  if (ORG_SERVER_SORT_FIELDS.has(orgSort.field)) {
+    params.set("sort", orgSort.field);
+    params.set("dir", orgSort.dir);
+  }
+  const res = await api(`/organizations?${params.toString()}`);
+  return res.ok ? await res.json() : [];
+}
+
+// Re-renders whatever's already loaded, in place - no network call. For a
+// field that changed on one already-loaded org (a star toggle, a LinkedIn
+// find/enrich result) rather than a real search/filter/sort change, which
+// needs reloadOrgList instead.
+function refreshOrgListDisplay() {
+  renderOrgList(orgListCache);
 }
 
 // fieldValueFn(item, field) may return an override display value for a field
@@ -1056,7 +1102,7 @@ function renderOrgList(orgs) {
   const countEl = document.getElementById("orgListCount");
   countEl.textContent = String(orgs.length);
   countEl.title = `${enrichedInLastMonthCount(orgs)} enriched in the last month`;
-  wireSortHeaders("orgTable", orgSort, applyOrgFilter);
+  wireSortHeaders("orgTable", orgSort, reloadOrgList);
   if (!orgs.length) { listEl.innerHTML = ""; emptyEl.style.display = "block"; return; }
   emptyEl.style.display = "none";
   listEl.innerHTML = orgs.map(o => `
@@ -1138,10 +1184,10 @@ async function toggleOrgFlag(org, field, btnEl) {
     if (selectedOrg && selectedOrg.id === org.id) {
       selectedOrg[field] = data[field];
       // Keep the detail-pane star in step with the list star (either can be
-      // the one clicked) - applyOrgFilter re-renders the list, not the pane.
+      // the one clicked) - refreshOrgListDisplay re-renders the list, not the pane.
       if (field === "is_starred") syncDetailStar(document.getElementById("detOrgStarBtn"), data[field]);
     }
-    applyOrgFilter();
+    refreshOrgListDisplay();
   } catch (err) {
     alert(err.message);
   } finally {
@@ -1151,7 +1197,7 @@ async function toggleOrgFlag(org, field, btnEl) {
 
 // Same idea as toggleOrgFlag, for a person. Also has selectedOrg.people to
 // keep in sync (org-mode's list is re-derived from it on every filter
-// pass, not re-fetched - see applyPeopleFilter) - its rows wrap the person
+// pass, not re-fetched - see reloadPeopleList) - its rows wrap the person
 // under .people, a different object than the flattened one currentPeopleItems
 // holds (normalizePeopleItems copies it), so both need the new value written in.
 async function togglePersonFlag(person, field, btnEl) {
@@ -1168,7 +1214,7 @@ async function togglePersonFlag(person, field, btnEl) {
       if (field === "is_starred") syncDetailStar(document.getElementById("detPersonStarBtn"), data[field]);
     }
     syncPersonInOrgList(person.id, field, data[field]);
-    applyPeopleFilter();
+    refreshPeopleListDisplay();
   } catch (err) {
     alert(err.message);
   } finally {
@@ -1203,7 +1249,7 @@ async function togglePersonCheckbox(person, field, checkboxEl) {
     person[field] = data[field];
     if (selectedPersonObj && selectedPersonObj.id === person.id) selectedPersonObj[field] = data[field];
     syncPersonInOrgList(person.id, field, data[field]);
-    applyPeopleFilter();
+    refreshPeopleListDisplay();
   } catch (err) {
     checkboxEl.checked = !newValue;
     alert(err.message);
@@ -1251,7 +1297,7 @@ async function runFindOrgLinkedin(org, btnEl) {
         renderOrgDetail(selectedOrg);
         updatePeopleHeader();  // in case a rename changed "People at <org>"
       }
-      applyOrgFilter();
+      refreshOrgListDisplay();
     } else if (data.candidates && data.candidates.length) {
       // Couldn't confidently tell apart same-or-similar-named companies -
       // nothing saved (see findOrgLinkedin) - surfaced in the org detail
@@ -1283,6 +1329,13 @@ async function runFindOrgLinkedin(org, btnEl) {
 // name guard, filling org_type/hq_country/sectors only if currently blank -
 // is redone here client-side against orgListCache instead, so picking a
 // candidate behaves the same as if it had come back as the sole match.
+// Both checks are best-effort against whatever's currently loaded (the org
+// list is paginated - see reloadOrgList/loadMoreOrgs), not the full table:
+// a real name clash still can't slip through, though - PATCH /organizations/:id
+// has its own server-side guard (returns a clean 409) as a backstop, just
+// surfaced via the catch block below instead of proactively here in that
+// case. A missed duplicate-URL warning is lower-stakes (purely
+// informational) and would still turn up via the merge-candidates check.
 async function useOrgLinkedinCandidate(candidate) {
   if (!selectedOrg) return;
   const status = document.getElementById("enrichOrgViewStatus");
@@ -1310,7 +1363,7 @@ async function useOrgLinkedinCandidate(candidate) {
     selectedOrg.li_name_clash = nameClash;
     renderOrgDetail(selectedOrg);  // resets status
     updatePeopleHeader();  // in case a rename changed "People at <org>"
-    loadOrgList();
+    reloadOrgList();  // selectedOrg's own fields (name, linkedin_url, ...) changed, not just orgListCache's copy
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   }
@@ -1334,7 +1387,7 @@ function dismissOrgLinkedinCandidates() {
 // found/not-found, which are already visible in the list itself.
 async function runFindAllOrgLinkedin(btnEl) {
   if (btnEl.disabled) return;
-  const targets = orgViewCache.filter(o => !o.linkedin_url);
+  const targets = orgListCache.filter(o => !o.linkedin_url);
   if (!targets.length) return;
   const originalText = btnEl.textContent;
   btnEl.disabled = true;
@@ -1380,7 +1433,7 @@ function updatePeopleHeader() {
     document.getElementById("peopleScopeClearBtn").addEventListener("click", () => {
       peopleForceGlobal = true;
       updatePeopleHeader();
-      applyPeopleFilter();
+      reloadPeopleList();
     });
   } else {
     titleEl.textContent = "People";
@@ -1651,7 +1704,7 @@ async function saveOrgEdits() {
     Object.assign(selectedOrg, data);
     renderOrgDetail(selectedOrg);  // back to the view, showing the saved values; also exits edit mode
     updatePeopleHeader();
-    loadOrgList();
+    reloadOrgList();  // selectedOrg's own fields changed, not just orgListCache's copy
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally {
@@ -1734,7 +1787,7 @@ async function addOrgConnection() {
     status.textContent = "";
     document.getElementById("connAddForm").style.display = "none";
     loadOrgConnections(selectedOrg);
-    loadOrgList();  // in case a new "group" org was created
+    reloadOrgList();  // in case a new "group" org was created
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
   } finally { btn.disabled = false; }
@@ -1762,10 +1815,10 @@ async function deleteSelectedOrg() {
     document.getElementById("orgDetailEmpty").style.display = "block";
     document.getElementById("orgDetailContent").classList.remove("shown");
     highlightSelected("orgList", null);
-    loadOrgList();
+    reloadOrgList();
     peopleForceGlobal = true;
     updatePeopleHeader();
-    applyPeopleFilter();
+    reloadPeopleList();
   } catch (err) {
     alert(err.message);
   } finally {
@@ -1785,26 +1838,24 @@ function toggleOrgMergeForm(show) {
   }
 }
 
-// Refreshes orgListCache from the server (loadOrgList - same call the org
-// list itself uses) so anything added since the page loaded shows up here
-// too, then rebuilds the merge-target datalist from it - a separate list
-// from the general-purpose orgNamesDatalist (shared with the connection-add
-// form) so this one can leave the org being merged out of its own dropdown,
-// since merging it into itself isn't a real option (mergeSelectedOrg
-// already rejects it, but there's no reason to offer it in the first place).
-// orgListCache (what loadOrgList populates, and the merge dropdown used to
-// be built from directly) excludes org_type "employer" - auto-created
-// past-employer stubs - unless "Include past employers" is checked, since
-// the main org list is meant for browsing real organizations, not the
-// noise of everyone's past jobs. But those stubs are exactly the kind of
-// low-quality, duplicate-prone record most worth merging away (reported
-// bug: "Capgemini" - an employer stub - didn't show up as a merge target
-// at all) - so the merge dropdown needs its own always-everything fetch,
-// independent of that toggle, cached here so mergeSelectedOrg can resolve
-// against the same list the dropdown was actually built from.
+// A fresh, always-everything fetch (no limit - see listOrganizations)
+// rebuilds this datalist - shared by both the merge-target field and the
+// connection-add form's org-name field, excluding the org currently open
+// (from either field's point of view, connecting or merging it into itself
+// isn't a real option - mergeSelectedOrg already rejects a self-merge too,
+// but there's no reason to offer either in the first place). Deliberately
+// doesn't touch the main (paginated) org list or its own search/toggle/
+// scroll state - just this datalist.
+//
+// Includes org_type "employer" stubs regardless of the main list's
+// "Include past employers" toggle - the main list hides those by default
+// since it's meant for browsing real organizations, not the noise of
+// everyone's past jobs, but those stubs are exactly the kind of
+// low-quality, duplicate-prone record most worth merging away or
+// connecting to (reported bug: "Capgemini" - an employer stub - didn't
+// show up as a merge target at all).
 let orgMergeCache = null;  // [{id, name}, ...] | null
 async function refreshOrgMergeDatalist() {
-  await loadOrgList();  // keeps the main org list + its own datalist fresh too
   const res = await api("/organizations?include_employers=true");
   orgMergeCache = res.ok ? await res.json() : orgListCache;
   document.getElementById("orgMergeNamesDatalist").innerHTML = orgMergeCache
@@ -1840,7 +1891,7 @@ async function mergeSelectedOrg() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Merge failed");
     toggleOrgMergeForm(false);
-    loadOrgList();
+    reloadOrgList();
     await selectOrg(target.id);  // the merged-away org no longer exists - show the survivor instead
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
@@ -1902,7 +1953,7 @@ async function enrichSelectedOrg() {
       // more to chain here. That other org's list row picks up the update;
       // this one's pane (if still open) is left exactly as it was, not
       // jumped to the other org.
-      loadOrgList();
+      reloadOrgList();
       if (isCurrent()) status.textContent = `Matched an existing different organization ("${saveData.organization.name}") by name instead - nothing changed here.`;
       return;
     }
@@ -1927,14 +1978,14 @@ async function enrichSelectedOrg() {
       } else if (findRes.ok && findData.candidates?.length) {
         // Couldn't confidently tell same/similar-named companies apart -
         // nothing saved server-side. Left as a "N options" badge on the
-        // list row (applyOrgFilter below); the picker itself only shows
-        // in the detail pane, whenever this org is next open.
+        // list row (refreshOrgListDisplay below); the picker itself only
+        // shows in the detail pane, whenever this org is next open.
         org.li_find_candidates = findData.candidates;
         showOnScreen();
         if (isCurrent()) {
           status.textContent = `Researched — found ${findData.candidates.length} possible LinkedIn ${findData.candidates.length > 1 ? "pages" : "page"} for this company but couldn't confirm which; pick one above.`;
         }
-        applyOrgFilter();
+        refreshOrgListDisplay();
         return;
       }
     }
@@ -1959,7 +2010,7 @@ async function enrichSelectedOrg() {
     } else if (isCurrent()) {
       status.textContent = "Researched — no LinkedIn URL found, so its LinkedIn profile couldn't be fetched.";
     }
-    applyOrgFilter();  // name (and/or other list-visible fields) may have changed
+    refreshOrgListDisplay();  // name (and/or other list-visible fields) may have changed
   } catch (err) {
     if (isCurrent()) { status.className = "status-line error"; status.textContent = err.message; }
   } finally {
@@ -2204,12 +2255,20 @@ function renderPeopleList(items, mode) {
   const normalized = normalizePeopleItems(items, mode);
   let filtered = includePastRoles ? normalized : normalized.filter(item => item.is_current !== false);
   // Hidden is an override, independent of "starred only" - same rule as
-  // the organizations list (applyOrgFilter).
+  // the organizations list. (These filters are now redundant for global
+  // mode - the server already applies them, see reloadPeopleList/
+  // fetchPeoplePage - but still needed for org mode, which stays
+  // unpaginated/client-filtered; harmless to re-apply either way.)
   if (!peopleShowHidden) filtered = filtered.filter(item => !item.is_hidden);
   if (peopleStarredOnly) filtered = filtered.filter(item => item.is_starred);
   if (peopleBAOnly) filtered = filtered.filter(item => item.is_ba);
   if (peopleJplOnly) filtered = filtered.filter(item => item.connected_to_user);
   currentPeopleItems = groupPeopleByPerson(filtered);
+  // Client-side, unlike the org list's sort headers (which reload from the
+  // server) - sorts whatever's currently loaded, not the full match set.
+  // Fine for the default (name, matching the server's own order.asc) and
+  // for org mode (never paginated); clicking a different column in the
+  // paginated global list only sorts the pages already loaded so far.
   wireSortHeaders("peopleTable", peopleSort, () => {
     currentPeopleItems.sort(peopleComparator());
     renderPeopleTableBody();
@@ -2465,10 +2524,10 @@ async function mergeDupeGroup(groupIndex) {
     renderDupeModal();
     updateMergeCandidatesBtn(dupeModalMode);
     if (isOrgs) {
-      loadOrgList();
+      reloadOrgList();
     } else {
       peopleNamesCache = null;  // stale now - refreshed lazily next time a merge form opens
-      applyPeopleFilter();
+      reloadPeopleList();
     }
   } catch (err) {
     status.className = "status-line error"; status.textContent = err.message;
@@ -2546,7 +2605,7 @@ async function refreshAfterPersonMerge(survivingId, oldId) {
     // outcome) has nothing to do with whoever else is currently open.
     await selectOrg(selectedOrg.id, true);
   } else {
-    await applyPeopleFilter();
+    await reloadPeopleList();
   }
   if (wasSelected) {
     const survivor = currentPeopleItems.find(p => p.id === survivingId);
@@ -2812,7 +2871,7 @@ function updatePersonEnrichStatus(person) {
 // user has navigated away from still saves its results, just quietly;
 // they're there next time that person is opened. Every status.textContent
 // below is deliberately the next line after a showPersonDetail/selectOrg/
-// applyPeopleFilter call, never before - each of those resets the status
+// reloadPeopleList call, never before - each of those resets the status
 // line via updatePersonEnrichStatus, same discipline enrichSelectedOrg
 // follows.
 async function enrichSelectedPerson() {
@@ -2877,13 +2936,13 @@ async function enrichSelectedPerson() {
     // the people-table row, with no title/organization to hand-patch cached
     // list rows with, so reload whichever people list could be showing them
     // from the backend instead. currentPeopleItems isn't otherwise touched.
-    // (selectOrg/applyPeopleFilter here only refresh data within whatever
+    // (selectOrg/reloadPeopleList here only refresh data within whatever
     // scope is already showing - true keeps selectOrg from also touching
     // the person pane, which is handled separately below.)
     if (currentPeopleMode === "org" && selectedOrg) {
       await selectOrg(selectedOrg.id, true);
     } else {
-      await applyPeopleFilter();
+      await reloadPeopleList();
     }
     if (isCurrent()) showPersonDetail(person);  // also restores the date via updatePersonEnrichStatus
   } catch (err) {
@@ -2956,7 +3015,7 @@ async function runEnrichAllPeople(btnEl) {
     else failed++;
     done++;
   }
-  await applyPeopleFilter();  // authoritative refresh - roles/orgs/names can all have changed along the way
+  await reloadPeopleList();  // authoritative refresh - roles/orgs/names can all have changed along the way
   btnEl.disabled = false;
   btnEl.textContent = originalText;
   alert(
@@ -2979,7 +3038,7 @@ async function deleteSelectedPerson() {
     if (currentPeopleMode === "org" && selectedOrg) {
       await selectOrg(selectedOrg.id, true);
     } else {
-      await applyPeopleFilter();
+      await reloadPeopleList();
     }
   } catch (err) {
     alert(err.message);
@@ -3051,7 +3110,7 @@ async function mergeSelectedPerson() {
     if (currentPeopleMode === "org" && selectedOrg) {
       await selectOrg(selectedOrg.id, true);
     } else {
-      await applyPeopleFilter();
+      await reloadPeopleList();
     }
     showPersonDetail(data);  // the merged-away person no longer exists - show the survivor instead
   } catch (err) {
@@ -3203,7 +3262,38 @@ async function searchPersonNews() {
   } finally { btn.disabled = false; }
 }
 
-async function applyPeopleFilter() {
+let peopleOffset = 0;
+let peopleHasMore = true;
+let peopleLoadingMore = false;
+
+function buildPeopleListParams(offset) {
+  const q = document.getElementById("peopleSearchInput").value.trim();
+  const params = new URLSearchParams({ limit: String(LIST_PAGE_SIZE), offset: String(offset) });
+  if (q) params.set("q", q);
+  if (includePastRoles) params.set("include_past", "true");
+  if (peopleStarredOnly) params.set("starred_only", "true");
+  if (peopleBAOnly) params.set("ba_only", "true");
+  if (peopleShowHidden) params.set("show_hidden", "true");
+  if (peopleJplOnly) params.set("jpl_only", "true");
+  return params;
+}
+
+async function fetchPeoplePage(offset) {
+  const res = await api(`/people?${buildPeopleListParams(offset).toString()}`);
+  return res.ok ? await res.json() : [];
+}
+
+// A real reload from the server, page 1, with whatever search/toggle state
+// is currently set - used for anything that changes WHAT should be showing
+// (the Search button/Enter, a toggle, the initial load, a structural change
+// like a merge/delete/enrich that can add, remove, or move people) as
+// opposed to something that only changed a field on an already-loaded
+// person (see refreshPeopleListDisplay for that case, which doesn't touch
+// the network). Org mode (viewing one org's roster) is unpaginated - that
+// list is already fully loaded (selectedOrg.people) - so this is still the
+// existing cheap client-side filter/render there, unchanged from before
+// pagination; only the global "all people" case is actually paginated.
+async function reloadPeopleList() {
   const q = document.getElementById("peopleSearchInput").value.trim().toLowerCase();
   if (selectedOrg && !peopleForceGlobal) {
     const filtered = !q ? selectedOrg.people : selectedOrg.people.filter(m =>
@@ -3212,11 +3302,60 @@ async function applyPeopleFilter() {
       (m.title || "").toLowerCase().includes(q)
     );
     renderPeopleList(filtered, "org");
-  } else if (peopleForceGlobal || q) {
-    const res = await api(`/people?q=${encodeURIComponent(q)}${includePastRoles ? "&include_past=true" : ""}`);
-    renderPeopleList(res.ok ? await res.json() : [], "global");
-  } else {
+    return;
+  }
+  if (!peopleForceGlobal && !q) {
     renderPeopleList([], "empty");
+    return;
+  }
+  peopleOffset = 0;
+  peopleHasMore = true;
+  const page = await fetchPeoplePage(0);
+  peopleOffset = page.length;
+  peopleHasMore = page.length === LIST_PAGE_SIZE;
+  renderPeopleList(page, "global");
+}
+
+// Appends the next page - called when the list is scrolled near the bottom
+// (see the peopleListScrollBox listener), global mode only (org mode has
+// nothing to page through). Groups just the newly fetched page and appends
+// the result, rather than re-deriving everyone from scratch: a person's
+// full set of memberships always arrives within one page (limit/offset
+// apply to the outer people query, memberships are nested per person, not
+// flattened before pagination - see searchPeopleGlobal), so this never
+// splits one person's roles across two calls - and, just as importantly,
+// never re-derives (and so lose) a live mutation already applied to a
+// group already showing, e.g. a star just toggled on someone from an
+// earlier page.
+async function loadMorePeople() {
+  if (peopleLoadingMore || !peopleHasMore || currentPeopleMode !== "global") return;
+  peopleLoadingMore = true;
+  document.getElementById("peopleLoadingMore").style.display = "block";
+  try {
+    const page = await fetchPeoplePage(peopleOffset);
+    peopleOffset += page.length;
+    peopleHasMore = page.length === LIST_PAGE_SIZE;
+    if (!page.length) return;
+    const normalized = normalizePeopleItems(page, "global");
+    const filtered = includePastRoles ? normalized : normalized.filter(item => item.is_current !== false);
+    currentPeopleItems = currentPeopleItems.concat(groupPeopleByPerson(filtered));
+    currentPeopleItems.sort(peopleComparator());
+    renderPeopleTableBody();
+  } finally {
+    peopleLoadingMore = false;
+    document.getElementById("peopleLoadingMore").style.display = "none";
+  }
+}
+
+// Re-renders whatever's already loaded, in place - no network call. For a
+// field that changed on one already-loaded person (a star toggle, a
+// LinkedIn find result) rather than a real search/filter/structural
+// change, which needs reloadPeopleList instead.
+function refreshPeopleListDisplay() {
+  if (currentPeopleMode === "org" && selectedOrg) {
+    renderPeopleList(selectedOrg.people, "org");
+  } else {
+    renderPeopleTableBody();
   }
 }
 
@@ -3330,7 +3469,7 @@ async function startBulkOrgAdd() {
   status.textContent = `Done: ${succeeded} / ${items.length} saved.`;
   document.getElementById("bulkOrgNames").value = "";
   document.getElementById("bulkOrgLinkedin").value = "";
-  await loadOrgList();
+  await reloadOrgList();
 }
 
 // ---------- add people (bulk: name + optional company, table entry) ----------
@@ -3428,7 +3567,7 @@ async function startBulkPeopleAdd() {
   status.textContent = `Done: ${succeeded} / ${items.length} saved.`;
   document.getElementById("bulkPeopleRows").innerHTML = "";
   addBulkPeopleRow(); addBulkPeopleRow(); addBulkPeopleRow();
-  await loadOrgList();
+  await reloadOrgList();
   if (selectedOrg) await selectOrg(selectedOrg.id);
 }
 
@@ -3438,17 +3577,33 @@ document.getElementById("loginBtn").addEventListener("click", signIn);
 document.getElementById("loginPassword").addEventListener("keydown", e => { if (e.key === "Enter") signIn(); });
 document.getElementById("signOutBtn").addEventListener("click", signOut);
 
-document.getElementById("orgSearchInput").addEventListener("input", applyOrgFilter);
-document.getElementById("orgSearchClearBtn").addEventListener("click", () => { document.getElementById("orgSearchInput").value = ""; applyOrgFilter(); });
-document.getElementById("includeEmployersToggle").addEventListener("change", e => { includeEmployers = e.target.checked; loadOrgList(); });
-document.getElementById("orgStarredOnlyToggle").addEventListener("change", e => { orgStarredOnly = e.target.checked; applyOrgFilter(); });
-document.getElementById("orgJplOnlyToggle").addEventListener("change", e => { orgJplOnly = e.target.checked; applyOrgFilter(); });
-document.getElementById("orgShowHiddenToggle").addEventListener("change", e => { orgShowHidden = e.target.checked; applyOrgFilter(); });
-document.getElementById("includePastRolesToggle").addEventListener("change", e => { includePastRoles = e.target.checked; applyPeopleFilter(); });
-document.getElementById("peopleStarredOnlyToggle").addEventListener("change", e => { peopleStarredOnly = e.target.checked; applyPeopleFilter(); });
-document.getElementById("peopleBAOnlyToggle").addEventListener("change", e => { peopleBAOnly = e.target.checked; applyPeopleFilter(); });
-document.getElementById("peopleJplOnlyToggle").addEventListener("change", e => { peopleJplOnly = e.target.checked; applyPeopleFilter(); });
-document.getElementById("peopleShowHiddenToggle").addEventListener("change", e => { peopleShowHidden = e.target.checked; applyPeopleFilter(); });
+// Search is explicit now (button/Enter), not live-as-you-type - the org
+// list is paginated (reloadOrgList/loadMoreOrgs above), so every keystroke
+// re-searching would mean a server round-trip per keystroke instead of one
+// per completed search.
+document.getElementById("orgSearchBtn").addEventListener("click", reloadOrgList);
+document.getElementById("orgSearchInput").addEventListener("keydown", e => { if (e.key === "Enter") reloadOrgList(); });
+document.getElementById("orgSearchClearBtn").addEventListener("click", () => { document.getElementById("orgSearchInput").value = ""; reloadOrgList(); });
+document.getElementById("includeEmployersToggle").addEventListener("change", e => { includeEmployers = e.target.checked; reloadOrgList(); });
+document.getElementById("orgStarredOnlyToggle").addEventListener("change", e => { orgStarredOnly = e.target.checked; reloadOrgList(); });
+document.getElementById("orgJplOnlyToggle").addEventListener("change", e => { orgJplOnly = e.target.checked; reloadOrgList(); });
+document.getElementById("orgShowHiddenToggle").addEventListener("change", e => { orgShowHidden = e.target.checked; reloadOrgList(); });
+// Infinite scroll: within 200px of the bottom, load the next page.
+document.getElementById("orgListScrollBox").addEventListener("scroll", e => {
+  const el = e.target;
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) loadMoreOrgs();
+});
+document.getElementById("includePastRolesToggle").addEventListener("change", e => { includePastRoles = e.target.checked; reloadPeopleList(); });
+document.getElementById("peopleStarredOnlyToggle").addEventListener("change", e => { peopleStarredOnly = e.target.checked; reloadPeopleList(); });
+document.getElementById("peopleBAOnlyToggle").addEventListener("change", e => { peopleBAOnly = e.target.checked; reloadPeopleList(); });
+document.getElementById("peopleJplOnlyToggle").addEventListener("change", e => { peopleJplOnly = e.target.checked; reloadPeopleList(); });
+document.getElementById("peopleShowHiddenToggle").addEventListener("change", e => { peopleShowHidden = e.target.checked; reloadPeopleList(); });
+// Infinite scroll: within 200px of the bottom, load the next page (global
+// mode only - loadMorePeople no-ops otherwise, org mode has nothing to page).
+document.getElementById("peopleListScrollBox").addEventListener("scroll", e => {
+  const el = e.target;
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) loadMorePeople();
+});
 document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
 document.getElementById("peopleEnrichAllBtn").addEventListener("click", e => runEnrichAllPeople(e.currentTarget));
@@ -3478,16 +3633,23 @@ const syncOrgLinkedinLink = wireLinkField("editOrgLinkedin", "editOrgLinkedinOpe
 document.getElementById("orgNewsSearchBtn").addEventListener("click", searchOrgNews);
 document.getElementById("connAddToggleBtn").addEventListener("click", () => {
   const form = document.getElementById("connAddForm");
-  form.style.display = form.style.display === "none" ? "block" : "none";
+  const show = form.style.display === "none";
+  form.style.display = show ? "block" : "none";
+  if (show) refreshOrgMergeDatalist();  // lazily loads/populates the shared org-names datalist
 });
 document.getElementById("connSaveBtn").addEventListener("click", addOrgConnection);
 
-document.getElementById("peopleSearchInput").addEventListener("input", applyPeopleFilter);
+// Search is explicit now (button/Enter), not live-as-you-type - the global
+// people list is paginated (reloadPeopleList/loadMorePeople above), so
+// every keystroke re-searching would mean a server round-trip per
+// keystroke instead of one per completed search.
+document.getElementById("peopleSearchBtn").addEventListener("click", reloadPeopleList);
+document.getElementById("peopleSearchInput").addEventListener("keydown", e => { if (e.key === "Enter") reloadPeopleList(); });
 document.getElementById("peopleSearchClearBtn").addEventListener("click", () => {
   document.getElementById("peopleSearchInput").value = "";
   peopleForceGlobal = true;
   updatePeopleHeader();
-  applyPeopleFilter();
+  reloadPeopleList();
 });
 document.getElementById("mergeCandidatesBtn").addEventListener("click", () => openDupeModal("people"));
 document.getElementById("orgMergeCandidatesBtn").addEventListener("click", () => openDupeModal("orgs"));
