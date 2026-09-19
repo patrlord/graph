@@ -51,7 +51,7 @@
 //     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI.
 //     A name that collides case-insensitively with a different org is rejected with a clean 409 - "merge into it instead" -
 //     rather than the raw unique-constraint error organizations_name_key would otherwise surface)
-//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, country_code, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba}, ... ]
+//   GET    /people?q=term&include_past=true  -> [ {id, full_name, linkedin_url, country, country_code, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba, li_profile_fetched_at}, ... ]
 //     (q omitted/empty -> all people, no cap (paginated internally, see supabaseRequestAllPages); include_past=true returns one row per membership - e.g. two past
 //     roles at the same company both show - instead of the default one row per person, their best/current membership only.
 //     q, when given, matches via the search_people_by_name RPC (migration_020) rather than a plain ilike filter, so it's
@@ -789,8 +789,12 @@ async function searchPeopleGlobal(query: string, includePast: boolean) {
     // weight whether opened or not - same idea as an org's detail pane
     // already doing its own GET /organizations/:id instead of reusing its
     // list row. On a "show everyone" scan (thousands of rows) this was the
-    // single biggest driver of a slow, several-MB response.
-    select: "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
+    // single biggest driver of a slow, several-MB response. li_profile_
+    // fetched_at is the one li_* field that DOES belong here despite that -
+    // a single cheap timestamp, not one of the heavy fields - so the bulk
+    // "Enrich all" button (runEnrichAllPeople in index.html) can tell who's
+    // already been enriched without a per-person fetch.
+    select: "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,li_profile_fetched_at,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
     order: "full_name.asc",
   };
   // A real search stays capped at 25 (a search box result list, not meant to

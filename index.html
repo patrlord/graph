@@ -98,7 +98,7 @@
   button.danger:hover { background: #fdf2f2; }
   button.tiny { padding: 4px 8px; font-size: 11.5px; }
   button.find-li-btn { padding: 0 7px; font-size: 10.5px; line-height: 1.1; }
-  #orgFindAllBtn { text-transform: none; letter-spacing: normal; margin-left: 6px; padding: 2px 7px; font-size: 10.5px; cursor: pointer; }
+  #orgFindAllBtn, #peopleEnrichAllBtn { text-transform: none; letter-spacing: normal; margin-left: 6px; padding: 2px 7px; font-size: 10.5px; cursor: pointer; }
   .list-toggle {
     display: block; font-size: 10.5px; color: #8a877e; margin: -6px 0 10px; cursor: pointer; user-select: none;
   }
@@ -589,7 +589,7 @@
                 <th data-sort="country">Country <span class="sort-arrow"></span></th>
                 <th data-sort="title">Role <span class="sort-arrow"></span></th>
                 <th class="col-company">Company</th>
-                <th class="col-li">LI</th>
+                <th class="col-li">LI <button class="secondary tiny" id="peopleEnrichAllBtn" title="Find a LinkedIn URL (if missing) and fetch the full profile for everyone below that hasn't been enriched yet">Enrich</button></th>
                 <th title="Business angel">BA</th>
                 <th title="Connected to a flagged user">JPL</th>
               </tr>
@@ -2875,6 +2875,78 @@ async function enrichSelectedPerson() {
   }
 }
 
+// Same find-linkedin-then-fetch-profile chain as enrichSelectedPerson - only
+// searches for a LinkedIn URL when one isn't already on file, goes straight
+// to the profile fetch otherwise - but standalone for runEnrichAllPeople's
+// loop below: doesn't touch the detail pane or its status line (the person
+// being processed isn't necessarily who's open there), just updates the
+// person object in place and returns a plain result for the batch tally.
+async function bulkEnrichPerson(person) {
+  try {
+    if (!person.linkedin_url) {
+      const companyName = personCompanyName(person);
+      const findRes = await api("/people/find-linkedin", {
+        method: "POST",
+        body: JSON.stringify({
+          person_id: person.id, name: person.full_name,
+          title: person.title || "", company: companyName || "",
+          organization_id: personOrgId(person) || "",
+        }),
+      });
+      const findData = await findRes.json();
+      if (!findRes.ok) return "error";
+      if (findData.merged_into_person_id) return "merged";  // nothing more to enrich under this identity
+      if (findData.renamed_to) person.full_name = findData.renamed_to;
+      if (!findData.linkedin_url) return "no_linkedin";
+      person.linkedin_url = findData.linkedin_url;
+      if (findData.title) person.title = findData.title;
+      if (findData.renamed_to) syncPersonInOrgList(person.id, "full_name", findData.renamed_to);
+      syncPersonInOrgList(person.id, "linkedin_url", findData.linkedin_url);
+    }
+    const res = await api(`/people/${person.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
+    const data = await res.json();
+    if (!res.ok) return "error";
+    Object.assign(person, data);
+    return "enriched";
+  } catch {
+    return "error";
+  }
+}
+
+// "Enrich all" in the people list's LI column header - same pattern as the
+// org list's "Find all" (runFindAllOrgLinkedin): works through whoever's
+// currently shown (combine with the JPL/starred/BA toggles or a search to
+// scope it), skipping anyone already enriched (li_profile_fetched_at set -
+// see searchPeopleGlobal's select) rather than requiring a separate filter
+// for that. This can run for a long time over a large list - each person is
+// its own LinkedIn search plus a profile fetch, both real API calls - so it
+// reports live progress on the button itself and a summary at the end,
+// same as "Find all" does.
+async function runEnrichAllPeople(btnEl) {
+  if (btnEl.disabled) return;
+  const targets = currentPeopleItems.filter(p => !p.li_profile_fetched_at);
+  if (!targets.length) { alert("Everyone currently shown has already been enriched."); return; }
+  const originalText = btnEl.textContent;
+  btnEl.disabled = true;
+  let done = 0, enriched = 0, noLinkedin = 0, merged = 0, failed = 0;
+  for (const person of targets) {
+    btnEl.textContent = `Enriching… ${done}/${targets.length}`;
+    const result = await bulkEnrichPerson(person);
+    if (result === "enriched") enriched++;
+    else if (result === "no_linkedin") noLinkedin++;
+    else if (result === "merged") merged++;
+    else failed++;
+    done++;
+  }
+  await applyPeopleFilter();  // authoritative refresh - roles/orgs/names can all have changed along the way
+  btnEl.disabled = false;
+  btnEl.textContent = originalText;
+  alert(
+    `Enrich all: ${enriched} enriched, ${noLinkedin} had no LinkedIn URL found, ` +
+    `${merged} turned out to be duplicates of someone else (merged automatically), ${failed} failed.`
+  );
+}
+
 async function deleteSelectedPerson() {
   const person = selectedPersonObj;
   if (!person) return;
@@ -3361,6 +3433,7 @@ document.getElementById("peopleJplOnlyToggle").addEventListener("change", e => {
 document.getElementById("peopleShowHiddenToggle").addEventListener("change", e => { peopleShowHidden = e.target.checked; applyPeopleFilter(); });
 document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
+document.getElementById("peopleEnrichAllBtn").addEventListener("click", e => runEnrichAllPeople(e.currentTarget));
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);
 document.getElementById("bulkOrgStartBtn").addEventListener("click", startBulkOrgAdd);
 document.getElementById("orgEditBtn").addEventListener("click", enterOrgEditMode);
