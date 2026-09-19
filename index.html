@@ -1053,7 +1053,9 @@ function connectedCellHtml(item) {
 function renderOrgList(orgs) {
   const listEl = document.getElementById("orgList");
   const emptyEl = document.getElementById("emptyOrgList");
-  document.getElementById("orgListCount").textContent = String(orgs.length);
+  const countEl = document.getElementById("orgListCount");
+  countEl.textContent = String(orgs.length);
+  countEl.title = `${enrichedInLastMonthCount(orgs)} enriched in the last month`;
   wireSortHeaders("orgTable", orgSort, applyOrgFilter);
   if (!orgs.length) { listEl.innerHTML = ""; emptyEl.style.display = "block"; return; }
   emptyEl.style.display = "none";
@@ -2221,9 +2223,25 @@ function renderPeopleList(items, mode) {
 // narrows it exactly like the visible rows do). Blank rather than "0" for
 // the initial "no org selected yet, nothing searched" placeholder state -
 // there's no real list to count there, not an empty one.
+// Shared by the org and people list counts - how many of the given items
+// have been LinkedIn-enriched (li_profile_fetched_at) within the last
+// calendar month, for the count's hover tooltip. A rolling window (exactly
+// one month back from right now), not "this calendar month so far".
+function enrichedInLastMonthCount(items) {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 1);
+  return items.filter(item => item.li_profile_fetched_at && new Date(item.li_profile_fetched_at) >= cutoff).length;
+}
+
 function updatePeopleListCount() {
   const countEl = document.getElementById("peopleListCount");
-  countEl.textContent = currentPeopleMode === "empty" ? "" : String(currentPeopleItems.length);
+  if (currentPeopleMode === "empty") {
+    countEl.textContent = "";
+    countEl.title = "";
+    return;
+  }
+  countEl.textContent = String(currentPeopleItems.length);
+  countEl.title = `${enrichedInLastMonthCount(currentPeopleItems)} enriched in the last month`;
 }
 
 function renderPeopleTableBody() {

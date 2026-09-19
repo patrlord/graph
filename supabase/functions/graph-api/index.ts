@@ -23,7 +23,7 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, updated_at, connected_to_user, is_starred, is_hidden}, ... ]
+//   GET    /organizations?include_employers=true  -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
 //     (is_starred/is_hidden are purely manual flags, set via PATCH /organizations/:id - nothing here filters by them server-side, the frontend does that client-side)
 //     (country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from
 //     hq_country, which stays free text (e.g. "Paris, France") for the detail pane and research prompts)
@@ -550,7 +550,11 @@ async function getUserConnectedPersonIds(): Promise<Set<string>> {
 // them directly when wanted.
 async function listOrganizations(includeEmployers: boolean) {
   const params: Record<string, string> = {
-    select: "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,updated_at,is_starred,is_hidden",
+    // li_profile_fetched_at is a single cheap timestamp (not one of the
+    // heavier li_* profile fields) - included so the list can compute
+    // "enriched in the last month" for the count tooltip (index.html)
+    // without a separate fetch.
+    select: "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,updated_at,is_starred,is_hidden,li_profile_fetched_at",
     order: "name.asc",
   };
   // org_type <> 'employer' would silently also exclude NULL org_type rows -
