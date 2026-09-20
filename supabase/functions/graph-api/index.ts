@@ -43,10 +43,12 @@
 //     connected_to_user: true if any person with a membership at this org - past or current - is themselves flagged
 //     is_user, or is connected to one via a person<->person row in `connections`; see getUserConnectedPersonIds)
 //   GET    /organizations/duplicate-candidates -> [ { orgs: [ {id, name, org_type, linkedin_url, hq_country}, ... ] }, ... ]
-//     (checked ahead of GET /organizations/:id below - same idea as GET /people/duplicate-candidates, grouped by the
-//     same nameFingerprint; includes org_type "employer" stubs regardless of include_employers, since those are exactly
-//     the kind of low-quality, duplicate-prone record most worth merging away; excludes any group already dismissed,
-//     see POST .../dismiss below)
+//     (checked ahead of GET /organizations/:id below - same idea as GET /people/duplicate-candidates, grouped by
+//     orgNameFingerprint (like nameFingerprint, but also strips a trailing domain-like suffix - ".ai"/".io"/".com"/...
+//     - so "Zaion" and "Zaion.ai" collide too) OR a shared normalized linkedin_url (groupByKeys) - two orgs pointing
+//     at the identical LinkedIn company page surface as candidates even with unrelated-looking names; includes
+//     org_type "employer" stubs regardless of include_employers, since those are exactly the kind of low-quality,
+//     duplicate-prone record most worth merging away; excludes any group already dismissed, see POST .../dismiss below)
 //   POST   /organizations/duplicate-candidates/dismiss { ids: [id, id, ...] } -> { ok: true }
 //     (records that this exact set of orgs was judged NOT duplicates - dismissed_duplicate_groups, migration_022 -
 //     so it stops showing up in future duplicate-candidates checks; idempotent, dismissing an already-dismissed
@@ -88,10 +90,12 @@
 //     Deliberately lean - no li_* LinkedIn-profile fields (photo, headline, about, experience, ...) - see GET /people/:id for those)
 //   GET    /people/duplicate-candidates -> [ { people: [ {id, full_name, linkedin_url, country, roles: [{title, organization}]}, ... ] }, ... ]
 //     (checked ahead of GET /people/:id below - groups everyone by a case/accent/punctuation/spacing-insensitive fingerprint of their
-//     name (nameFingerprint) and returns any group with more than one person - "Alexis Le Portz" and "Alexis Leportz" collide, reordered
-//     names or genuine misspellings don't; each person's current roles are included so the frontend can show enough context to tell at
-//     a glance whether a group really is the same person. Excludes any group already dismissed, see POST .../dismiss below. Runs
-//     client-side on every people-list load, see the frontend's checkForDuplicatePeople)
+//     name (nameFingerprint) OR a shared normalized linkedin_url (groupByKeys) and returns any resulting group with more than one
+//     person - "Alexis Le Portz" and "Alexis Leportz" collide on name, reordered names or genuine misspellings don't, but two records
+//     pointing at the identical LinkedIn profile collide regardless of how different their names look (a rename, a nickname); each
+//     person's current roles are included so the frontend can show enough context to tell at a glance whether a group really is the
+//     same person. Excludes any group already dismissed, see POST .../dismiss below. Runs client-side on every people-list load, see
+//     the frontend's checkForDuplicatePeople)
 //   POST   /people/duplicate-candidates/dismiss { ids: [id, id, ...] } -> { ok: true }
 //     (same idea as the organizations version above - records that this exact set of people was judged NOT duplicates so it
 //     stops resurfacing; idempotent; a different combination sharing the same fingerprint still surfaces)
@@ -271,7 +275,16 @@ async function supabaseRequest(
 // loaded client-side so far (the lists are paginated - see listOrganizations/
 // searchPeopleGlobal).
 async function countMatching(method: string, path: string, params: Record<string, string>, body?: unknown): Promise<number> {
-  const url = `${SUPABASE_URL}/rest/v1/${path}?` + new URLSearchParams({ ...params, select: "id", limit: "0" }).toString();
+  // order is meaningless for a count and, worse, actively breaks this on an
+  // RPC-backed resource (search_organizations_by_text/organizations_by_ids):
+  // narrowing select to "id" below means whatever column the caller's order
+  // was on (name.asc, from the main list query) is no longer part of the
+  // shaped result set, and PostgREST rejects it - confirmed directly:
+  // "column organizations.name does not exist" - which the org list's
+  // search silently surfaced as "no results" (the frontend treats any
+  // non-ok /organizations response as an empty page, see fetchOrgPage).
+  const { order: _order, ...countParams } = params;
+  const url = `${SUPABASE_URL}/rest/v1/${path}?` + new URLSearchParams({ ...countParams, select: "id", limit: "0" }).toString();
   const headers: Record<string, string> = {
     apikey: SERVICE_ROLE_KEY,
     Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
@@ -741,29 +754,30 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
   return { orgs, totalCount, enrichedLastMonthCount };
 }
 
-// Same idea as findDuplicatePeopleCandidates (see there for nameFingerprint
-// and its deliberately narrow scope) - groups every organization by a
-// fingerprint of its name and returns any group with more than one org.
-// Single pass, no separate detail query needed: organizations is already a
-// much smaller table than people, and the fields worth showing for context
-// (org_type/linkedin_url/hq_country) are cheap enough to just select
-// up front for everyone rather than fetch in two steps.
+// Same idea as findDuplicatePeopleCandidates (see there for nameFingerprint/
+// normalizeLinkedinUrl and groupByKeys, shared with this) - groups every
+// organization by a fingerprint of its name OR its normalized linkedin_url,
+// and returns any resulting group with more than one org. Single pass, no
+// separate detail query needed: organizations is already a much smaller
+// table than people, and the fields worth showing for context (org_type/
+// linkedin_url/hq_country) are cheap enough to just select up front for
+// everyone rather than fetch in two steps.
 async function findDuplicateOrgCandidates() {
   const [rows, dismissed] = await Promise.all([
     supabaseRequestAllPages("organizations", { select: "id,name,org_type,linkedin_url,hq_country" }),
     getDismissedDuplicateKeys("organization"),
   ]);
-  const groups = new Map<string, any[]>();
-  for (const r of rows ?? []) {
-    const key = nameFingerprint(r.name);
-    if (!key) continue;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(r);
-  }
+  const rowsById = new Map((rows ?? []).map((r: any) => [r.id, r]));
+  const groups = groupByKeys(
+    rows ?? [],
+    (r: any) => r.id,
+    [(r: any) => orgNameFingerprint(r.name) || null, (r: any) => normalizeLinkedinUrl(r.linkedin_url)],
+  );
   return [...groups.values()]
-    .filter((g) => g.length > 1 && !dismissed.has(groupMemberKey(g.map((o) => o.id))))
+    .map((ids) => ids.map((id) => rowsById.get(id)))
+    .filter((g) => g.length > 1 && !dismissed.has(groupMemberKey(g.map((o: any) => o.id))))
     .map((g) => ({
-      orgs: g.map((o) => ({ id: o.id, name: o.name, org_type: o.org_type, linkedin_url: o.linkedin_url, hq_country: o.hq_country })),
+      orgs: g.map((o: any) => ({ id: o.id, name: o.name, org_type: o.org_type, linkedin_url: o.linkedin_url, hq_country: o.hq_country })),
     }));
 }
 
@@ -1097,6 +1111,69 @@ function nameFingerprint(name: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// A trailing domain-like suffix on an org name ("Zaion.ai", "Appsfire.com",
+// "ApiBots.io" - all three found in this data, alongside the bare-name
+// record for the same company) doesn't survive nameFingerprint as a match:
+// stripping punctuation still leaves the suffix's own letters in place
+// ("Zaion" -> "zaion", "Zaion.ai" -> "zaionai" - different strings). Common
+// enough among startups naming themselves after their own domain that it's
+// worth widening findDuplicateOrgCandidates for specifically (people don't
+// have this pattern, so nameFingerprint alone still covers them). Only
+// strips one recognized suffix, and only at the very end of the name - a
+// company that just happens to have "AI" as the last word ("Anthropic AI")
+// isn't touched, since there's no leading "." for the regex to match.
+const ORG_NAME_SUFFIX_RE = /\.(ai|io|com|co|app|net|org|inc|tech|xyz)$/i;
+function orgNameFingerprint(name: string): string {
+  return nameFingerprint(name.trim().replace(ORG_NAME_SUFFIX_RE, ""));
+}
+
+// Groups every id in `ids` into connected components, where two ids are
+// linked if they share a value under ANY of the given key functions - used
+// by findDuplicatePeopleCandidates/findDuplicateOrgCandidates so a pair
+// sharing a linkedin_url still surfaces as a candidate even if their names
+// look nothing alike (a rename, a nickname, a typo bad enough that
+// nameFingerprint wouldn't catch it), and the reverse (same name,
+// different/missing linkedin_url) still works exactly as before. Grouping
+// is transitive - if a-b share a name and b-c share a linkedin_url, all
+// three land in one group - so a rename caught mid-way still pulls
+// everything together rather than splitting into two separate pairs.
+// keyFns each return a normalized key for one record (a nameFingerprint or
+// a normalizeLinkedinUrl call, say), or null/"" to opt that record out of
+// that particular key's linking (e.g. no linkedin_url on file).
+function groupByKeys<T>(records: T[], idOf: (r: T) => string, keyFns: ((r: T) => string | null)[]): Map<string, string[]> {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let root = x;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    let cur = x;
+    while (parent.get(cur) !== root) { const next = parent.get(cur)!; parent.set(cur, root); cur = next; }
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (const r of records) parent.set(idOf(r), idOf(r));
+  for (const keyFn of keyFns) {
+    const byKey = new Map<string, string>();  // key -> first id seen with it
+    for (const r of records) {
+      const key = keyFn(r);
+      if (!key) continue;
+      const id = idOf(r);
+      const firstId = byKey.get(key);
+      if (firstId) union(firstId, id);
+      else byKey.set(key, id);
+    }
+  }
+  const groups = new Map<string, string[]>();
+  for (const r of records) {
+    const root = find(idOf(r));
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root)!.push(idOf(r));
+  }
+  return groups;
+}
+
 // "Not duplicates" in the merge-candidates pop-up (people and orgs both) -
 // dismissed_duplicate_groups (migration_022) remembers that decision so the
 // same group doesn't keep resurfacing. Keyed on the exact set of member ids
@@ -1125,27 +1202,31 @@ async function dismissDuplicateGroup(entityType: "person" | "organization", ids:
   return { ok: true };
 }
 
-// Groups every person by nameFingerprint and returns any group with more
-// than one person, each with enough context (current roles) for a human to
-// tell at a glance whether they're really the same person. Two passes: a
-// cheap id+name scan of the whole table first (this is what runs on every
-// people-list load, so it stays light - just two short columns), then a
-// second, detail query scoped to only the handful of people who actually
-// landed in a group, not the whole table.
+// Groups every person by nameFingerprint OR normalized linkedin_url (see
+// groupByKeys) and returns any resulting group with more than one person,
+// each with enough context (current roles) for a human to tell at a glance
+// whether they're really the same person. The linkedin_url link catches a
+// pair nameFingerprint alone would miss entirely - a rename, a nickname, a
+// spelling gap too wide for the fingerprint - since two records pointing at
+// the identical LinkedIn profile are about as certain a duplicate signal as
+// this app has. Two passes: a cheap id+name+linkedin_url scan of the whole
+// table first (this is what runs on every people-list load, so it stays
+// light), then a second, detail query scoped to only the handful of people
+// who actually landed in a group, not the whole table.
 async function findDuplicatePeopleCandidates() {
   const [rows, dismissed] = await Promise.all([
-    supabaseRequestAllPages("people", { select: "id,full_name" }),
+    supabaseRequestAllPages("people", { select: "id,full_name,linkedin_url" }),
     getDismissedDuplicateKeys("person"),
   ]);
-  const groups = new Map<string, { id: string; full_name: string }[]>();
-  for (const r of rows ?? []) {
-    const key = nameFingerprint(r.full_name);
-    if (!key) continue;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(r);
-  }
+  const groups = groupByKeys(
+    rows ?? [],
+    (r: any) => r.id,
+    [(r: any) => nameFingerprint(r.full_name) || null, (r: any) => normalizeLinkedinUrl(r.linkedin_url)],
+  );
+  const rowsById = new Map((rows ?? []).map((r: any) => [r.id, r]));
   const dupeGroups = [...groups.values()]
-    .filter((g) => g.length > 1 && !dismissed.has(groupMemberKey(g.map((p) => p.id))));
+    .map((ids) => ids.map((id) => rowsById.get(id)))
+    .filter((g) => g.length > 1 && !dismissed.has(groupMemberKey(g.map((p: any) => p.id))));
   if (!dupeGroups.length) return [];
 
   const allIds = dupeGroups.flatMap((g) => g.map((p) => p.id));
