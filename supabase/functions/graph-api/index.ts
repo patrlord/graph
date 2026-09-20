@@ -27,8 +27,9 @@
 //     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
 //     (is_starred/is_hidden filter server-side here now (starred_only/show_hidden), same for jpl_only (connected_to_user) - the main org list is
 //     paginated (see limit/offset below) so it can no longer filter client-side against data it hasn't loaded. q searches name or hq_country,
-//     accent-insensitive, via search_organizations_by_text (migration_023) instead of a plain filter. sort is one of name/hq_country/org_type/
-//     updated_at (default name), dir asc/desc (default asc). limit/offset: when limit is given, returns exactly one page - the frontend's
+//     accent-insensitive, via search_organizations_by_text (migration_023) instead of a plain filter; jpl_only instead routes through
+//     organizations_by_ids (migration_024), a POST RPC, since the connected-id list is too long for a URL filter. sort is one of name/hq_country/
+//     org_type/updated_at (default name), dir asc/desc (default asc). limit/offset: when limit is given, returns exactly one page - the frontend's
 //     infinite scroll (index.html) decides there's a next page only when a page comes back full. limit OMITTED (not limit=0): returns
 //     everything, paginated internally (supabaseRequestAllPages) - the pre-pagination behavior, still used by callers that need the full list
 //     in one shot regardless of what the main list is showing (the merge-target dropdown, the add-connection org picker).
@@ -65,10 +66,13 @@
 //     q, when given, matches via the search_people_by_name RPC (migration_020) rather than a plain ilike filter, so it's
 //     accent-insensitive - "kart" matches "Kärt", "romeo" matches "Roméo" - via Postgres's own unaccent().
 //     starred_only/ba_only/show_hidden/jpl_only (connected_to_user) filter server-side here now - the main people list is paginated (see
-//     limit/offset below) so it can no longer filter client-side against data it hasn't loaded. limit given: returns exactly one page - the
-//     frontend's infinite scroll (index.html) decides there's a next page only when a page comes back full. limit OMITTED (not limit=0):
-//     returns everything, paginated internally (supabaseRequestAllPages) - the pre-pagination behavior, still used by callers that need the
-//     full list in one shot regardless of what the main list is showing (the merge-target dropdown, see ensurePeopleNamesCache).
+//     limit/offset below) so it can no longer filter client-side against data it hasn't loaded; jpl_only routes through people_by_ids
+//     (migration_024), a POST RPC, since the connected-id list is too long for a URL filter. limit given: returns exactly one page - but
+//     unlike GET /organizations, a page's row count doesn't reliably equal `limit` (one person can expand into several rows, one per
+//     membership - see searchPeopleGlobal), so whether there's a next page is NOT inferrable from the response body; it's on the
+//     `X-Has-More` response header ("true"/"false") instead. limit OMITTED (not limit=0): returns everything, paginated internally
+//     (supabaseRequestAllPages) - the pre-pagination behavior, still used by callers that need the full list in one shot regardless of what
+//     the main list is showing (the merge-target dropdown, see ensurePeopleNamesCache).
 //     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
 //     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds.
 //     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id.
@@ -158,12 +162,18 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, content-type",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+  // A cross-origin fetch (GitHub Pages calling this function) can't read a
+  // response header unless it's explicitly exposed here - X-Has-More is
+  // GET /people's way of telling the frontend whether there's a next page
+  // (see searchPeopleGlobal) without that having to be inferrable from the
+  // returned array's length.
+  "Access-Control-Expose-Headers": "X-Has-More",
 };
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    headers: { "Content-Type": "application/json", ...CORS_HEADERS, ...extraHeaders },
   });
 }
 
@@ -250,7 +260,11 @@ async function supabaseRequest(
 // thousands of rows - page through with limit/offset instead of trusting a
 // single request to return everything. Safe to use for small results too,
 // it just does one page and stops.
-async function supabaseRequestAllPages(path: string, params: Record<string, string>): Promise<any[]> {
+async function supabaseRequestAllPages(
+  path: string,
+  params: Record<string, string>,
+  opts: { method?: string; body?: unknown } = {},
+): Promise<any[]> {
   const pageSize = 1000;
   const results: any[] = [];
   let offset = 0;
@@ -260,8 +274,9 @@ async function supabaseRequestAllPages(path: string, params: Record<string, stri
   // caller asked for, rather than trusting their order alone to be unique.
   const order = params.order ? `${params.order},id.asc` : "id.asc";
   for (;;) {
-    const page = await supabaseRequest("GET", path, {
+    const page = await supabaseRequest(opts.method ?? "GET", path, {
       params: { ...params, order, limit: String(pageSize), offset: String(offset) },
+      body: opts.body,
     });
     if (!page?.length) break;
     results.push(...page);
@@ -599,10 +614,12 @@ type ListOrganizationsOptions = {
 // showing (the merge-target dropdown, the add-connection org picker; see
 // index.html). limit given: a single page, for the main org list's
 // infinite scroll - the caller decides whether there's a next page by
-// whether this one came back full. q, when given, searches via
-// search_organizations_by_text (migration_023) - accent-insensitive name
-// or hq_country match - instead of the old client-side filter, since a
-// paginated list can't be searched against data it hasn't loaded yet.
+// whether this one came back full (one row in, one row out here, unlike
+// searchPeopleGlobal - no membership-flattening to worry about). q, when
+// given (and jpl_only isn't), searches via search_organizations_by_text
+// (migration_023) - accent-insensitive name or hq_country match - instead
+// of the old client-side filter, since a paginated list can't be searched
+// against data it hasn't loaded yet.
 async function listOrganizations(opts: ListOrganizationsOptions) {
   const sortColumn = opts.sort && ORG_SORT_COLUMNS.has(opts.sort) ? opts.sort : "name";
   const sortDir = opts.dir === "desc" ? "desc" : "asc";
@@ -623,21 +640,34 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
   if (opts.starredOnly) params.is_starred = "eq.true";
   if (!opts.showHidden) params.is_hidden = "eq.false";
 
+  // jpl_only used to add `?id=in.(<every connected org id>)` - that list
+  // commonly runs into the thousands, and stuffing it into the URL blew
+  // past PostgREST's/Cloudflare's URL length limits (confirmed directly: a
+  // 414), which is why the toggle silently came back empty. Routed through
+  // organizations_by_ids (migration_024) instead, a POST RPC that takes the
+  // id list as a body param (no URL length limit) and folds q in too, so
+  // id-restriction and search still combine in one call.
   let connectedOrgIds: Set<string> | null = null;
+  let resourcePath: string;
+  let method = "GET";
+  let body: unknown;
   if (opts.jplOnly) {
     connectedOrgIds = await computeConnectedOrgIds();
     if (!connectedOrgIds.size) return [];
-    params.id = `in.(${[...connectedOrgIds].join(",")})`;
+    resourcePath = "rpc/organizations_by_ids";
+    method = "POST";
+    body = { target_ids: [...connectedOrgIds], search_query: opts.q ?? null };
+  } else {
+    resourcePath = opts.q ? "rpc/search_organizations_by_text" : "organizations";
+    if (opts.q) params.search_query = opts.q;
   }
 
-  const resourcePath = opts.q ? "rpc/search_organizations_by_text" : "organizations";
-  if (opts.q) params.search_query = opts.q;
-
   const orgs = opts.limit !== undefined
-    ? (await supabaseRequest("GET", resourcePath, {
+    ? (await supabaseRequest(method, resourcePath, {
         params: { ...params, limit: String(opts.limit), offset: String(opts.offset ?? 0) },
+        body,
       })) ?? []
-    : await supabaseRequestAllPages(resourcePath, params);
+    : await supabaseRequestAllPages(resourcePath, params, { method, body });
   if (!orgs.length) return orgs;
 
   if (!connectedOrgIds) connectedOrgIds = await computeConnectedOrgIds();
@@ -860,13 +890,19 @@ type SearchPeopleOptions = {
 // (supabaseRequestAllPages) - the pre-pagination behavior, still relied on
 // by callers that need the full list in one shot regardless of what the
 // main people list is currently showing (the merge-target dropdown, see
-// ensurePeopleNamesCache in index.html). limit given: a single page, for
-// the main list's infinite scroll - the caller decides whether there's a
-// next page by whether this one came back full. starred_only/ba_only/
-// show_hidden/jpl_only filter server-side here now, for the same reason
-// the org list's toggles do - a paginated list can't be filtered
+// ensurePeopleNamesCache in index.html). limit given: a single page.
+// Unlike listOrganizations, a "page" at the DB level (opts.limit people
+// rows) doesn't map 1:1 to a page of output rows - each person is
+// flattened into one row per membership below, so the returned array's
+// length can land above, below, or (only coincidentally) at opts.limit.
+// The frontend's infinite-scroll "did a full page come back" check can't
+// use that length, then - so hasMore is computed here instead, from the
+// raw pre-flatten count, and returned alongside the rows (see the /people
+// route handler, which puts it on a response header). starred_only/
+// ba_only/show_hidden/jpl_only filter server-side here now, for the same
+// reason the org list's toggles do - a paginated list can't be filtered
 // client-side against data it hasn't loaded yet.
-async function searchPeopleGlobal(opts: SearchPeopleOptions) {
+async function searchPeopleGlobal(opts: SearchPeopleOptions): Promise<{ rows: any[]; hasMore: boolean }> {
   const { query, includePast } = opts;
   const params: Record<string, string> = {
     // Lean, list-only fields - NOT select=* - the li_* LinkedIn-profile
@@ -894,25 +930,40 @@ async function searchPeopleGlobal(opts: SearchPeopleOptions) {
   // jpl_only, so it's always computed - jpl_only just also uses it as an id
   // filter on the query below.
   const connectedIds = await getUserConnectedPersonIds();
+
+  // jpl_only used to add `?id=in.(<every connected person id>)` - that list
+  // commonly runs into the thousands, and stuffing it into the URL blew
+  // past PostgREST's/Cloudflare's URL length limits (confirmed directly: a
+  // 400), which is why the toggle silently came back empty. Routed through
+  // people_by_ids (migration_024) instead, a POST RPC that takes the id
+  // list as a body param (no URL length limit) and folds the name search in
+  // too, so id-restriction and search still combine in one call.
+  let resourcePath: string;
+  let method = "GET";
+  let body: unknown;
   if (opts.jplOnly) {
-    if (!connectedIds.size) return [];
-    params.id = `in.(${[...connectedIds].join(",")})`;
+    if (!connectedIds.size) return { rows: [], hasMore: false };
+    resourcePath = "rpc/people_by_ids";
+    method = "POST";
+    body = { target_ids: [...connectedIds], search_query: query || null };
+  } else {
+    // A real search goes through the search_people_by_name RPC
+    // (migration_020) instead of a plain ilike filter, so it's accent-
+    // insensitive - "kart" matches "Kärt", "romeo" matches "Roméo" - via
+    // Postgres's own unaccent() rather than reimplementing accent folding
+    // here; select=/order=/limit= still work on it the same as a normal
+    // table query since it's STABLE and returns setof people.
+    resourcePath = query ? "rpc/search_people_by_name" : "people";
+    if (query) params.search_query = query;
   }
 
-  // A real search goes through the search_people_by_name RPC (migration_020)
-  // instead of a plain ilike filter, so it's accent-insensitive - "kart"
-  // matches "Kärt", "romeo" matches "Roméo" - via Postgres's own unaccent()
-  // rather than reimplementing accent folding here; select=/order=/limit=
-  // still work on it the same as a normal table query since it's STABLE and
-  // returns setof people.
-  const resourcePath = query ? "rpc/search_people_by_name" : "people";
-  if (query) params.search_query = query;
-
   const people = opts.limit !== undefined
-    ? (await supabaseRequest("GET", resourcePath, {
+    ? (await supabaseRequest(method, resourcePath, {
         params: { ...params, limit: String(opts.limit), offset: String(opts.offset ?? 0) },
+        body,
       })) ?? []
-    : await supabaseRequestAllPages(resourcePath, params);
+    : await supabaseRequestAllPages(resourcePath, params, { method, body });
+  const hasMore = opts.limit !== undefined && people.length === opts.limit;
 
   const rows: any[] = [];
   for (const p of people ?? []) {
@@ -931,7 +982,7 @@ async function searchPeopleGlobal(opts: SearchPeopleOptions) {
       ms.filter((m: any) => m.is_current).forEach((m: any) => rows.push(toRow(m)));
     }
   }
-  return rows;
+  return { rows, hasMore };
 }
 
 // Case/accent/punctuation/spacing-insensitive fingerprint of a name - two
@@ -2414,7 +2465,7 @@ Deno.serve(async (req) => {
     if (req.method === "GET" && path === "/people") {
       const limitParam = url.searchParams.get("limit");
       const offsetParam = url.searchParams.get("offset");
-      return json(await searchPeopleGlobal({
+      const { rows, hasMore } = await searchPeopleGlobal({
         query: (url.searchParams.get("q") ?? "").trim(),
         includePast: url.searchParams.get("include_past") === "true",
         limit: limitParam !== null ? parseInt(limitParam, 10) : undefined,
@@ -2423,7 +2474,8 @@ Deno.serve(async (req) => {
         baOnly: url.searchParams.get("ba_only") === "true",
         showHidden: url.searchParams.get("show_hidden") === "true",
         jplOnly: url.searchParams.get("jpl_only") === "true",
-      }));
+      });
+      return json(rows, 200, { "X-Has-More": String(hasMore) });
     }
 
     // Checked ahead of the generic personIdMatch GET below, or "duplicate-

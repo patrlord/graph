@@ -3262,7 +3262,12 @@ async function searchPersonNews() {
   } finally { btn.disabled = false; }
 }
 
-let peopleOffset = 0;
+// Counts pages, not rows - see fetchPeoplePage for why: each person can
+// expand into several output rows (one per membership), so the row count
+// of a page doesn't map to how many raw people records the server actually
+// consumed at that offset. The next raw offset is always just
+// peoplePageIndex * LIST_PAGE_SIZE, regardless of how many rows came back.
+let peoplePageIndex = 0;
 let peopleHasMore = true;
 let peopleLoadingMore = false;
 
@@ -3278,9 +3283,14 @@ function buildPeopleListParams(offset) {
   return params;
 }
 
+// Unlike the org list, whether there's a next page can't be read off the
+// response body's length (one person can expand into several rows here -
+// see searchPeopleGlobal on the backend) - the server says so explicitly
+// instead, on the X-Has-More response header.
 async function fetchPeoplePage(offset) {
   const res = await api(`/people?${buildPeopleListParams(offset).toString()}`);
-  return res.ok ? await res.json() : [];
+  if (!res.ok) return { rows: [], hasMore: false };
+  return { rows: await res.json(), hasMore: res.headers.get("X-Has-More") === "true" };
 }
 
 // A real reload from the server, page 1, with whatever search/toggle state
@@ -3308,35 +3318,35 @@ async function reloadPeopleList() {
     renderPeopleList([], "empty");
     return;
   }
-  peopleOffset = 0;
+  peoplePageIndex = 0;
   peopleHasMore = true;
-  const page = await fetchPeoplePage(0);
-  peopleOffset = page.length;
-  peopleHasMore = page.length === LIST_PAGE_SIZE;
-  renderPeopleList(page, "global");
+  const { rows, hasMore } = await fetchPeoplePage(0);
+  peoplePageIndex = 1;
+  peopleHasMore = hasMore;
+  renderPeopleList(rows, "global");
 }
 
 // Appends the next page - called when the list is scrolled near the bottom
 // (see the peopleListScrollBox listener), global mode only (org mode has
 // nothing to page through). Groups just the newly fetched page and appends
-// the result, rather than re-deriving everyone from scratch: a person's
-// full set of memberships always arrives within one page (limit/offset
-// apply to the outer people query, memberships are nested per person, not
-// flattened before pagination - see searchPeopleGlobal), so this never
-// splits one person's roles across two calls - and, just as importantly,
-// never re-derives (and so lose) a live mutation already applied to a
-// group already showing, e.g. a star just toggled on someone from an
-// earlier page.
+// the result, rather than re-deriving everyone from scratch: limit/offset
+// apply to the outer people query (see searchPeopleGlobal), and a given
+// person's memberships are all read out of that same DB round trip before
+// being flattened into one row each - so a person's roles always arrive
+// together within one page and this never splits them across two calls.
+// Just as importantly, appending (rather than re-deriving from scratch)
+// never loses a live mutation already applied to a group already showing,
+// e.g. a star just toggled on someone from an earlier page.
 async function loadMorePeople() {
   if (peopleLoadingMore || !peopleHasMore || currentPeopleMode !== "global") return;
   peopleLoadingMore = true;
   document.getElementById("peopleLoadingMore").style.display = "block";
   try {
-    const page = await fetchPeoplePage(peopleOffset);
-    peopleOffset += page.length;
-    peopleHasMore = page.length === LIST_PAGE_SIZE;
-    if (!page.length) return;
-    const normalized = normalizePeopleItems(page, "global");
+    const { rows, hasMore } = await fetchPeoplePage(peoplePageIndex * LIST_PAGE_SIZE);
+    peoplePageIndex += 1;
+    peopleHasMore = hasMore;
+    if (!rows.length) return;
+    const normalized = normalizePeopleItems(rows, "global");
     const filtered = includePastRoles ? normalized : normalized.filter(item => item.is_current !== false);
     currentPeopleItems = currentPeopleItems.concat(groupPeopleByPerson(filtered));
     currentPeopleItems.sort(peopleComparator());
