@@ -23,7 +23,7 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc
+//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true
 //     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
 //     (is_starred/is_hidden filter server-side here now (starred_only/show_hidden), same for jpl_only (connected_to_user) - the main org list is
 //     paginated (see limit/offset below) so it can no longer filter client-side against data it hasn't loaded. q searches name or hq_country,
@@ -32,7 +32,11 @@
 //     org_type/updated_at (default name), dir asc/desc (default asc). limit/offset: when limit is given, returns exactly one page - the frontend's
 //     infinite scroll (index.html) decides there's a next page only when a page comes back full. limit OMITTED (not limit=0): returns
 //     everything, paginated internally (supabaseRequestAllPages) - the pre-pagination behavior, still used by callers that need the full list
-//     in one shot regardless of what the main list is showing (the merge-target dropdown, the add-connection org picker).
+//     in one shot regardless of what the main list is showing (the merge-target dropdown, the add-connection org picker). with_counts=true (only
+//     meaningful alongside limit): also returns, as response headers (not in the body - see Access-Control-Expose-Headers), X-Total-Count (rows
+//     matching every filter above, regardless of limit/offset - the count the org list's title shows) and X-Enriched-Last-Month-Count (the same,
+//     further restricted to li_profile_fetched_at within the last calendar month - the count's hover tooltip). The frontend only asks for these on
+//     a real reload (reloadOrgList), not on every infinite-scroll page (loadMoreOrgs) - see listOrganizations.
 //     (country_code is a short manually-entered code, e.g. "FR"/"UK", for the list view - distinct from
 //     hq_country, which stays free text (e.g. "Paris, France") for the detail pane and research prompts)
 //     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true.
@@ -59,7 +63,7 @@
 //     field present in the body is written exactly as given, including null/"" to clear it; for hand-editing in the UI.
 //     A name that collides case-insensitively with a different org is rejected with a clean 409 - "merge into it instead" -
 //     rather than the raw unique-constraint error organizations_name_key would otherwise surface)
-//   GET    /people?q=term&include_past=true&limit=100&offset=0&starred_only=true&ba_only=true&show_hidden=true&jpl_only=true
+//   GET    /people?q=term&include_past=true&limit=100&offset=0&starred_only=true&ba_only=true&show_hidden=true&jpl_only=true&with_counts=true
 //     -> [ {id, full_name, linkedin_url, country, country_code, title, focus, is_current, start_date, end_date, membership_id, organization, is_user, connected_to_user, is_starred, is_hidden, is_ba, li_profile_fetched_at}, ... ]
 //     (q omitted/empty -> all people; include_past=true returns one row per membership - e.g. two past
 //     roles at the same company both show - instead of the default one row per person, their best/current membership only.
@@ -72,7 +76,11 @@
 //     membership - see searchPeopleGlobal), so whether there's a next page is NOT inferrable from the response body; it's on the
 //     `X-Has-More` response header ("true"/"false") instead. limit OMITTED (not limit=0): returns everything, paginated internally
 //     (supabaseRequestAllPages) - the pre-pagination behavior, still used by callers that need the full list in one shot regardless of what
-//     the main list is showing (the merge-target dropdown, see ensurePeopleNamesCache).
+//     the main list is showing (the merge-target dropdown, see ensurePeopleNamesCache). with_counts=true (only meaningful alongside limit):
+//     also returns X-Total-Count/X-Enriched-Last-Month-Count response headers, same idea and same caller (reloadPeopleList, not
+//     loadMorePeople) as GET /organizations' with_counts - but computed via the count_people RPC (migration_025), not the generic
+//     Prefer:count=exact approach the org list uses, since "matching" here has to account for includePast the same way the row-flattening
+//     below does (a person with zero current memberships doesn't count unless include_past is set) - see searchPeopleGlobal.
 //     connected_to_user: true if this person is themselves flagged is_user, or has a person<->person row in `connections`
 //     with someone who is - same flag `organizations` rows carry, computed the same way, see getUserConnectedPersonIds.
 //     is_starred/is_hidden/is_ba are purely manual flags, set via PATCH /people/:id.
@@ -163,11 +171,14 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Headers": "authorization, content-type",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   // A cross-origin fetch (GitHub Pages calling this function) can't read a
-  // response header unless it's explicitly exposed here - X-Has-More is
-  // GET /people's way of telling the frontend whether there's a next page
-  // (see searchPeopleGlobal) without that having to be inferrable from the
-  // returned array's length.
-  "Access-Control-Expose-Headers": "X-Has-More",
+  // response header unless it's explicitly exposed here. X-Has-More is GET
+  // /people's way of telling the frontend whether there's a next page (see
+  // searchPeopleGlobal) without that having to be inferrable from the
+  // returned array's length. X-Total-Count/X-Enriched-Last-Month-Count (GET
+  // /organizations and /people, with with_counts=true) carry the org/people
+  // list counts - everything matching the current search/filters, not just
+  // what's been paged in - see listOrganizations/searchPeopleGlobal.
+  "Access-Control-Expose-Headers": "X-Has-More, X-Total-Count, X-Enriched-Last-Month-Count",
 };
 
 function json(body: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
@@ -250,6 +261,35 @@ async function supabaseRequest(
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
+}
+
+// Total rows matching a filter, without fetching them - `Prefer: count=exact`
+// plus `limit=0` gets PostgREST to do the count and return zero rows, with
+// the total in the Content-Range response header ("*/1234"). Used for the
+// org/people list counts (index.html): those need the count of everything
+// matching the current search/filters, not just how many rows happen to be
+// loaded client-side so far (the lists are paginated - see listOrganizations/
+// searchPeopleGlobal).
+async function countMatching(method: string, path: string, params: Record<string, string>, body?: unknown): Promise<number> {
+  const url = `${SUPABASE_URL}/rest/v1/${path}?` + new URLSearchParams({ ...params, select: "id", limit: "0" }).toString();
+  const headers: Record<string, string> = {
+    apikey: SERVICE_ROLE_KEY,
+    Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+    "Content-Type": "application/json",
+    Prefer: "count=exact",
+  };
+  const res = await fetchWithTimeout(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  }, 20000);
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 500);
+    throw new Error(`Supabase ${method} ${path} count failed (${res.status}): ${detail}`);
+  }
+  await res.text();  // limit=0 means an empty body, but drain it regardless
+  const total = (res.headers.get("content-range") || "").split("/")[1];
+  return total && total !== "*" ? parseInt(total, 10) : 0;
 }
 
 // This project's PostgREST caps any single response at 1000 rows regardless
@@ -606,7 +646,20 @@ type ListOrganizationsOptions = {
   jplOnly?: boolean;
   sort?: string;
   dir?: "asc" | "desc";
+  withCounts?: boolean;
 };
+
+// Same "one calendar month back from right now" window as the frontend's
+// own (now-retired) client-side enrichedInLastMonthCount - the org/people
+// list counts' "enriched in the last month" tooltip, computed here over
+// everything matching the current search/filters via a second, filtered
+// count query (see countMatching), not just whatever's been scrolled into
+// view so far.
+function enrichedSinceCutoffIso(): string {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 1);
+  return cutoff.toISOString();
+}
 
 // limit omitted (undefined): returns everything (supabaseRequestAllPages) -
 // the pre-pagination behavior, still relied on by callers that need the
@@ -619,7 +672,14 @@ type ListOrganizationsOptions = {
 // given (and jpl_only isn't), searches via search_organizations_by_text
 // (migration_023) - accent-insensitive name or hq_country match - instead
 // of the old client-side filter, since a paginated list can't be searched
-// against data it hasn't loaded yet.
+// against data it hasn't loaded yet. withCounts: also runs two cheap
+// count-only queries (countMatching - Prefer: count=exact, limit=0) for the
+// list's count/tooltip - the total matching the current filters, and how
+// many of those were enriched in the last month - regardless of how much
+// of the list has actually been paged in. Only requested by the frontend on
+// a real reload (reloadOrgList), not on every infinite-scroll page
+// (loadMoreOrgs), since the counts can't have changed just from paging in
+// more of the same already-fixed result set.
 async function listOrganizations(opts: ListOrganizationsOptions) {
   const sortColumn = opts.sort && ORG_SORT_COLUMNS.has(opts.sort) ? opts.sort : "name";
   const sortDir = opts.dir === "desc" ? "desc" : "asc";
@@ -653,7 +713,7 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
   let body: unknown;
   if (opts.jplOnly) {
     connectedOrgIds = await computeConnectedOrgIds();
-    if (!connectedOrgIds.size) return [];
+    if (!connectedOrgIds.size) return { orgs: [], totalCount: 0, enrichedLastMonthCount: 0 };
     resourcePath = "rpc/organizations_by_ids";
     method = "POST";
     body = { target_ids: [...connectedOrgIds], search_query: opts.q ?? null };
@@ -662,17 +722,23 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
     if (opts.q) params.search_query = opts.q;
   }
 
-  const orgs = opts.limit !== undefined
-    ? (await supabaseRequest(method, resourcePath, {
-        params: { ...params, limit: String(opts.limit), offset: String(opts.offset ?? 0) },
-        body,
-      })) ?? []
-    : await supabaseRequestAllPages(resourcePath, params, { method, body });
-  if (!orgs.length) return orgs;
+  const [orgs, totalCount, enrichedLastMonthCount] = await Promise.all([
+    opts.limit !== undefined
+      ? (await supabaseRequest(method, resourcePath, {
+          params: { ...params, limit: String(opts.limit), offset: String(opts.offset ?? 0) },
+          body,
+        })) ?? []
+      : supabaseRequestAllPages(resourcePath, params, { method, body }),
+    opts.limit !== undefined && opts.withCounts ? countMatching(method, resourcePath, params, body) : undefined,
+    opts.limit !== undefined && opts.withCounts
+      ? countMatching(method, resourcePath, { ...params, li_profile_fetched_at: `gte.${enrichedSinceCutoffIso()}` }, body)
+      : undefined,
+  ]);
+  if (!orgs.length) return { orgs, totalCount, enrichedLastMonthCount };
 
   if (!connectedOrgIds) connectedOrgIds = await computeConnectedOrgIds();
   for (const o of orgs) o.connected_to_user = connectedOrgIds.has(o.id);
-  return orgs;
+  return { orgs, totalCount, enrichedLastMonthCount };
 }
 
 // Same idea as findDuplicatePeopleCandidates (see there for nameFingerprint
@@ -884,6 +950,7 @@ type SearchPeopleOptions = {
   baOnly?: boolean;
   showHidden?: boolean;
   jplOnly?: boolean;
+  withCounts?: boolean;
 };
 
 // limit omitted: returns everything, paginated internally
@@ -901,8 +968,22 @@ type SearchPeopleOptions = {
 // route handler, which puts it on a response header). starred_only/
 // ba_only/show_hidden/jpl_only filter server-side here now, for the same
 // reason the org list's toggles do - a paginated list can't be filtered
-// client-side against data it hasn't loaded yet.
-async function searchPeopleGlobal(opts: SearchPeopleOptions): Promise<{ rows: any[]; hasMore: boolean }> {
+// client-side against data it hasn't loaded yet. withCounts: also runs the
+// count_people RPC (migration_025) for the list's count/tooltip - people
+// matching the current filters, and how many of those were enriched in the
+// last month - over everyone matching, not just what's been paged in.
+// Doesn't reuse the generic countMatching/Prefer:count=exact approach
+// listOrganizations uses: which people actually appear depends on
+// includePast (a person with zero CURRENT memberships produces no row
+// unless include_past is set - see the flattening loop below), which needs
+// an EXISTS check against `memberships` that PostgREST's embed-filter
+// syntax turned out not to support on top of an RPC-returned relation
+// (confirmed directly: "column pgrst_call.is_current does not exist") -
+// count_people does that check in SQL instead, and folds in the id-
+// restriction/search that'd otherwise come from whichever of
+// people/search_people_by_name/people_by_ids the main query below is
+// using, so it doesn't need to care which of those this call picked.
+async function searchPeopleGlobal(opts: SearchPeopleOptions): Promise<{ rows: any[]; hasMore: boolean; totalCount?: number; enrichedLastMonthCount?: number }> {
   const { query, includePast } = opts;
   const params: Record<string, string> = {
     // Lean, list-only fields - NOT select=* - the li_* LinkedIn-profile
@@ -942,7 +1023,7 @@ async function searchPeopleGlobal(opts: SearchPeopleOptions): Promise<{ rows: an
   let method = "GET";
   let body: unknown;
   if (opts.jplOnly) {
-    if (!connectedIds.size) return { rows: [], hasMore: false };
+    if (!connectedIds.size) return { rows: [], hasMore: false, totalCount: 0, enrichedLastMonthCount: 0 };
     resourcePath = "rpc/people_by_ids";
     method = "POST";
     body = { target_ids: [...connectedIds], search_query: query || null };
@@ -957,12 +1038,28 @@ async function searchPeopleGlobal(opts: SearchPeopleOptions): Promise<{ rows: an
     if (query) params.search_query = query;
   }
 
-  const people = opts.limit !== undefined
-    ? (await supabaseRequest(method, resourcePath, {
-        params: { ...params, limit: String(opts.limit), offset: String(opts.offset ?? 0) },
-        body,
-      })) ?? []
-    : await supabaseRequestAllPages(resourcePath, params, { method, body });
+  const countBody = {
+    target_ids: opts.jplOnly ? [...connectedIds] : null,
+    search_query: query || null,
+    include_past: includePast,
+    starred_only: !!opts.starredOnly,
+    ba_only: !!opts.baOnly,
+    show_hidden: !!opts.showHidden,
+  };
+  const [people, totalCount, enrichedLastMonthCount] = await Promise.all([
+    opts.limit !== undefined
+      ? (await supabaseRequest(method, resourcePath, {
+          params: { ...params, limit: String(opts.limit), offset: String(opts.offset ?? 0) },
+          body,
+        })) ?? []
+      : supabaseRequestAllPages(resourcePath, params, { method, body }),
+    opts.limit !== undefined && opts.withCounts
+      ? supabaseRequest("POST", "rpc/count_people", { body: countBody })
+      : undefined,
+    opts.limit !== undefined && opts.withCounts
+      ? supabaseRequest("POST", "rpc/count_people", { body: { ...countBody, enriched_since: enrichedSinceCutoffIso() } })
+      : undefined,
+  ]);
   const hasMore = opts.limit !== undefined && people.length === opts.limit;
 
   const rows: any[] = [];
@@ -982,7 +1079,7 @@ async function searchPeopleGlobal(opts: SearchPeopleOptions): Promise<{ rows: an
       ms.filter((m: any) => m.is_current).forEach((m: any) => rows.push(toRow(m)));
     }
   }
-  return { rows, hasMore };
+  return { rows, hasMore, totalCount, enrichedLastMonthCount };
 }
 
 // Case/accent/punctuation/spacing-insensitive fingerprint of a name - two
@@ -2434,7 +2531,7 @@ Deno.serve(async (req) => {
     if (req.method === "GET" && path === "/organizations") {
       const limitParam = url.searchParams.get("limit");
       const offsetParam = url.searchParams.get("offset");
-      return json(await listOrganizations({
+      const { orgs, totalCount, enrichedLastMonthCount } = await listOrganizations({
         includeEmployers: url.searchParams.get("include_employers") === "true",
         q: (url.searchParams.get("q") ?? "").trim() || undefined,
         limit: limitParam !== null ? parseInt(limitParam, 10) : undefined,
@@ -2444,7 +2541,12 @@ Deno.serve(async (req) => {
         jplOnly: url.searchParams.get("jpl_only") === "true",
         sort: url.searchParams.get("sort") ?? undefined,
         dir: url.searchParams.get("dir") === "desc" ? "desc" : "asc",
-      }));
+        withCounts: url.searchParams.get("with_counts") === "true",
+      });
+      return json(orgs, 200, {
+        ...(totalCount !== undefined ? { "X-Total-Count": String(totalCount) } : {}),
+        ...(enrichedLastMonthCount !== undefined ? { "X-Enriched-Last-Month-Count": String(enrichedLastMonthCount) } : {}),
+      });
     }
 
     // Checked ahead of orgIdMatch below, or "duplicate-candidates" would
@@ -2465,7 +2567,7 @@ Deno.serve(async (req) => {
     if (req.method === "GET" && path === "/people") {
       const limitParam = url.searchParams.get("limit");
       const offsetParam = url.searchParams.get("offset");
-      const { rows, hasMore } = await searchPeopleGlobal({
+      const { rows, hasMore, totalCount, enrichedLastMonthCount } = await searchPeopleGlobal({
         query: (url.searchParams.get("q") ?? "").trim(),
         includePast: url.searchParams.get("include_past") === "true",
         limit: limitParam !== null ? parseInt(limitParam, 10) : undefined,
@@ -2474,8 +2576,13 @@ Deno.serve(async (req) => {
         baOnly: url.searchParams.get("ba_only") === "true",
         showHidden: url.searchParams.get("show_hidden") === "true",
         jplOnly: url.searchParams.get("jpl_only") === "true",
+        withCounts: url.searchParams.get("with_counts") === "true",
       });
-      return json(rows, 200, { "X-Has-More": String(hasMore) });
+      return json(rows, 200, {
+        "X-Has-More": String(hasMore),
+        ...(totalCount !== undefined ? { "X-Total-Count": String(totalCount) } : {}),
+        ...(enrichedLastMonthCount !== undefined ? { "X-Enriched-Last-Month-Count": String(enrichedLastMonthCount) } : {}),
+      });
     }
 
     // Checked ahead of the generic personIdMatch GET below, or "duplicate-

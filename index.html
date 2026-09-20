@@ -201,7 +201,7 @@
     background: #2f7a3d; color: #fff; text-transform: uppercase; letter-spacing: .03em;
   }
   .person-photo {
-    width: 44px; height: 44px; border-radius: 50%; object-fit: cover; flex: 0 0 auto;
+    width: 70px; height: 70px; border-radius: 50%; object-fit: cover; flex: 0 0 auto;
     background: #f0eee9; border: 1px solid #e2e0dc;
   }
 
@@ -988,6 +988,14 @@ let orgShowHidden = false;     // "Show hidden" toggle - hidden orgs are exclude
 let orgOffset = 0;
 let orgHasMore = true;
 let orgLoadingMore = false;
+// The count next to "Organisations" and its "enriched in the last month"
+// tooltip need the total matching the current search/filters, not just how
+// many rows happen to be loaded so far (the list is paginated) - fetched
+// once per reloadOrgList (with_counts=true, read off X-Total-Count/
+// X-Enriched-Last-Month-Count response headers - see listOrganizations on
+// the backend) and reused by every render until the next reload.
+let orgTotalCount = 0;
+let orgEnrichedLastMonthCount = 0;
 
 // Strips accents so search can be typed without them - "cafe" matches
 // "Café", "moller" matches "Möller" - same technique (and reasoning) as the
@@ -1015,10 +1023,12 @@ const ORG_SERVER_SORT_FIELDS = new Set(["name", "hq_country", "org_type"]);
 async function reloadOrgList() {
   orgOffset = 0;
   orgHasMore = true;
-  const page = await fetchOrgPage(0);
-  orgListCache = page;
-  orgOffset = page.length;
-  orgHasMore = page.length === LIST_PAGE_SIZE;
+  const { orgs, totalCount, enrichedLastMonthCount } = await fetchOrgPage(0, true);
+  orgListCache = orgs;
+  orgOffset = orgs.length;
+  orgHasMore = orgs.length === LIST_PAGE_SIZE;
+  orgTotalCount = totalCount;
+  orgEnrichedLastMonthCount = enrichedLastMonthCount;
   renderOrgList(orgListCache);
 }
 
@@ -1031,10 +1041,10 @@ async function loadMoreOrgs() {
   orgLoadingMore = true;
   document.getElementById("orgLoadingMore").style.display = "block";
   try {
-    const page = await fetchOrgPage(orgOffset);
-    orgListCache = orgListCache.concat(page);
-    orgOffset += page.length;
-    orgHasMore = page.length === LIST_PAGE_SIZE;
+    const { orgs } = await fetchOrgPage(orgOffset);
+    orgListCache = orgListCache.concat(orgs);
+    orgOffset += orgs.length;
+    orgHasMore = orgs.length === LIST_PAGE_SIZE;
     renderOrgList(orgListCache);
   } finally {
     orgLoadingMore = false;
@@ -1042,7 +1052,11 @@ async function loadMoreOrgs() {
   }
 }
 
-async function fetchOrgPage(offset) {
+// withCounts (only ever true from reloadOrgList, never loadMoreOrgs - the
+// totals can't change just from paging in more of an already-fixed result
+// set) asks the backend to also compute X-Total-Count/X-Enriched-Last-
+// Month-Count over everything matching, not just this one page.
+async function fetchOrgPage(offset, withCounts) {
   const params = new URLSearchParams({ limit: String(LIST_PAGE_SIZE), offset: String(offset) });
   const q = document.getElementById("orgSearchInput").value.trim();
   if (q) params.set("q", q);
@@ -1054,8 +1068,15 @@ async function fetchOrgPage(offset) {
     params.set("sort", orgSort.field);
     params.set("dir", orgSort.dir);
   }
+  if (withCounts) params.set("with_counts", "true");
   const res = await api(`/organizations?${params.toString()}`);
-  return res.ok ? await res.json() : [];
+  if (!res.ok) return { orgs: [], totalCount: 0, enrichedLastMonthCount: 0 };
+  const orgs = await res.json();
+  return {
+    orgs,
+    totalCount: withCounts ? parseInt(res.headers.get("X-Total-Count") || "0", 10) : undefined,
+    enrichedLastMonthCount: withCounts ? parseInt(res.headers.get("X-Enriched-Last-Month-Count") || "0", 10) : undefined,
+  };
 }
 
 // Re-renders whatever's already loaded, in place - no network call. For a
@@ -1100,8 +1121,8 @@ function renderOrgList(orgs) {
   const listEl = document.getElementById("orgList");
   const emptyEl = document.getElementById("emptyOrgList");
   const countEl = document.getElementById("orgListCount");
-  countEl.textContent = String(orgs.length);
-  countEl.title = `${enrichedInLastMonthCount(orgs)} enriched in the last month`;
+  countEl.textContent = String(orgTotalCount);
+  countEl.title = `${orgEnrichedLastMonthCount} enriched in the last month`;
   wireSortHeaders("orgTable", orgSort, reloadOrgList);
   if (!orgs.length) { listEl.innerHTML = ""; emptyEl.style.display = "block"; return; }
   emptyEl.style.display = "none";
@@ -2299,6 +2320,15 @@ function updatePeopleListCount() {
     countEl.title = "";
     return;
   }
+  // Global mode is paginated - currentPeopleItems is only whatever's been
+  // scrolled into view, so the count/tooltip use the server-computed totals
+  // instead (see reloadPeopleList). Org mode is fully loaded client-side
+  // already, so the exact local count is still both correct and cheaper.
+  if (currentPeopleMode === "global") {
+    countEl.textContent = String(peopleTotalCount);
+    countEl.title = `${peopleEnrichedLastMonthCount} enriched in the last month`;
+    return;
+  }
   countEl.textContent = String(currentPeopleItems.length);
   countEl.title = `${enrichedInLastMonthCount(currentPeopleItems)} enriched in the last month`;
 }
@@ -3270,8 +3300,14 @@ async function searchPersonNews() {
 let peoplePageIndex = 0;
 let peopleHasMore = true;
 let peopleLoadingMore = false;
+// Same idea as orgTotalCount/orgEnrichedLastMonthCount - the count next to
+// "People" (global mode only; org mode already shows an exact count, see
+// updatePeopleListCount) needs the total matching the current search/
+// filters, not just how many rows have been paged in so far.
+let peopleTotalCount = 0;
+let peopleEnrichedLastMonthCount = 0;
 
-function buildPeopleListParams(offset) {
+function buildPeopleListParams(offset, withCounts) {
   const q = document.getElementById("peopleSearchInput").value.trim();
   const params = new URLSearchParams({ limit: String(LIST_PAGE_SIZE), offset: String(offset) });
   if (q) params.set("q", q);
@@ -3280,17 +3316,26 @@ function buildPeopleListParams(offset) {
   if (peopleBAOnly) params.set("ba_only", "true");
   if (peopleShowHidden) params.set("show_hidden", "true");
   if (peopleJplOnly) params.set("jpl_only", "true");
+  if (withCounts) params.set("with_counts", "true");
   return params;
 }
 
 // Unlike the org list, whether there's a next page can't be read off the
 // response body's length (one person can expand into several rows here -
 // see searchPeopleGlobal on the backend) - the server says so explicitly
-// instead, on the X-Has-More response header.
-async function fetchPeoplePage(offset) {
-  const res = await api(`/people?${buildPeopleListParams(offset).toString()}`);
-  if (!res.ok) return { rows: [], hasMore: false };
-  return { rows: await res.json(), hasMore: res.headers.get("X-Has-More") === "true" };
+// instead, on the X-Has-More response header. withCounts (only ever true
+// from reloadPeopleList, never loadMorePeople) also reads the X-Total-Count/
+// X-Enriched-Last-Month-Count headers - see fetchOrgPage for why those are
+// only asked for on a real reload.
+async function fetchPeoplePage(offset, withCounts) {
+  const res = await api(`/people?${buildPeopleListParams(offset, withCounts).toString()}`);
+  if (!res.ok) return { rows: [], hasMore: false, totalCount: 0, enrichedLastMonthCount: 0 };
+  return {
+    rows: await res.json(),
+    hasMore: res.headers.get("X-Has-More") === "true",
+    totalCount: withCounts ? parseInt(res.headers.get("X-Total-Count") || "0", 10) : undefined,
+    enrichedLastMonthCount: withCounts ? parseInt(res.headers.get("X-Enriched-Last-Month-Count") || "0", 10) : undefined,
+  };
 }
 
 // A real reload from the server, page 1, with whatever search/toggle state
@@ -3320,9 +3365,11 @@ async function reloadPeopleList() {
   }
   peoplePageIndex = 0;
   peopleHasMore = true;
-  const { rows, hasMore } = await fetchPeoplePage(0);
+  const { rows, hasMore, totalCount, enrichedLastMonthCount } = await fetchPeoplePage(0, true);
   peoplePageIndex = 1;
   peopleHasMore = hasMore;
+  peopleTotalCount = totalCount;
+  peopleEnrichedLastMonthCount = enrichedLastMonthCount;
   renderPeopleList(rows, "global");
 }
 
