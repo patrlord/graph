@@ -844,6 +844,39 @@ async function getOrgFilterOptions() {
   };
 }
 
+// The sector tags research (researchOrganization/researchPerson) is told to
+// prefer reusing, so it stops inventing fresh wording for a concept already
+// on file ("Climate tech" one day, "ClimateTech" the next, "Climate Tech"
+// after that - exactly the kind of near-duplicate sprawl a 2026-09
+// cleanup pass had to fix by hand across hundreds of orgs). Capped to
+// tags already used by at least 2 organizations - the long tail of
+// once-only, highly specific tags isn't established vocabulary worth
+// nudging new research toward, and would just bloat the prompt.
+async function getEstablishedSectorTags(): Promise<string[]> {
+  const rows = await supabaseRequestAllPages("organizations", { select: "sectors" });
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    for (const s of r.sectors ?? []) {
+      if (!s) continue;
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([tag]) => tag);
+}
+
+// The sector-tag bullet both researchOrganization and researchPerson's
+// prompts use, parameterized by the current established vocabulary
+// (getEstablishedSectorTags) - fetched fresh per request rather than
+// cached, so a tag added a moment ago is already available to steer the
+// very next research call, and the list never goes stale.
+function sectorTagInstructions(existingTags: string[]): string {
+  if (!existingTags.length) return `2-6 short sector/industry tags it's associated with (e.g. "Fintech", "AI infrastructure", "Climate tech")`;
+  return `2-6 short sector/industry tags it's associated with. Prefer reusing one of these existing tags if it genuinely fits, rather than inventing new wording for the same concept - only add a new tag when none of these are a good match: ${existingTags.join(", ")}`;
+}
+
 // Same idea as findDuplicatePeopleCandidates (see there for nameFingerprint/
 // normalizeLinkedinUrl and groupByKeys, shared with this) - groups every
 // organization by a fingerprint of its name OR its normalized linkedin_url,
@@ -2050,6 +2083,7 @@ const ORG_TYPES: [string, string][] = [
   ["media_agency", "a media, PR, or marketing agency"],
   ["exec_search", "an executive search / headhunting firm"],
   ["interim_agency", "an interim-management staffing agency"],
+  ["secondary", "a firm that buys/sells existing stakes in private funds or companies (secondaries investing)"],
   ["group", "none of the above fit well, but it's a real organization worth tracking"],
 ];
 const ORG_TYPE_SLUGS = ORG_TYPES.map(([slug]) => slug);
@@ -2115,6 +2149,7 @@ const RESEARCH_JSON_SCHEMA = {
 async function researchOrganization(name: string, linkedinUrl: string) {
   if (!name && !linkedinUrl) throw new HttpError(400, "name or linkedin_url is required");
   const who = name ? `"${name}"` : `the organization at this LinkedIn company page: ${linkedinUrl}`;
+  const establishedSectorTags = await getEstablishedSectorTags();
   const prompt = `Search for and find information about ${who}: its official website, LinkedIn company page, key people, and what it does.
 
 Report:
@@ -2123,7 +2158,7 @@ Report:
 - Official website URL and LinkedIn company page URL, only if confirmed
 - Where it's headquartered (city and country)
 - A one-sentence description
-- 2-6 short sector/industry tags it's associated with (e.g. "Fintech", "AI infrastructure", "Climate tech")
+- ${sectorTagInstructions(establishedSectorTags)}
 - If it's an investing organization (VC, CVC, PE, angel network, family office, investment syndicate, or similar), also report:
 ${INVESTOR_PROFILE_INSTRUCTIONS}
 - Its current key people - leadership, partners, or other senior roles relevant to what it does (skip admin/ops staff). For each: full name, title, sector/focus if stated, country they're based in, and personal LinkedIn URL if confirmed.
@@ -2145,12 +2180,13 @@ async function researchPerson(name: string, companyHint: string, linkedinUrl: st
   const who = name
     ? `"${name}"${companyHint ? `, who may work at "${companyHint}"` : ""}`
     : `the person at this LinkedIn URL: ${linkedinUrl}`;
+  const establishedSectorTags = await getEstablishedSectorTags();
   const prompt = `Search for and identify ${who}, and the organization they currently work at.
 
 Report:
 - Their full name, current title, sector/focus if stated, and the country they're based in
 - Their confirmed personal LinkedIn URL
-- The organization they currently work at: its name, ${ORG_TYPE_INSTRUCTIONS}, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and 2-6 short sector/industry tags. If it's an investing organization (VC, CVC, PE, angel network, family office, investment syndicate, or similar), also report:
+- The organization they currently work at: its name, ${ORG_TYPE_INSTRUCTIONS}, official website, LinkedIn company page, headquarters (city and country), a one-sentence description, and ${sectorTagInstructions(establishedSectorTags)}. If it's an investing organization (VC, CVC, PE, angel network, family office, investment syndicate, or similar), also report:
 ${INVESTOR_PROFILE_INSTRUCTIONS}
 
 If you cannot confidently identify this person or their current organization, leave the relevant fields null rather than guessing. Return exactly one entry in "people" (or none if you can't confirm anyone).
