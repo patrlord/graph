@@ -399,7 +399,8 @@
   .dupe-group-hint { font-size: 11px; color: #8a877e; margin: 0 0 8px; }
   .dupe-person { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f6f5f3; }
   .dupe-person:last-of-type { border-bottom: none; }
-  .dupe-person input[type=radio] { margin-top: 3px; flex: none; }
+  .dupe-person input[type=radio], .dupe-person input[type=checkbox] { margin-top: 3px; flex: none; }
+  .dupe-person.excluded { opacity: .5; }
   .dupe-person-name { font-weight: 500; }
   .dupe-person-roles { font-size: 11.5px; color: #8a877e; margin-top: 1px; }
   .dupe-group-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
@@ -2733,7 +2734,12 @@ function currentDupeGroups() {
 // the survivor; everyone else in that group merges into whoever's picked
 // when its own Merge button is clicked - groups are independent (a name
 // fingerprint puts an entity in exactly one group), so merging one doesn't
-// affect the others still listed.
+// affect the others still listed. Each row also gets its own checkbox
+// (checked by default) - unchecking one leaves it out of the merge
+// entirely (see mergeDupeGroup), for a group where some of the candidates
+// really are the same record and others just got swept in by a coincidental
+// match (e.g. a shared LinkedIn company id from a historical merger/rebrand
+// that doesn't mean today's two records should become one).
 function renderDupeModal() {
   const body = document.getElementById("dupeModalBody");
   const groups = currentDupeGroups();
@@ -2744,16 +2750,17 @@ function renderDupeModal() {
   }
   body.innerHTML = groups.map((g, gi) => `
     <div class="dupe-group" data-group-index="${gi}">
-      <p class="dupe-group-hint">Pick which record to keep - the others merge into it and are deleted.</p>
+      <p class="dupe-group-hint">Pick which record to keep - the checked others merge into it and are deleted; uncheck any that shouldn't be touched.</p>
       ${g[itemsKey].map((item, ii) => `
-        <label class="dupe-person">
+        <div class="dupe-person">
+          <input type="checkbox" class="dupe-include-checkbox" data-item-index="${ii}" checked>
           <input type="radio" name="dupe-group-${gi}" value="${ii}"${ii === 0 ? " checked" : ""}>
           <span>
             <div class="dupe-person-name">${item.name || item.full_name}${item.linkedin_url ?
               ` <a class="li-link li-link-arrow" href="${item.linkedin_url}" target="_blank" rel="noopener" title="Open LinkedIn profile">↗</a>` : ""}</div>
             <div class="dupe-person-roles">${dupeModalMode === "orgs" ? dupeOrgSubtitle(item) : dupePersonSubtitle(item)}</div>
           </span>
-        </label>
+        </div>
       `).join("")}
       <div class="dupe-group-actions">
         <button class="secondary tiny dupe-merge-btn" data-group-index="${gi}">Merge</button>
@@ -2762,6 +2769,35 @@ function renderDupeModal() {
       </div>
     </div>
   `).join("");
+  // The target (radio-picked survivor) must always be a checked row - an
+  // unchecked-but-selected-as-target row would be excluded from the merge
+  // (mergeDupeGroup) while still visually marked as "the one to keep",
+  // which is confusing. Keep the two in sync from both directions instead:
+  // unchecking the current target hands the target to another checked row
+  // in the same group; picking a row as target re-checks it if needed.
+  body.querySelectorAll(".dupe-include-checkbox").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const row = cb.closest(".dupe-person");
+      row.classList.toggle("excluded", !cb.checked);
+      const radio = row.querySelector("input[type=radio]");
+      if (!cb.checked && radio.checked) {
+        const group = cb.closest(".dupe-group");
+        const nextTarget = [...group.querySelectorAll(".dupe-person")]
+          .find(r => r !== row && r.querySelector(".dupe-include-checkbox").checked);
+        if (nextTarget) nextTarget.querySelector("input[type=radio]").checked = true;
+      }
+    });
+  });
+  body.querySelectorAll(".dupe-person input[type=radio]").forEach(radio => {
+    radio.addEventListener("change", () => {
+      const row = radio.closest(".dupe-person");
+      const cb = row.querySelector(".dupe-include-checkbox");
+      if (!cb.checked) {
+        cb.checked = true;
+        row.classList.remove("excluded");
+      }
+    });
+  });
   body.querySelectorAll(".dupe-merge-btn").forEach(btn => {
     btn.addEventListener("click", () => mergeDupeGroup(parseInt(btn.dataset.groupIndex, 10)));
   });
@@ -2818,18 +2854,31 @@ async function mergeDupeGroup(groupIndex) {
   const group = groups[groupIndex];
   if (!group) return;
   const isOrgs = dupeModalMode === "orgs";
-  const items = isOrgs ? group.orgs : group.people;
+  const itemsKey = isOrgs ? "orgs" : "people";
+  const items = group[itemsKey];
   const itemName = item => item.name || item.full_name;
   const status = document.getElementById(`dupeGroupStatus-${groupIndex}`);
   const picked = document.querySelector(`input[name="dupe-group-${groupIndex}"]:checked`);
   const targetIdx = picked ? parseInt(picked.value, 10) : 0;
   const target = items[targetIdx];
-  const others = items.filter((_, i) => i !== targetIdx);
+  const groupEl = document.querySelector(`.dupe-group[data-group-index="${groupIndex}"]`);
+  const includedIndices = new Set(
+    [...groupEl.querySelectorAll(".dupe-include-checkbox")]
+      .filter(cb => cb.checked)
+      .map(cb => parseInt(cb.dataset.itemIndex, 10))
+  );
+  const others = items.filter((_, i) => i !== targetIdx && includedIndices.has(i));
+  const excluded = items.filter((_, i) => i !== targetIdx && !includedIndices.has(i));
+  if (!others.length) {
+    status.className = "status-line error"; status.textContent = "Check at least one record to merge.";
+    return;
+  }
   if (!confirm(
     `Merge ${others.map(itemName).join(", ")} into ${itemName(target)}?\n\n` +
     (isOrgs
       ? `Their team members and connections move onto ${itemName(target)}; the others are deleted. This can't be undone.`
-      : `Their roles, connections, and event attendance move onto ${itemName(target)}; the others are deleted. This can't be undone.`)
+      : `Their roles, connections, and event attendance move onto ${itemName(target)}; the others are deleted. This can't be undone.`) +
+    (excluded.length ? `\n\n${excluded.map(itemName).join(", ")} ${excluded.length > 1 ? "are" : "is"} left unchecked and won't be touched.` : "")
   )) return;
   status.className = "status-line"; status.textContent = "Merging…";
   try {
@@ -2843,7 +2892,14 @@ async function mergeDupeGroup(groupIndex) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Failed to merge ${itemName(other)}`);
     }
-    groups.splice(groupIndex, 1);
+    // A record left unchecked still needs its own decision later (dismiss,
+    // or merge in a follow-up) - only drop the whole group once nothing but
+    // the survivor is left to compare.
+    if (excluded.length) {
+      group[itemsKey] = [target, ...excluded];
+    } else {
+      groups.splice(groupIndex, 1);
+    }
     renderDupeModal();
     updateMergeCandidatesBtn(dupeModalMode);
     if (isOrgs) {
