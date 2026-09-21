@@ -54,7 +54,8 @@
 //   GET    /organizations/duplicate-candidates -> [ { orgs: [ {id, name, org_type, linkedin_url, hq_country}, ... ] }, ... ]
 //     (checked ahead of GET /organizations/:id below - same idea as GET /people/duplicate-candidates, grouped by
 //     orgNameFingerprint (like nameFingerprint, but also strips a trailing domain-like suffix - ".ai"/".io"/".com"/...
-//     - so "Zaion" and "Zaion.ai" collide too) OR a shared normalized linkedin_url (groupByKeys) - two orgs pointing
+//     - so "Zaion" and "Zaion.ai" collide too - and a trailing legal-entity designator - "AG"/"GmbH"/"Ltd"/"Inc"/...
+//     - so "Acme" and "Acme GmbH" collide too, see LEGAL_SUFFIX_WORDS) OR a shared normalized linkedin_url (groupByKeys) - two orgs pointing
 //     at the identical LinkedIn company page surface as candidates even with unrelated-looking names; includes
 //     org_type "employer" stubs regardless of include_employers, since those are exactly the kind of low-quality,
 //     duplicate-prone record most worth merging away; excludes any group already dismissed, see POST .../dismiss below)
@@ -144,12 +145,16 @@
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
 //   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, name, org_type, sectors, hq_country, duplicate_of, name_clash, candidates }
-//     (saved if found; sectors/hq_country/org_type only filled if currently blank; name is renamed to LinkedIn's own name when it differs, unless that name already belongs
-//     to a different org (rename skipped, name_clash set, everything else still saves - same rule as enrich-from-apify, via renameOrgIfPossible). duplicate_of is
-//     {id, name} of another org that already has this exact linkedin_url, or null - a likely-duplicate flag, not a block on saving. Verification also checks the
-//     candidate against whatever's already on file for this org - type, sectors, ticket size, stage, description - not just its name, since names collide; when that
-//     leaves more than one plausible candidate it can't confidently tell apart, linkedin_url is null, nothing is saved, and candidates carries up to 3
-//     {linkedin_url, name, org_type, industry, hq} for a human to pick from instead of guessing)
+//     (when the org already has li_company_id - LinkedIn's own numeric id for it, see migration_027 - tries findOrgLinkedinByCompanyId FIRST: resolves it via the
+//     Apify company actor fed https://www.linkedin.com/company/<id> instead of a name search, which has no name-collision risk at all and, on success, also fully
+//     enriches the org in the same call (applyApifyCompanyData) since the actor's response is the full company profile either way. Falls back to the LLM name
+//     search below only if that isn't available or doesn't resolve. Either path: saved if found; sectors/hq_country/org_type only filled if currently blank; name is
+//     renamed to LinkedIn's own name when it differs, unless that name already belongs to a different org (rename skipped, name_clash set, everything else still
+//     saves - same rule as enrich-from-apify, via renameOrgIfPossible). duplicate_of is {id, name} of another org that already has this exact linkedin_url, or null -
+//     a likely-duplicate flag, not a block on saving. The LLM search additionally checks the candidate against whatever's already on file for this org - type,
+//     sectors, ticket size, stage, description - not just its name, since names collide; when that leaves more than one plausible candidate it can't confidently
+//     tell apart, linkedin_url is null, nothing is saved, and candidates carries up to 3 {linkedin_url, name, org_type, industry, hq} for a human to pick from
+//     instead of guessing)
 //   POST   /organizations/:id/merge-into  { target_id } -> updated target org (full row)
 //     (moves :id's team members onto target_id - dropping any that would collide with a membership target_id
 //     already has for that exact person+title - and its org<->org connections too - dropping any that would
@@ -887,14 +892,17 @@ function sectorTagInstructions(existingTags: string[]): string {
 // everyone rather than fetch in two steps.
 async function findDuplicateOrgCandidates() {
   const [rows, dismissed] = await Promise.all([
-    supabaseRequestAllPages("organizations", { select: "id,name,org_type,linkedin_url,hq_country" }),
+    supabaseRequestAllPages("organizations", { select: "id,name,org_type,linkedin_url,hq_country,li_company_id" }),
     getDismissedDuplicateKeys("organization"),
   ]);
   const rowsById = new Map((rows ?? []).map((r: any) => [r.id, r]));
   const groups = groupByKeys(
     rows ?? [],
     (r: any) => r.id,
-    [(r: any) => orgNameFingerprint(r.name) || null, (r: any) => normalizeLinkedinUrl(r.linkedin_url)],
+    // li_company_id is LinkedIn's own stable numeric id for the company -
+    // two orgs sharing one are certainly the same real company, even when
+    // linkedin_url differs (a stale/renamed slug) or is missing on one side.
+    [(r: any) => orgNameFingerprint(r.name) || null, (r: any) => normalizeLinkedinUrl(r.linkedin_url), (r: any) => r.li_company_id || null],
   );
   return [...groups.values()]
     .map((ids) => ids.map((id) => rowsById.get(id)))
@@ -989,6 +997,11 @@ async function mergeOrgInto(sourceId: string, targetId: string) {
   // meaningful to merge.
   const { id: _tid, created_at: _tca, updated_at: _tua, name: _tname, ...targetFieldsToFill } = target;
   const fields = mergeFields(source, targetFieldsToFill);
+  // mergeFields only fills a field that's blank on target - false isn't
+  // blank (isBlank), so is_starred otherwise never picks up a true from
+  // source when target itself is unstarred, silently losing the star. A
+  // merge should never make something LESS starred than either side was.
+  fields.is_starred = source.is_starred || target.is_starred;
   const updated = (await supabaseRequest("PATCH", "organizations", {
     params: { id: `eq.${targetId}` },
     body: fields,
@@ -1246,8 +1259,35 @@ function nameFingerprint(name: string): string {
 // company that just happens to have "AI" as the last word ("Anthropic AI")
 // isn't touched, since there's no leading "." for the regex to match.
 const ORG_NAME_SUFFIX_RE = /\.(ai|io|com|co|app|net|org|inc|tech|xyz)$/i;
+
+// A trailing legal-entity designator ("Acme AG", "Acme GmbH", "Acme Ltd.",
+// "Acme, Inc.", "Acme S.A.") is the same kind of miss as the domain suffix
+// above, just word-shaped instead of ".xyz"-shaped - "Acme" and "Acme AG"
+// otherwise fingerprint as "acme" vs "acmeag", never colliding. Periods are
+// stripped before matching (so "S.A." and "SA" both hit the same entry),
+// and up to two trailing words are dropped ("Pty Ltd", "Sp z o.o.") as long
+// as each one is on the list - a real company whose actual, distinctive
+// name happens to end in one of these short words ("Atlas AS") can still
+// collide with an unrelated same-prefix org this way, but that's the same
+// tradeoff the domain-suffix stripping already makes: this only surfaces
+// candidates for a human to confirm, never merges anything on its own.
+const LEGAL_SUFFIX_WORDS = new Set([
+  "ag", "gmbh", "mbh", "ug", "kgaa",
+  "sarl", "sas", "sasu", "eurl", "sa", "spa", "srl", "sl",
+  "bv", "nv", "oy", "oyj", "ab", "aps", "as", "kft",
+  "plc", "llp", "llc", "ltd", "limited", "inc", "incorporated",
+  "corp", "corporation", "co", "company", "pty", "pte",
+]);
+function stripLegalSuffix(name: string): string {
+  const words = name.replace(/\./g, "").trim().split(/\s+/);
+  while (words.length > 1 && LEGAL_SUFFIX_WORDS.has(words[words.length - 1].toLowerCase().replace(/,$/, ""))) {
+    words.pop();
+  }
+  return words.join(" ");
+}
+
 function orgNameFingerprint(name: string): string {
-  return nameFingerprint(name.trim().replace(ORG_NAME_SUFFIX_RE, ""));
+  return nameFingerprint(stripLegalSuffix(name.trim().replace(ORG_NAME_SUFFIX_RE, "")));
 }
 
 // Groups every id in `ids` into connected components, where two ids are
@@ -1660,6 +1700,12 @@ function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string,
   return {
     li_tagline: stripPictograms(company.tagline),
     li_logo_url: company.logo || null,
+    // Field name unconfirmed against a live company-scrape response (same
+    // caveat as li_headquarter below) - a person's experience entries
+    // reference their employer's numeric id as companyId (confirmed live),
+    // so that's tried first; id is the fallback guess for the company
+    // actor's own shape.
+    li_company_id: (company.companyId || company.id) ? String(company.companyId || company.id) : null,
     li_universal_name: company.universalName || null,
     li_company_type: company.companyType || null,
     li_phone: company.phone || null,
@@ -1717,18 +1763,21 @@ async function renameOrgIfPossible(orgId: string, currentName: string, candidate
   return clash?.length ? { name_clash: newName } : { name: newName, name_clash: null };
 }
 
-async function enrichOrgFromApify(orgId: string) {
-  const rows = await supabaseRequest("GET", "organizations", {
-    params: { id: `eq.${orgId}`, select: "name,linkedin_url,website_url,hq_country,description" },
-  });
-  const org = rows?.[0];
-  if (!org) throw new HttpError(404, "organization not found");
-  if (!org.linkedin_url) throw new HttpError(400, "This organization has no LinkedIn URL yet.");
-
-  const company = await fetchLinkedinCompanyViaApify(org.linkedin_url);
-  if (!company) throw new HttpError(502, "Apify found no company data for this LinkedIn URL.");
-
-  const fields = mapApifyCompanyToLiFields(company);
+// Shared by enrichOrgFromApify (given a known org.linkedin_url) and
+// findOrgLinkedinByCompanyId below (given only org.li_company_id, resolving
+// linkedin_url for the first time via the same company actor) - applies a
+// fetched Apify company profile onto the org: the full li_* mapping, the
+// same blank-fill fields (website_url/hq_country/description) and rename
+// logic either caller needs. extraFields lets the company-id path also set
+// linkedin_url itself, which mapApifyCompanyToLiFields never touches (in
+// the normal enrich flow linkedin_url is the input, not an output).
+async function applyApifyCompanyData(
+  orgId: string,
+  org: { name: string; website_url?: string | null; hq_country?: string | null; description?: string | null },
+  company: Record<string, any>,
+  extraFields: Record<string, any> = {},
+) {
+  const fields: Record<string, any> = { ...mapApifyCompanyToLiFields(company), ...extraFields };
   if (!org.website_url && company.website) fields.website_url = company.website;
   // hq_country is only ever "null" (the literal string, not blank) on rows a
   // past import already broke - real garbage, not a value worth protecting,
@@ -1745,7 +1794,69 @@ async function enrichOrgFromApify(orgId: string) {
     body: fields,
     prefer: "return=representation",
   }))[0];
+  return { updated, rename };
+}
+
+async function enrichOrgFromApify(orgId: string) {
+  const rows = await supabaseRequest("GET", "organizations", {
+    params: { id: `eq.${orgId}`, select: "name,linkedin_url,website_url,hq_country,description" },
+  });
+  const org = rows?.[0];
+  if (!org) throw new HttpError(404, "organization not found");
+  if (!org.linkedin_url) throw new HttpError(400, "This organization has no LinkedIn URL yet.");
+
+  const company = await fetchLinkedinCompanyViaApify(org.linkedin_url);
+  if (!company) throw new HttpError(502, "Apify found no company data for this LinkedIn URL.");
+
+  const { updated, rename } = await applyApifyCompanyData(orgId, org, company);
   return { ...updated, name_clash: rename.name_clash };
+}
+
+// Tried first, before the LLM name search below, whenever we already know
+// this org's numeric LinkedIn company id (li_company_id - captured from a
+// person's own experience history, or a previous run of this exact path -
+// see migration_027/backfillOrgCompanyId). Resolving it through the Apify
+// company actor - fed https://www.linkedin.com/company/<id> instead of a
+// name - has no name-collision risk at all (the id IS the company, not a
+// guess), unlike search-based matching. A raw unauthenticated fetch of that
+// URL doesn't work for this (confirmed directly: LinkedIn 302s an anonymous
+// request to a login wall instead of following through to the real page) -
+// Apify's actor runs through its own session/proxy and isn't affected.
+// Since a successful call returns the company's full profile, this also
+// fully enriches the org in the same request via applyApifyCompanyData -
+// the normal Enrich step then has nothing left to do (li_profile_fetched_at
+// is already set). Returns null (never throws) on any failure - a stale id,
+// a deleted/merged page, an Apify error - so the caller falls back to the
+// LLM search rather than failing the whole find-linkedin request over a
+// shortcut that just didn't pan out.
+async function findOrgLinkedinByCompanyId(
+  orgId: string,
+  org: { name: string; website_url?: string | null; hq_country?: string | null; description?: string | null; li_company_id?: string | null },
+) {
+  if (!org.li_company_id) return null;
+  let company: Record<string, any> | null;
+  try {
+    company = await fetchLinkedinCompanyViaApify(`https://www.linkedin.com/company/${org.li_company_id}`);
+  } catch {
+    return null;
+  }
+  if (!company) return null;
+  const resolvedUrl = normalizeLinkedinUrl(
+    company.linkedinUrl || (company.universalName ? `https://www.linkedin.com/company/${company.universalName}` : null),
+  );
+  if (!resolvedUrl) return null;
+
+  const { updated, rename } = await applyApifyCompanyData(orgId, org, company, { linkedin_url: resolvedUrl });
+
+  const clash = await supabaseRequest("GET", "organizations", {
+    params: { linkedin_url: `eq.${resolvedUrl}`, id: `neq.${orgId}`, select: "id,name", limit: "1" },
+  });
+  return {
+    linkedin_url: updated.linkedin_url, name: updated.name, org_type: updated.org_type,
+    sectors: updated.sectors, hq_country: updated.hq_country,
+    duplicate_of: clash?.[0] ? { id: clash[0].id, name: clash[0].name } : null,
+    name_clash: rename.name_clash, candidates: [],
+  };
 }
 
 // ---------- Schools / education (normalized from profile.education) ----------
@@ -1838,6 +1949,19 @@ function isCurrentExperienceEntry(e: any): boolean {
   return e.endDate?.text === "Present";
 }
 
+// A person's LinkedIn experience entry carries their employer's numeric
+// LinkedIn id as companyId (confirmed live - e.g. "3054" for Sopra Steria) -
+// this is a free byproduct of every person enrichment, not just direct org
+// enrichment, so it's worth capturing every time it shows up regardless of
+// whether the org itself has ever been Apify-enriched. Merge-only-blanks: a
+// direct company-scrape's own li_company_id (mapApifyCompanyToLiFields) is
+// the more authoritative source and is never overwritten by this.
+async function backfillOrgCompanyId(org: { id: string; li_company_id?: string | null }, companyId: unknown) {
+  if (org.li_company_id || !companyId) return;
+  await supabaseRequest("PATCH", "organizations", { params: { id: `eq.${org.id}` }, body: { li_company_id: String(companyId) } });
+  org.li_company_id = String(companyId);
+}
+
 async function importPastEmploymentForPerson(personId: string, experienceArr: any[] | undefined) {
   for (const e of experienceArr ?? []) {
     if (isCurrentExperienceEntry(e)) continue;
@@ -1851,6 +1975,7 @@ async function importPastEmploymentForPerson(personId: string, experienceArr: an
     if (!org) {
       org = (await supabaseRequest("POST", "organizations", { body: { name, org_type: "employer" }, prefer: "return=representation" }))[0];
     }
+    await backfillOrgCompanyId(org, e.companyId);
     const title = stripPictograms(e.position);
     const existingMemberships = await supabaseRequest("GET", "memberships", {
       params: {
@@ -1892,7 +2017,7 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     .filter(isCurrentExperienceEntry);
   const sources = currentEntries.length
     ? currentEntries
-    : (currentPositionArr ?? []).map((p: any, i: number) => ({ companyName: p.companyName, companyLinkedinUrl: p.companyLinkedinUrl, position: null, __order: i }));
+    : (currentPositionArr ?? []).map((p: any, i: number) => ({ companyName: p.companyName, companyLinkedinUrl: p.companyLinkedinUrl, companyId: p.companyId, position: null, __order: i }));
 
   const syncedOrgIds = new Set<string>();
   for (const entry of sources) {
@@ -1908,6 +2033,7 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     if (!org) {
       org = (await supabaseRequest("POST", "organizations", { body: { name: companyName, org_type: null }, prefer: "return=representation" }))[0];
     }
+    await backfillOrgCompanyId(org, entry.companyId);
     syncedOrgIds.add(org.id);
     const title = stripPictograms(entry.position);
     // employmentType (e.g. "Permanent" vs "Freelance"/"Volunteer") is what
@@ -2544,6 +2670,11 @@ async function mergePersonRecordInto(sourceId: string, targetId: string) {
 
   const { id: _tid, created_at: _tca, updated_at: _tua, full_name: _tname, ...targetFieldsToFill } = target;
   const fields = mergeFields(source, targetFieldsToFill);
+  // Same reasoning as mergeOrgInto's is_starred line - mergeFields never
+  // picks up a true from source when target itself is unstarred (false
+  // isn't "blank"), silently losing the star. A merge should never end up
+  // less starred than either side going in.
+  fields.is_starred = source.is_starred || target.is_starred;
   const updated = (await supabaseRequest("PATCH", "people", {
     params: { id: `eq.${targetId}` },
     body: fields,
@@ -2632,10 +2763,14 @@ async function findOrgLinkedin(orgId: string, name: string, websiteUrl: string, 
   const rows = await supabaseRequest("GET", "organizations", {
     params: {
       id: `eq.${orgId}`,
-      select: "name,org_type,description,sectors,ticket_size,investment_stages,investment_regions,hq_country,website_url",
+      select: "name,org_type,description,sectors,ticket_size,investment_stages,investment_regions,hq_country,website_url,li_company_id",
     },
   });
   const current = rows?.[0] || {};
+
+  const byCompanyId = await findOrgLinkedinByCompanyId(orgId, current);
+  if (byCompanyId) return byCompanyId;
+
   const effectiveWebsite = websiteUrl || current.website_url || "";
   const effectiveCountry = country || current.hq_country || "";
 

@@ -1,0 +1,14 @@
+-- Run this once in the Supabase SQL Editor, after migration_026. LinkedIn's
+-- stable numeric company id (e.g. "3054") - distinct from linkedin_url,
+-- which can be missing, wrong, or point at a renamed/merged page. Captured
+-- two ways (see supabase/functions/graph-api/index.ts):
+--   - Directly, when an org itself is Apify-enriched (mapApifyCompanyToLiFields)
+--   - Indirectly, via companyId on a person's LinkedIn experience entries
+--     (importPastEmploymentForPerson/syncCurrentRolesForPerson), backfilled
+--     onto whichever org that employer name matched or created
+-- Used for: duplicate-candidate matching (findDuplicateOrgCandidates - two
+-- orgs with the same numeric id are certainly the same company, even if
+-- their names/linkedin_url don't obviously match) and as a way to recover a
+-- missing linkedin_url - https://www.linkedin.com/company/<id> redirects to
+-- the real vanity-slug URL even when that slug itself is unknown.
+alter table organizations add column if not exists li_company_id text;
