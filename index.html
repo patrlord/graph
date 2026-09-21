@@ -205,6 +205,36 @@
     background: #f0eee9; border: 1px solid #e2e0dc;
   }
 
+  /* Column-header filter dropdown (org list's Country/Type/Sector/
+     Investment Regions - openColumnFilterPopup) - one shared, repositioned
+     element rather than one per column. */
+  .col-filter-popup {
+    position: fixed; background: #fff; border: 1px solid #d8d5cf; border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18); z-index: 60; width: 230px; padding: 10px;
+    display: flex; flex-direction: column; gap: 8px; cursor: default;
+  }
+  .cfp-title { font-size: 11px; font-weight: 600; color: #8a877e; text-transform: uppercase; letter-spacing: .03em; }
+  .cfp-sort-row, .cfp-actions-row { display: flex; gap: 6px; }
+  .cfp-sort-row button, .cfp-actions-row button { flex: 1 1 50%; }
+  .cfp-sort-row button.active { background: #2b5a8a; color: #fff; border-color: #2b5a8a; }
+  .cfp-search-input { width: 100%; box-sizing: border-box; }
+  .cfp-options-list {
+    max-height: 220px; overflow-y: auto; border-top: 1px solid #eeece7; border-bottom: 1px solid #eeece7;
+    padding: 4px 0; font-size: 12.5px;
+  }
+  .cfp-option { display: flex; align-items: center; gap: 6px; padding: 3px 2px; cursor: pointer; }
+  .cfp-option:hover { background: #f0eee9; }
+  .cfp-option input { flex: 0 0 auto; }
+  .cfp-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cfp-empty { color: #b5b1a9; padding: 6px 2px; }
+  .cfp-footer { display: flex; gap: 6px; justify-content: flex-end; }
+  /* Small dot after a filterable header's text when it currently has an
+     active filter - same visual idiom as .connected-dot above. */
+  .col-filter-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #2b5a8a; margin-left: 4px; vertical-align: middle;
+  }
+
   .org-header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .org-header h3 { margin: 0; font-size: 15.5px; }
   .org-header .entity-links { margin-top: 0; }
@@ -281,9 +311,17 @@
   table.sortable-table th:nth-child(1), table.sortable-table td:nth-child(1) { width: 42px; overflow: visible; text-overflow: clip; }
   table.sortable-table th:nth-child(2) { width: 30%; }
   table.sortable-table th:nth-child(3) { width: 18%; }
-  #orgTable th:nth-child(4) { width: 20%; }
-  #orgTable th:nth-child(5) { width: 17%; }
-  #orgTable th:nth-child(6) { width: 10%; }
+  /* 8 columns (flags/Name/Country/Type/Sector/Investment Regions/LI/JPL) -
+     Country/Type shrink from the 2-table shared default above to make room
+     for Sector/Investment Regions, which - unlike every other org column -
+     can hold several comma-joined values per row and so need more width. */
+  #orgTable th:nth-child(2) { width: 20%; }
+  #orgTable th:nth-child(3) { width: 11%; }
+  #orgTable th:nth-child(4) { width: 11%; }
+  #orgTable th:nth-child(5) { width: 16%; }
+  #orgTable th:nth-child(6) { width: 16%; }
+  #orgTable th:nth-child(7) { width: 16%; }
+  #orgTable th:nth-child(8) { width: 8%; }
   #peopleTable th:nth-child(2) { width: 25%; }
   #peopleTable th:nth-child(3) { width: 9%; }
   #peopleTable th:nth-child(4) { width: 18%; }
@@ -291,10 +329,10 @@
   #peopleTable th:nth-child(6) { width: 9%; }
   #peopleTable th:nth-child(7) { width: 7%; }
   #peopleTable th:nth-child(8) { width: 7%; }
-  /* JPL (org: 6th column, people: 8th) and BA (people: 7th) hold only an
+  /* JPL (org: 8th column, people: 8th) and BA (people: 7th) hold only an
      icon/checkbox, not text - center the header over them too, not just
      the content, so they actually line up. */
-  #orgTable th:nth-child(6), #orgTable td:nth-child(6),
+  #orgTable th:nth-child(8), #orgTable td:nth-child(8),
   #peopleTable th:nth-child(7), #peopleTable td:nth-child(7),
   #peopleTable th:nth-child(8), #peopleTable td:nth-child(8),
   .sortable-table th.col-li, .sortable-table td.col-li {
@@ -425,8 +463,10 @@
               <tr>
                 <th></th>
                 <th data-sort="name">Name <span class="sort-arrow"></span></th>
-                <th data-sort="hq_country">Country <span class="sort-arrow"></span></th>
-                <th data-sort="org_type">Type <span class="sort-arrow"></span></th>
+                <th data-sort="hq_country" data-filter="hq_country">Country <span class="sort-arrow"></span></th>
+                <th data-sort="org_type" data-filter="org_type">Type <span class="sort-arrow"></span></th>
+                <th data-sort="sectors" data-filter="sectors">Sector <span class="sort-arrow"></span></th>
+                <th data-sort="investment_regions" data-filter="investment_regions">Investment Regions <span class="sort-arrow"></span></th>
                 <th class="col-li">LI <button class="secondary tiny" id="orgFindAllBtn" title="Find LinkedIn URLs for every organization below that's missing one">Find all</button></th>
                 <th title="Has a team member connected to a flagged user">JPL</th>
               </tr>
@@ -703,6 +743,27 @@
       <button class="close-x" id="dupeModalCloseBtn" title="Close">✕</button>
     </div>
     <div class="modal-body" id="dupeModalBody"></div>
+  </div>
+</div>
+
+<!-- One shared popup, repositioned/repopulated per column - see
+     openColumnFilterPopup. Only the org list's Country/Type/Sector/
+     Investment Regions headers use it so far (data-filter on the <th>). -->
+<div id="colFilterPopup" class="col-filter-popup" style="display:none">
+  <div class="cfp-title" id="cfpTitle"></div>
+  <div class="cfp-sort-row" id="cfpSortRow">
+    <button type="button" class="secondary tiny cfp-sort-btn" data-dir="asc">Sort A → Z</button>
+    <button type="button" class="secondary tiny cfp-sort-btn" data-dir="desc">Sort Z → A</button>
+  </div>
+  <input type="text" class="cfp-search-input" id="cfpSearchInput" placeholder="Filter options…">
+  <div class="cfp-actions-row">
+    <button type="button" class="secondary tiny" id="cfpSelectAllBtn">Select all</button>
+    <button type="button" class="secondary tiny" id="cfpClearBtn">Clear</button>
+  </div>
+  <div class="cfp-options-list" id="cfpOptionsList"></div>
+  <div class="cfp-footer">
+    <button type="button" class="secondary tiny" id="cfpCancelBtn">Cancel</button>
+    <button type="button" class="tiny" id="cfpApplyBtn">Apply</button>
   </div>
 </div>
 
@@ -985,6 +1046,19 @@ let orgStarredOnly = false;    // "Starred only" toggle
 let orgJplOnly = false;        // "JPL only" toggle - only orgs connected_to_user (the JPL column)
 let orgShowHidden = false;     // "Show hidden" toggle - hidden orgs are excluded unless this is checked
 
+// Column-header filter dropdowns (Country/Type/Sector/Investment Regions -
+// openColumnFilterPopup). Each holds the exact raw values to send as that
+// column's filter param - NOT necessarily what's checked in the UI, since
+// Country in particular groups several raw hq_country strings ("Paris,
+// France"/"Lyon, France"/"France") under one checkbox (see
+// ORG_FILTERABLE_COLUMNS/groupFilterOptions) - checking that one box selects
+// every raw value in the group, because the backend match is an exact
+// string compare (in.(...)/ov.{...}), not a fuzzy one.
+let orgFilterCountries = [];
+let orgFilterOrgTypes = [];
+let orgFilterSectors = [];
+let orgFilterInvestmentRegions = [];
+
 let orgOffset = 0;
 let orgHasMore = true;
 let orgLoadingMore = false;
@@ -1014,6 +1088,18 @@ function foldAccents(s) {
 // whatever page happens to be loaded.
 const ORG_SERVER_SORT_FIELDS = new Set(["name", "hq_country", "org_type"]);
 
+// sectors/investment_regions can't sort server-side (array columns, no
+// clean single-column SQL order - see listOrganizations) - sorted
+// client-side instead, on whatever page(s) have actually loaded so far,
+// same documented limitation as the people list's Role column. Applied
+// after every reload/load-more when orgSort.field is one of these (see
+// reloadOrgList/loadMoreOrgs) - makeComparator's fieldValueFn override
+// gives it the joined display string to compare instead of the raw array.
+function orgComparator() {
+  return makeComparator(orgSort, (o, field) =>
+    (field === "sectors" || field === "investment_regions") ? (o[field] || []).join(", ") : undefined);
+}
+
 // A real reload from the server, page 1, with whatever search/toggle/sort
 // state is currently set - used for anything that changes WHAT should be
 // showing (the Search button/Enter, a toggle, a sort header, the initial
@@ -1024,6 +1110,7 @@ async function reloadOrgList() {
   orgOffset = 0;
   orgHasMore = true;
   const { orgs, totalCount, enrichedLastMonthCount } = await fetchOrgPage(0, true);
+  if (!ORG_SERVER_SORT_FIELDS.has(orgSort.field)) orgs.sort(orgComparator());
   orgListCache = orgs;
   orgOffset = orgs.length;
   orgHasMore = orgs.length === LIST_PAGE_SIZE;
@@ -1043,6 +1130,7 @@ async function loadMoreOrgs() {
   try {
     const { orgs } = await fetchOrgPage(orgOffset);
     orgListCache = orgListCache.concat(orgs);
+    if (!ORG_SERVER_SORT_FIELDS.has(orgSort.field)) orgListCache.sort(orgComparator());
     orgOffset += orgs.length;
     orgHasMore = orgs.length === LIST_PAGE_SIZE;
     renderOrgList(orgListCache);
@@ -1064,6 +1152,10 @@ async function fetchOrgPage(offset, withCounts) {
   if (orgStarredOnly) params.set("starred_only", "true");
   if (orgShowHidden) params.set("show_hidden", "true");
   if (orgJplOnly) params.set("jpl_only", "true");
+  if (orgFilterCountries.length) params.set("countries", orgFilterCountries.join(","));
+  if (orgFilterOrgTypes.length) params.set("org_types", orgFilterOrgTypes.join(","));
+  if (orgFilterSectors.length) params.set("sectors", orgFilterSectors.join(","));
+  if (orgFilterInvestmentRegions.length) params.set("investment_regions", orgFilterInvestmentRegions.join(","));
   if (ORG_SERVER_SORT_FIELDS.has(orgSort.field)) {
     params.set("sort", orgSort.field);
     params.set("dir", orgSort.dir);
@@ -1099,9 +1191,12 @@ function makeComparator(sortState, fieldValueFn) {
   };
 }
 
+// th[data-filter] columns (the org list's Country/Type/Sector/Investment
+// Regions) are wired separately, by wireOrgFilterableHeaders below - a click
+// there opens the sort+checkbox dropdown instead of sorting immediately.
 function wireSortHeaders(tableId, sortState, onSort) {
   const table = document.getElementById(tableId);
-  [...table.querySelectorAll("th[data-sort]")].forEach(th => {
+  [...table.querySelectorAll("th[data-sort]:not([data-filter])")].forEach(th => {
     th.classList.toggle("sorted", th.dataset.sort === sortState.field);
     th.querySelector(".sort-arrow").textContent = th.dataset.sort === sortState.field ? (sortState.dir === "asc" ? "▲" : "▼") : "";
     th.onclick = () => {
@@ -1117,6 +1212,17 @@ function connectedCellHtml(item) {
   return item.connected_to_user ? '<span class="connected-dot" title="Connected to a flagged user"></span>' : "";
 }
 
+// The org list's Sector/Investment Regions cells - both plain string[]
+// columns, rendered as one comma-joined line (ellipsis-truncated by the
+// table's own overflow rule like every other cell) with the full list on
+// title so a truncated row is still readable on hover.
+function listCellHtml(values) {
+  return values && values.length ? values.join(", ") : '<span class="none">—</span>';
+}
+function listCellTitle(values) {
+  return (values && values.length ? values.join(", ") : "").replace(/"/g, "&quot;");
+}
+
 function renderOrgList(orgs) {
   const listEl = document.getElementById("orgList");
   const emptyEl = document.getElementById("emptyOrgList");
@@ -1124,6 +1230,7 @@ function renderOrgList(orgs) {
   countEl.textContent = String(orgTotalCount);
   countEl.title = `${orgEnrichedLastMonthCount} enriched in the last month`;
   wireSortHeaders("orgTable", orgSort, reloadOrgList);
+  wireOrgFilterableHeaders();
   if (!orgs.length) { listEl.innerHTML = ""; emptyEl.style.display = "block"; return; }
   emptyEl.style.display = "none";
   listEl.innerHTML = orgs.map(o => `
@@ -1132,6 +1239,8 @@ function renderOrgList(orgs) {
       <td class="li-name">${o.name}</td>
       <td>${countryCellFor(o, o.hq_country) || '<span class="none">—</span>'}</td>
       <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
+      <td title="${listCellTitle(o.sectors)}">${listCellHtml(o.sectors)}</td>
+      <td title="${listCellTitle(o.investment_regions)}">${listCellHtml(o.investment_regions)}</td>
       <td class="col-li">${linkedinCellFor(o)}</td>
       <td>${connectedCellHtml(o)}</td>
     </tr>
@@ -1155,6 +1264,190 @@ function renderOrgList(orgs) {
     wireFlagButtons(tr, orgs[i], toggleOrgFlag);
   });
   if (selectedOrg) highlightSelected("orgList", selectedOrg.id);
+}
+
+// ---------- organizations: column-header filter dropdowns ----------
+
+// Fetched once (GET /organizations/filter-options), reused by every column -
+// null until the first dropdown open, so a session that never opens one
+// never pays for it. Every distinct value currently on any organization,
+// not scoped to the org list's own current filters - see getOrgFilterOptions
+// on the backend.
+let orgFilterOptionsPromise = null;
+function fetchOrgFilterOptions() {
+  if (!orgFilterOptionsPromise) {
+    orgFilterOptionsPromise = api("/organizations/filter-options")
+      .then(res => res.ok ? res.json() : { countries: [], org_types: [], sectors: [], investment_regions: [] })
+      .catch(() => ({ countries: [], org_types: [], sectors: [], investment_regions: [] }));
+  }
+  return orgFilterOptionsPromise;
+}
+
+// Groups raw option strings by a normalized key, so near-duplicate spellings
+// collapse into one checkbox - checking it selects every raw value in the
+// group. Needed because the backend match is an exact string compare
+// (in.(...)/ov.{...} - see listOrganizations), so the group's raw values,
+// not the display label, are what actually has to be sent.
+function groupFilterOptions(rawValues, keyFn, labelFn) {
+  const groups = new Map();  // key -> { label, values: [] }
+  for (const raw of rawValues) {
+    const key = keyFn(raw);
+    if (!groups.has(key)) groups.set(key, { label: labelFn ? labelFn(key, raw) : key, values: [] });
+    groups.get(key).values.push(raw);
+  }
+  return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+}
+
+// One entry per filterable org-list column. buildGroups turns the raw
+// options (fetchOrgFilterOptions) into checkbox groups (see
+// groupFilterOptions); get/set read and write the persisted selection
+// (orgFilterCountries etc. - the raw values actually sent as that column's
+// filter param).
+const ORG_FILTERABLE_COLUMNS = {
+  hq_country: {
+    title: "Country", optionsKey: "countries",
+    // hq_country is free text ("Paris, France", "France", "Lyon, France" -
+    // all France) - grouped by the same country-code lookup the Country
+    // column itself already displays through (countryCodeFromName), so a
+    // checkbox here means the same "country" the column shows, not a raw
+    // string. A value the lookup doesn't recognize is left as its own
+    // group, same fallback the column display already has.
+    buildGroups: raw => groupFilterOptions(raw, v => countryCodeFromName(v) || v),
+    get: () => orgFilterCountries, set: v => { orgFilterCountries = v; },
+  },
+  org_type: {
+    title: "Type", optionsKey: "org_types",
+    buildGroups: raw => groupFilterOptions(raw, v => v, key => ORG_TYPE_LABEL[key] || key),
+    get: () => orgFilterOrgTypes, set: v => { orgFilterOrgTypes = v; },
+  },
+  sectors: {
+    title: "Sector", optionsKey: "sectors",
+    // A stray leading/trailing space on a sector value ("Industry 4.0" vs "
+    // Industry 4.0") shouldn't be two separate checkboxes - trimmed for
+    // grouping/display, but the group's values stay the original untrimmed
+    // strings, since that's the literal array element ov.{...} has to match.
+    buildGroups: raw => groupFilterOptions(raw, v => v.trim()),
+    get: () => orgFilterSectors, set: v => { orgFilterSectors = v; },
+  },
+  investment_regions: {
+    title: "Investment Regions", optionsKey: "investment_regions",
+    buildGroups: raw => groupFilterOptions(raw, v => v.trim()),
+    get: () => orgFilterInvestmentRegions, set: v => { orgFilterInvestmentRegions = v; },
+  },
+};
+
+// Sort arrow + "has an active filter" dot for the 4 filterable headers -
+// wireSortHeaders skips them (they open the dropdown on click instead of
+// sorting immediately), so they need their own indicator upkeep, called
+// from renderOrgList every render same as wireSortHeaders is.
+function wireOrgFilterableHeaders() {
+  const table = document.getElementById("orgTable");
+  [...table.querySelectorAll("th[data-filter]")].forEach(th => {
+    const field = th.dataset.filter;
+    const config = ORG_FILTERABLE_COLUMNS[field];
+    th.classList.toggle("sorted", orgSort.field === field);
+    th.querySelector(".sort-arrow").textContent = orgSort.field === field ? (orgSort.dir === "asc" ? "▲" : "▼") : "";
+    let dot = th.querySelector(".col-filter-dot");
+    const hasFilter = config.get().length > 0;
+    if (hasFilter && !dot) {
+      dot = document.createElement("span");
+      dot.className = "col-filter-dot";
+      th.appendChild(dot);
+    } else if (!hasFilter && dot) {
+      dot.remove();
+    }
+    th.onclick = () => openColumnFilterPopup(field, th);
+  });
+}
+
+// The one shared popup (colFilterPopup) currently open for, or null.
+let activeColFilterField = null;
+let colFilterPendingValues = null;   // Set of raw values, mutated by checkbox clicks until Apply/Cancel
+let colFilterGroups = null;          // this open's buildGroups() result, cached so the search box doesn't refetch
+
+function closeColumnFilterPopup() {
+  document.getElementById("colFilterPopup").style.display = "none";
+  activeColFilterField = null;
+  colFilterPendingValues = null;
+  colFilterGroups = null;
+  document.removeEventListener("mousedown", handleColFilterOutsideClick, true);
+  document.removeEventListener("keydown", handleColFilterEscape, true);
+}
+
+function handleColFilterOutsideClick(e) {
+  const popup = document.getElementById("colFilterPopup");
+  if (!popup.contains(e.target) && !(activeColFilterField && e.target.closest(`th[data-filter="${activeColFilterField}"]`))) {
+    closeColumnFilterPopup();
+  }
+}
+function handleColFilterEscape(e) {
+  if (e.key === "Escape") closeColumnFilterPopup();
+}
+
+async function openColumnFilterPopup(field, thEl) {
+  const wasOpenOnSameColumn = activeColFilterField === field;
+  closeColumnFilterPopup();
+  if (wasOpenOnSameColumn) return;  // clicking the already-open column's header just closes it
+
+  const config = ORG_FILTERABLE_COLUMNS[field];
+  activeColFilterField = field;
+  const popup = document.getElementById("colFilterPopup");
+  document.getElementById("cfpTitle").textContent = config.title;
+  [...popup.querySelectorAll(".cfp-sort-btn")].forEach(btn => {
+    btn.classList.toggle("active", orgSort.field === field && orgSort.dir === btn.dataset.dir);
+  });
+  document.getElementById("cfpSearchInput").value = "";
+  document.getElementById("cfpOptionsList").innerHTML = '<div class="cfp-empty">Loading…</div>';
+
+  // Position under the header, clamped so it doesn't run off the right edge.
+  const rect = thEl.getBoundingClientRect();
+  popup.style.display = "flex";
+  const popupWidth = popup.offsetWidth || 230;
+  popup.style.top = `${rect.bottom + 4}px`;
+  popup.style.left = `${Math.min(rect.left, window.innerWidth - popupWidth - 10)}px`;
+
+  const options = await fetchOrgFilterOptions();
+  if (activeColFilterField !== field) return;  // closed (or moved to another column) while that was in flight
+  colFilterGroups = config.buildGroups(options[config.optionsKey] || []);
+  colFilterPendingValues = new Set(config.get());
+  renderColFilterOptionsList();
+
+  document.addEventListener("mousedown", handleColFilterOutsideClick, true);
+  document.addEventListener("keydown", handleColFilterEscape, true);
+}
+
+function renderColFilterOptionsList() {
+  const listEl = document.getElementById("cfpOptionsList");
+  const search = document.getElementById("cfpSearchInput").value.trim().toLowerCase();
+  const groups = search ? colFilterGroups.filter(g => g.label.toLowerCase().includes(search)) : colFilterGroups;
+  if (!groups.length) { listEl.innerHTML = '<div class="cfp-empty">No options.</div>'; return; }
+  listEl.innerHTML = groups.map(g => {
+    const checked = g.values.every(v => colFilterPendingValues.has(v));
+    return `<label class="cfp-option"><input type="checkbox"${checked ? " checked" : ""}><span title="${g.label.replace(/"/g, "&quot;")}">${g.label}</span></label>`;
+  }).join("");
+  [...listEl.querySelectorAll("input[type=checkbox]")].forEach((cb, i) => {
+    cb.addEventListener("change", () => {
+      const group = groups[i];
+      if (cb.checked) group.values.forEach(v => colFilterPendingValues.add(v));
+      else group.values.forEach(v => colFilterPendingValues.delete(v));
+    });
+  });
+}
+
+function applyColumnFilter() {
+  const field = activeColFilterField;
+  const config = ORG_FILTERABLE_COLUMNS[field];
+  const values = [...colFilterPendingValues];
+  closeColumnFilterPopup();
+  config.set(values);
+  reloadOrgList();
+}
+
+function sortFromColumnFilter(dir) {
+  const field = activeColFilterField;
+  closeColumnFilterPopup();
+  orgSort = { field, dir };
+  reloadOrgList();
 }
 
 // Shared by both lists' leading flags column (star/hide) - one cell's markup,
@@ -3649,6 +3942,24 @@ document.getElementById("orgShowHiddenToggle").addEventListener("change", e => {
 document.getElementById("orgListScrollBox").addEventListener("scroll", e => {
   const el = e.target;
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) loadMoreOrgs();
+});
+
+// Column-header filter dropdown (openColumnFilterPopup) - static controls,
+// wired once; which column they act on is whatever activeColFilterField
+// currently is.
+document.getElementById("cfpSearchInput").addEventListener("input", renderColFilterOptionsList);
+document.getElementById("cfpSelectAllBtn").addEventListener("click", () => {
+  colFilterGroups.forEach(g => g.values.forEach(v => colFilterPendingValues.add(v)));
+  renderColFilterOptionsList();
+});
+document.getElementById("cfpClearBtn").addEventListener("click", () => {
+  colFilterPendingValues.clear();
+  renderColFilterOptionsList();
+});
+document.getElementById("cfpApplyBtn").addEventListener("click", applyColumnFilter);
+document.getElementById("cfpCancelBtn").addEventListener("click", closeColumnFilterPopup);
+[...document.querySelectorAll(".cfp-sort-btn")].forEach(btn => {
+  btn.addEventListener("click", () => sortFromColumnFilter(btn.dataset.dir));
 });
 document.getElementById("includePastRolesToggle").addEventListener("change", e => { includePastRoles = e.target.checked; reloadPeopleList(); });
 document.getElementById("peopleStarredOnlyToggle").addEventListener("change", e => { peopleStarredOnly = e.target.checked; reloadPeopleList(); });

@@ -23,13 +23,18 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true
-//     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
+//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true&countries=France,Germany&org_types=vc,cvc&sectors=Fintech&investment_regions=Europe
+//     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, investment_regions, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
 //     (is_starred/is_hidden filter server-side here now (starred_only/show_hidden), same for jpl_only (connected_to_user) - the main org list is
 //     paginated (see limit/offset below) so it can no longer filter client-side against data it hasn't loaded. q searches name or hq_country,
 //     accent-insensitive, via search_organizations_by_text (migration_023) instead of a plain filter; jpl_only instead routes through
 //     organizations_by_ids (migration_024), a POST RPC, since the connected-id list is too long for a URL filter. sort is one of name/hq_country/
-//     org_type/updated_at (default name), dir asc/desc (default asc). limit/offset: when limit is given, returns exactly one page - the frontend's
+//     org_type/updated_at (default name), dir asc/desc (default asc) - sectors/investment_regions aren't sortable server-side (array columns, no
+//     clean single-column SQL order) so the frontend sorts those client-side, on whatever's currently loaded, same documented limitation as the
+//     people list's Role column. countries/org_types/sectors/investment_regions are each a comma-separated list from that column's filter-dropdown
+//     checkboxes (index.html) - hq_country/org_type match via in.(...), sectors/investment_regions (array columns) via ov.{...} (overlap - the row
+//     matches if it has ANY of the given values), see inList/arrayOverlap; the options for these dropdowns come from GET .../filter-options below.
+//     limit/offset: when limit is given, returns exactly one page - the frontend's
 //     infinite scroll (index.html) decides there's a next page only when a page comes back full. limit OMITTED (not limit=0): returns
 //     everything, paginated internally (supabaseRequestAllPages) - the pre-pagination behavior, still used by callers that need the full list
 //     in one shot regardless of what the main list is showing (the merge-target dropdown, the add-connection org picker). with_counts=true (only
@@ -42,6 +47,10 @@
 //     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true.
 //     connected_to_user: true if any person with a membership at this org - past or current - is themselves flagged
 //     is_user, or is connected to one via a person<->person row in `connections`; see getUserConnectedPersonIds)
+//   GET    /organizations/filter-options -> { countries: [string, ...], org_types: [string, ...], sectors: [string, ...], investment_regions: [string, ...] }
+//     (checked ahead of GET /organizations/:id below, same reason as .../duplicate-candidates - backs the org list's column-header filter
+//     dropdowns' checkbox options: every distinct non-null value currently on any organization for that field, alphabetical. Deliberately NOT
+//     scoped to the current include_employers/show_hidden/other-filter state - see getOrgFilterOptions)
 //   GET    /organizations/duplicate-candidates -> [ { orgs: [ {id, name, org_type, linkedin_url, hq_country}, ... ] }, ... ]
 //     (checked ahead of GET /organizations/:id below - same idea as GET /people/duplicate-candidates, grouped by
 //     orgNameFingerprint (like nameFingerprint, but also strips a trailing domain-like suffix - ".ai"/".io"/".com"/...
@@ -345,6 +354,18 @@ function isBlank(v: unknown): boolean {
   return false;
 }
 
+// A comma-separated query param (the org list's multi-select filter
+// dropdowns - countries/org_types/sectors/investment_regions, index.html)
+// -> a string array, or undefined if absent/empty. None of these values are
+// expected to contain a literal comma (country/sector/investment-region
+// names), so a plain split is enough - no need for the escaping `in.(...)`/
+// `ov.{...}` themselves need once assembled (see inList/arrayOverlap).
+function parseListParam(raw: string | null): string[] | undefined {
+  if (!raw) return undefined;
+  const values = raw.split(",").map((v) => v.trim()).filter(Boolean);
+  return values.length ? values : undefined;
+}
+
 // Strips decorative emoji/pictograms from LinkedIn-sourced text - "🍋
 // Isabelle Drault Gallo 🍋" or "Growth Hacker 🚀" style decoration people
 // add to stand out in a feed, not signal worth keeping. Only matches actual
@@ -409,6 +430,26 @@ function normalizeWebsiteUrl(raw?: string | null): string | null {
 // where commas/parens/quotes are syntactically significant.
 function orValue(v: string): string {
   return /[,()"]/.test(v) ? `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : v;
+}
+
+// Same idea as orValue, but for the value lists inside an `in.(...)` filter
+// or a Postgres array literal (`{...}`) - commas/parens/braces/quotes are
+// all syntactically significant there too, so quote whenever one shows up.
+function pgListValue(v: string): string {
+  return /[,()"{}]/.test(v) ? `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : v;
+}
+
+// `column=in.(a,b,c)` - matches a scalar column against any of several
+// values (the org list's Country/Type filter dropdowns - index.html).
+function inList(values: string[]): string {
+  return `in.(${values.map(pgListValue).join(",")})`;
+}
+
+// `column=ov.{a,b,c}` - matches an array column (sectors/investment_regions)
+// that overlaps (shares at least one element with) any of several values -
+// the org list's Sector/Investment Regions filter dropdowns.
+function arrayOverlap(values: string[]): string {
+  return `ov.{${values.map(pgListValue).join(",")}}`;
 }
 
 function mergeFields(existing: Record<string, any>, newFields: Record<string, any>) {
@@ -660,6 +701,10 @@ type ListOrganizationsOptions = {
   sort?: string;
   dir?: "asc" | "desc";
   withCounts?: boolean;
+  countries?: string[];
+  orgTypes?: string[];
+  sectors?: string[];
+  investmentRegions?: string[];
 };
 
 // Same "one calendar month back from right now" window as the frontend's
@@ -700,8 +745,9 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
     // li_profile_fetched_at is a single cheap timestamp (not one of the
     // heavier li_* profile fields) - included so the list can compute
     // "enriched in the last month" for the count tooltip (index.html)
-    // without a separate fetch.
-    select: "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,updated_at,is_starred,is_hidden,li_profile_fetched_at",
+    // without a separate fetch. investment_regions joins sectors as a
+    // second array column now shown as its own list column (index.html).
+    select: "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,investment_regions,updated_at,is_starred,is_hidden,li_profile_fetched_at",
     order: `${sortColumn}.${sortDir}`,
   };
   // org_type <> 'employer' would silently also exclude NULL org_type rows -
@@ -712,6 +758,16 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
   if (!opts.includeEmployers) params.or = "(org_type.is.null,org_type.neq.employer)";
   if (opts.starredOnly) params.is_starred = "eq.true";
   if (!opts.showHidden) params.is_hidden = "eq.false";
+  // The Country/Type/Sector/Investment Regions column-header filter
+  // dropdowns (index.html) - each independently narrows to whichever
+  // values the user checked, ANDed with everything else here (so checking
+  // "employer" under Type while "Include past employers" is off still
+  // yields nothing, same as it would for any other filter combination that
+  // can't simultaneously be satisfied).
+  if (opts.countries?.length) params.hq_country = inList(opts.countries);
+  if (opts.orgTypes?.length) params.org_type = inList(opts.orgTypes);
+  if (opts.sectors?.length) params.sectors = arrayOverlap(opts.sectors);
+  if (opts.investmentRegions?.length) params.investment_regions = arrayOverlap(opts.investmentRegions);
 
   // jpl_only used to add `?id=in.(<every connected org id>)` - that list
   // commonly runs into the thousands, and stuffing it into the URL blew
@@ -752,6 +808,40 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
   if (!connectedOrgIds) connectedOrgIds = await computeConnectedOrgIds();
   for (const o of orgs) o.connected_to_user = connectedOrgIds.has(o.id);
   return { orgs, totalCount, enrichedLastMonthCount };
+}
+
+// Backs the org list's Country/Type/Sector/Investment Regions column-header
+// filter dropdowns (index.html) - the checkbox options for each, as
+// whatever values actually appear across EVERY organization (not scoped to
+// the current include_employers/show_hidden/other-filter state, so opening
+// one filter dropdown never depends on what's currently selected in
+// another, and checking a box always stays a meaningful thing to do even
+// after the list it's filtering has been narrowed down to nothing).
+// org_type already has a fixed taxonomy elsewhere (ORG_TYPE_LABEL in
+// index.html, the check constraint in migration_012) but this still reads
+// distinct values from the data rather than that full list, so a type nothing
+// is currently classified as doesn't show up as a dead-end checkbox.
+async function getOrgFilterOptions() {
+  const rows = await supabaseRequestAllPages("organizations", {
+    select: "hq_country,org_type,sectors,investment_regions",
+  });
+  const countries = new Set<string>();
+  const orgTypes = new Set<string>();
+  const sectors = new Set<string>();
+  const investmentRegions = new Set<string>();
+  for (const r of rows) {
+    if (r.hq_country) countries.add(r.hq_country);
+    if (r.org_type) orgTypes.add(r.org_type);
+    for (const s of r.sectors ?? []) if (s) sectors.add(s);
+    for (const region of r.investment_regions ?? []) if (region) investmentRegions.add(region);
+  }
+  const sortedList = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  return {
+    countries: sortedList(countries),
+    org_types: sortedList(orgTypes),
+    sectors: sortedList(sectors),
+    investment_regions: sortedList(investmentRegions),
+  };
 }
 
 // Same idea as findDuplicatePeopleCandidates (see there for nameFingerprint/
@@ -1666,11 +1756,19 @@ async function upsertEducationEntry(
   }
 }
 
+// A live response's institution name/link land on schoolName/
+// schoolLinkedinUrl (confirmed directly against real data - a person's
+// li_education, e.g. {schoolName: "University of Oxford", schoolLinkedinUrl:
+// "https://www.linkedin.com/company/4477/", ...}), not title/link as this
+// originally assumed - which meant `name` was always "", so this whole
+// function was a silent no-op for every person, forever: schools/education
+// stayed empty tables despite li_education having the data all along. title/
+// link kept as a fallback in case some other Apify actor version uses them.
 async function importEducationForPerson(personId: string, educationArr: any[] | undefined) {
   for (const e of educationArr ?? []) {
-    const name = (e.title || "").trim();
+    const name = (e.schoolName || e.title || "").trim();
     if (!name) continue;  // no institution name to key a school on - stays in the raw li_education JSON only
-    const linkedinUrl = normalizeLinkedinUrl(e.link || null);
+    const linkedinUrl = normalizeLinkedinUrl(e.schoolLinkedinUrl || e.link || null);
     const school = await findOrCreateSchool(name, linkedinUrl);
     await upsertEducationEntry(personId, school.id, e.degree || null, e.period || null, e.startDate?.text || null, e.endDate?.text || null);
   }
@@ -2623,6 +2721,10 @@ Deno.serve(async (req) => {
         sort: url.searchParams.get("sort") ?? undefined,
         dir: url.searchParams.get("dir") === "desc" ? "desc" : "asc",
         withCounts: url.searchParams.get("with_counts") === "true",
+        countries: parseListParam(url.searchParams.get("countries")),
+        orgTypes: parseListParam(url.searchParams.get("org_types")),
+        sectors: parseListParam(url.searchParams.get("sectors")),
+        investmentRegions: parseListParam(url.searchParams.get("investment_regions")),
       });
       return json(orgs, 200, {
         ...(totalCount !== undefined ? { "X-Total-Count": String(totalCount) } : {}),
@@ -2630,8 +2732,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Checked ahead of orgIdMatch below, or "duplicate-candidates" would
-    // itself be parsed as an organization id.
+    // Checked ahead of orgIdMatch below, or "filter-options"/"duplicate-
+    // candidates" would themselves be parsed as an organization id.
+    if (req.method === "GET" && path === "/organizations/filter-options") {
+      return json(await getOrgFilterOptions());
+    }
     if (req.method === "GET" && path === "/organizations/duplicate-candidates") {
       return json(await findDuplicateOrgCandidates());
     }
