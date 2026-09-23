@@ -118,9 +118,13 @@
 //     case-insensitive name OR linkedin_url, with current roles for context. Called by the "Add people" panel before saving so the
 //     user can confirm "same person" or "different person" instead of the match being applied silently. linkedin_url optional;
 //     linkedin_match is true for a candidate whose linkedin_url equals the one supplied - a certain match, no need to ask)
+//   POST   /people/:id/memberships  { organization_id | organization_name, title?, focus?, is_current? (default true) } -> membership
+//     (manual "Add role": links the person to an existing org by id, or by name - matched like saveOrganization, else a new blank-type org
+//     is created; marked is_manual so LinkedIn syncs never close it. Additive - other current roles are left alone; the same person/org/title is updated rather than duplicated)
 //   GET    /people/:id          -> full person row (select=*, every li_* field included) - fetched once a person is actually opened
 //     in the detail pane (see loadPersonLinkedinDetail in index.html), not carried by every row in a list of thousands
 //   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, country_code, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
+//   DELETE /memberships/:id     -> { ok: true }  (only a manually-added role, is_manual - LinkedIn-synced ones are refused with 404)
 //   PATCH  /memberships/:id     { any subset of title, focus } -> updated membership (direct set, same as organizations PATCH)
 //   POST   /people/:id/enrich-from-linkedin  { linkedin_url, name?, organization_id? } -> { country, title, observed_company }
 //     (for a hand-entered LinkedIn URL, not one found via search - looks up what else that profile says and
@@ -549,6 +553,42 @@ async function findPersonMatchCandidates(name: string, linkedinUrl?: string | nu
     roles: (r.memberships ?? []).filter((m: any) => m.is_current)
       .map((m: any) => ({ title: m.title, organization: m.organizations?.name ?? null })),
   }));
+}
+
+// Manually links an existing person to an organization (by id, or by name -
+// matched against existing orgs the same way saveOrganization does, else a
+// new org with a blank type is created). Additive: doesn't close the
+// person's other current roles, since concurrent roles are supported (see
+// syncCurrentRolesForPerson). Re-adding the same person/org/title (the
+// table's unique key) just updates that row instead of failing.
+async function addMembershipForPerson(personId: string, body: any) {
+  const people = await supabaseRequest("GET", "people", { params: { id: `eq.${personId}`, select: "id" } });
+  if (!people?.length) throw new HttpError(404, "person not found");
+  let orgId = (body.organization_id ?? "").trim();
+  if (!orgId) {
+    const name = (body.organization_name ?? "").trim();
+    if (!name) throw new HttpError(400, "organization_id or organization_name is required");
+    const existing = await findExistingOrganization(name);
+    orgId = existing
+      ? existing.id
+      : (await supabaseRequest("POST", "organizations", { body: { name, org_type: null }, prefer: "return=representation" }))[0].id;
+  }
+  const title = (body.title ?? "").trim() || null;
+  const focus = (body.focus ?? "").trim() || null;
+  const isCurrent = body.is_current !== false;
+  const existing = await supabaseRequest("GET", "memberships", {
+    params: { person_id: `eq.${personId}`, organization_id: `eq.${orgId}`, select: "id,title" },
+  });
+  const same = (existing ?? []).find((m: any) => (m.title ?? null) === title);
+  if (same) {
+    return (await supabaseRequest("PATCH", "memberships", {
+      params: { id: `eq.${same.id}` }, body: { is_current: isCurrent, ...(focus ? { focus } : {}) }, prefer: "return=representation",
+    }))[0];
+  }
+  return (await supabaseRequest("POST", "memberships", {
+    body: { person_id: personId, organization_id: orgId, title, focus, is_current: isCurrent, is_manual: true },
+    prefer: "return=representation",
+  }))[0];
 }
 
 async function saveOrganization(payload: any) {
@@ -2107,7 +2147,7 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     // at the same employer, unlike across different orgs (handled by
     // syncedOrgIds below).
     const existingMemberships = await supabaseRequest("GET", "memberships", {
-      params: { person_id: `eq.${personId}`, organization_id: `eq.${org.id}`, select: "id,title,start_date,end_date" },
+      params: { person_id: `eq.${personId}`, organization_id: `eq.${org.id}`, select: "id,title,start_date,end_date,is_manual" },
     });
     const rows = existingMemberships ?? [];
     // Only a row with no dates is eligible to be reused as "the same
@@ -2127,7 +2167,7 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
     if (primary) {
       await supabaseRequest("PATCH", "memberships", {
         params: { id: `eq.${primary.id}` },
-        body: { title, is_current: true, employment_type: employmentType, experience_order: experienceOrder },
+        body: { title, is_current: true, is_manual: false, employment_type: employmentType, experience_order: experienceOrder },
       });
       primaryId = primary.id;
     } else {
@@ -2138,7 +2178,7 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
       primaryId = created.id;
     }
     for (const r of rows) {
-      if (r.id !== primaryId) {
+      if (r.id !== primaryId && !r.is_manual) {
         await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${r.id}` }, body: { is_current: false } });
       }
     }
@@ -2154,10 +2194,10 @@ async function syncCurrentRolesForPerson(personId: string, experienceArr: any[] 
   if (!syncedOrgIds.size && !hadUsableData) return;
 
   const stillCurrent = await supabaseRequest("GET", "memberships", {
-    params: { person_id: `eq.${personId}`, is_current: "eq.true", select: "id,organization_id" },
+    params: { person_id: `eq.${personId}`, is_current: "eq.true", select: "id,organization_id,is_manual" },
   });
   for (const m of stillCurrent ?? []) {
-    if (!syncedOrgIds.has(m.organization_id)) {
+    if (!syncedOrgIds.has(m.organization_id) && !m.is_manual) {
       await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${m.id}` }, body: { is_current: false } });
     }
   }
@@ -2167,7 +2207,7 @@ async function listEmploymentHistoryForPerson(personId: string) {
   return await supabaseRequest("GET", "memberships", {
     params: {
       person_id: `eq.${personId}`,
-      select: "id,title,focus,is_current,start_date,end_date,employment_type,experience_order,organizations(id,name,org_type)",
+      select: "id,title,focus,is_current,is_manual,start_date,end_date,employment_type,experience_order,organizations(id,name,org_type)",
       order: "is_current.desc",
     },
   });
@@ -3190,6 +3230,11 @@ Deno.serve(async (req) => {
       return json(await listEmploymentHistoryForPerson(personEmploymentMatch[1]));
     }
 
+    const personMembershipsMatch = path.match(/^\/people\/([^/]+)\/memberships$/);
+    if (personMembershipsMatch && req.method === "POST") {
+      return json(await addMembershipForPerson(personMembershipsMatch[1], await req.json()));
+    }
+
     const schoolPeopleMatch = path.match(/^\/schools\/([^/]+)\/people$/);
     if (schoolPeopleMatch && req.method === "GET") {
       return json(await listPeopleAtSchool(schoolPeopleMatch[1]));
@@ -3207,6 +3252,15 @@ Deno.serve(async (req) => {
       });
       if (!updated?.length) return json({ error: "membership not found" }, 404);
       return json(updated[0]);
+    }
+
+    if (membershipIdMatch && req.method === "DELETE") {
+      const deleted = await supabaseRequest("DELETE", "memberships", {
+        params: { id: `eq.${membershipIdMatch[1]}`, is_manual: "eq.true" },
+        prefer: "return=representation",
+      });
+      if (!deleted?.length) return json({ error: "manual membership not found" }, 404);
+      return json({ ok: true });
     }
 
     return json({ error: "not found" }, 404);

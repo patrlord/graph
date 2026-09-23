@@ -403,6 +403,9 @@
   .dupe-person.excluded { opacity: .5; }
   .dupe-person-name { font-weight: 500; }
   .dupe-person-roles { font-size: 11.5px; color: #8a877e; margin-top: 1px; }
+  .manual-role { font-size: 10.5px; color: #b26b00; background: #fff4e0; border-radius: 4px; padding: 0 5px; margin-left: 6px; }
+  .role-remove-x { border: none; background: none; color: #8a877e; cursor: pointer; font-size: 11px; padding: 0 4px; }
+  .role-remove-x:hover { color: #c0392b; }
   .dupe-group-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 </style>
 </head>
@@ -687,9 +690,22 @@
             <div style="margin-top:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <button class="secondary tiny" id="personEditBtn">Edit</button>
               <button class="secondary tiny" id="personEnrichBtn">Enrich</button>
+              <button class="secondary tiny" id="personAddRoleToggleBtn">Add role…</button>
               <span class="status-line" id="personEnrichStatus" style="margin:0;min-height:0;"></span>
               <button class="secondary tiny" id="personMergeToggleBtn" style="margin-left:auto">Merge into…</button>
               <button class="danger tiny" id="personDeleteBtn">Delete</button>
+            </div>
+            <div id="personAddRoleForm" style="display:none;margin-top:10px;">
+              <div class="form-row">
+                <input type="text" id="personAddRoleOrg" placeholder="Organization (pick or type a new one)…" list="orgMergeNamesDatalist">
+                <input type="text" id="personAddRoleTitle" placeholder="Title">
+              </div>
+              <div class="form-row">
+                <label style="font-size:12px;"><input type="checkbox" id="personAddRoleCurrent" checked> Current role</label>
+                <button class="tiny" id="personAddRoleBtn">Add role</button>
+                <button class="secondary tiny" id="personAddRoleCancelBtn">Cancel</button>
+              </div>
+              <span class="status-line" id="personAddRoleStatus"></span>
             </div>
             <div id="personMergeForm" style="display:none;margin-top:10px;">
               <div class="form-row">
@@ -2554,9 +2570,29 @@ function exTagHtml(item) {
 // The small "Company — Title (dates)" line used for a Past roles entry, and
 // reused for any current role after the first (see loadPersonCareerSections) -
 // only the top current role gets the bold headline treatment.
+function manualRoleBadge(r) {
+  return r.is_manual
+    ? ` <span class="manual-role" title="Added manually - not shown on LinkedIn">not on LinkedIn</span>` +
+      `<button class="role-remove-x" data-membership-id="${r.id}" title="Remove this manually-added role">✕</button>`
+    : "";
+}
+
 function careerRowInner(r) {
   return `<a href="#" class="career-link" data-org-id="${r.organizations.id}">${r.organizations.name}</a>` +
-    `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}`;
+    `${r.title ? ` — ${r.title}` : ""}${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}` +
+    manualRoleBadge(r);
+}
+
+function wireRoleRemoveButtons(container, person) {
+  container.querySelectorAll(".role-remove-x").forEach(btn => btn.addEventListener("click", async e => {
+    e.preventDefault();
+    if (!confirm("Remove this manually-added role?")) return;
+    const res = await api(`/memberships/${btn.dataset.membershipId}`, { method: "DELETE" });
+    if (!res.ok) { alert((await res.json()).error || "Remove failed"); return; }
+    if (currentPeopleMode === "org" && selectedOrg) await selectOrg(selectedOrg.id, true);
+    else await reloadPeopleList();
+    showPersonDetail(person);
+  }));
 }
 
 function careerRowHtml(r) {
@@ -3052,6 +3088,7 @@ let selectedPersonObj = null;  // the object currently shown in the person detai
 function showPersonDetail(person) {
   selectedPersonObj = person;
   togglePersonMergeForm(false);
+  togglePersonAddRoleForm(false);
   if (!person) {
     document.getElementById("personDetailEmpty").style.display = "block";
     document.getElementById("personDetailContent").classList.remove("shown");
@@ -3198,12 +3235,13 @@ async function loadPersonCareerSections(person) {
     metaBox.innerHTML =
       (topRole ? `<div style="font-size:13.5px;font-weight:700;">` +
         `<a href="#" class="career-link" data-org-id="${topRole.organizations.id}">${topRole.organizations.name}</a>` +
-        `${topRole.title ? ` — ${topRole.title}` : ""}</div>` : "") +
+        `${topRole.title ? ` — ${topRole.title}` : ""}${manualRoleBadge(topRole)}</div>` : "") +
       (otherCurrentRoles.length ? `<div class="li-meta">${otherCurrentRoles.map(careerRowInner).join(" · ")}</div>` : "");
     metaBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
       e.preventDefault();
       selectOrg(e.currentTarget.dataset.orgId, true);
     }));
+    wireRoleRemoveButtons(metaBox, person);
     // Deliberately doesn't touch any people-list row for this person: a row
     // in an org's roster shows their role AT THAT ORG (current or "ex" -
     // correct and historical either way), which has nothing to do with
@@ -3220,6 +3258,7 @@ async function loadPersonCareerSections(person) {
     expBox.innerHTML = `<div style="margin-top:10px;"><strong style="font-size:12.5px;">Past roles</strong>` +
       rows.map(careerRowHtml).join("") +
       `</div>`;
+    wireRoleRemoveButtons(expBox, person);
     expBox.querySelectorAll(".career-link").forEach(a => a.addEventListener("click", e => {
       e.preventDefault();
       // The roster this opens still respects the "Include ex-employees"
@@ -3484,6 +3523,55 @@ async function deleteSelectedPerson() {
     }
   } catch (err) {
     alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function togglePersonAddRoleForm(show) {
+  document.getElementById("personAddRoleForm").style.display = show ? "block" : "none";
+  document.getElementById("personAddRoleOrg").value = "";
+  document.getElementById("personAddRoleTitle").value = "";
+  document.getElementById("personAddRoleCurrent").checked = true;
+  document.getElementById("personAddRoleStatus").textContent = "";
+  document.getElementById("personAddRoleStatus").className = "status-line";
+  if (show) refreshOrgMergeDatalist();
+}
+
+// Typed name resolves against the known-org list (accent/case-insensitive,
+// same rule as mergeSelectedOrg); anything that doesn't match is sent by name
+// and the backend creates a new org for it.
+async function addRoleToSelectedPerson() {
+  const person = selectedPersonObj;
+  if (!person) return;
+  const status = document.getElementById("personAddRoleStatus");
+  const typed = document.getElementById("personAddRoleOrg").value.trim();
+  if (!typed) { status.className = "status-line error"; status.textContent = "Pick or type an organization."; return; }
+  const folded = foldAccents(typed.toLowerCase());
+  const known = (orgMergeCache || orgListCache).find(o => foldAccents(o.name.toLowerCase()) === folded);
+  const btn = document.getElementById("personAddRoleBtn");
+  btn.disabled = true; status.className = "status-line"; status.textContent = "Adding…";
+  try {
+    const res = await api(`/people/${person.id}/memberships`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...(known ? { organization_id: known.id } : { organization_name: typed }),
+        title: document.getElementById("personAddRoleTitle").value.trim(),
+        is_current: document.getElementById("personAddRoleCurrent").checked,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Add failed");
+    if (!known) { orgMergeCache = null; reloadOrgList(); }
+    togglePersonAddRoleForm(false);
+    if (currentPeopleMode === "org" && selectedOrg) {
+      await selectOrg(selectedOrg.id, true);
+    } else {
+      await reloadPeopleList();
+    }
+    showPersonDetail(person);
+  } catch (err) {
+    status.className = "status-line error"; status.textContent = err.message;
   } finally {
     btn.disabled = false;
   }
@@ -4219,6 +4307,11 @@ document.getElementById("detPersonStarBtn").addEventListener("click", e => {
 });
 document.getElementById("personEnrichBtn").addEventListener("click", enrichSelectedPerson);
 document.getElementById("personDeleteBtn").addEventListener("click", deleteSelectedPerson);
+document.getElementById("personAddRoleToggleBtn").addEventListener("click", () => {
+  togglePersonAddRoleForm(document.getElementById("personAddRoleForm").style.display === "none");
+});
+document.getElementById("personAddRoleCancelBtn").addEventListener("click", () => togglePersonAddRoleForm(false));
+document.getElementById("personAddRoleBtn").addEventListener("click", addRoleToSelectedPerson);
 document.getElementById("personMergeToggleBtn").addEventListener("click", () => {
   const form = document.getElementById("personMergeForm");
   togglePersonMergeForm(form.style.display === "none");
