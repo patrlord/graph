@@ -69,6 +69,10 @@
 //     sectors[]; plus investor-profile fields not touched by research (ticket_size, investment_stages[],
 //     investment_regions[], fund_type_raw) - sourced only from list-style bulk imports, merge-only-blanks
 //     like everything else here
+//     people[] entries also accept two optional flags, set only by the "Add people" panel after GET /people/match-candidates:
+//     person_id (reuse exactly that existing person - skips the name/linkedin_url search) and force_new (skip the name half
+//     of that search so a same-name coincidence isn't silently merged into someone else; a matching linkedin_url still counts).
+//     Without either, a person is matched by exact case-insensitive name OR linkedin_url, as always
 //   GET    /organizations/:id   -> org with nested people
 //   DELETE /organizations/:id   -> { ok: true }
 //   PATCH  /organizations/:id   { any subset of organization fields above } -> updated org (direct set, not merge-only-blanks - a
@@ -109,6 +113,11 @@
 //   POST   /people/duplicate-candidates/dismiss { ids: [id, id, ...] } -> { ok: true }
 //     (same idea as the organizations version above - records that this exact set of people was judged NOT duplicates so it
 //     stops resurfacing; idempotent; a different combination sharing the same fingerprint still surfaces)
+//   GET    /people/match-candidates?name=...&linkedin_url=... -> [ {id, full_name, linkedin_url, country, linkedin_match, roles: [{title, organization}]}, ... ]
+//     (checked ahead of GET /people/:id below - read-only preview of who saveOrganization would match a new person to: exact
+//     case-insensitive name OR linkedin_url, with current roles for context. Called by the "Add people" panel before saving so the
+//     user can confirm "same person" or "different person" instead of the match being applied silently. linkedin_url optional;
+//     linkedin_match is true for a candidate whose linkedin_url equals the one supplied - a certain match, no need to ask)
 //   GET    /people/:id          -> full person row (select=*, every li_* field included) - fetched once a person is actually opened
 //     in the detail pane (see loadPersonLinkedinDetail in index.html), not carried by every row in a list of thousands
 //   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, country_code, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
@@ -517,6 +526,31 @@ async function findPeopleByNameOrLinkedin(name: string, linkedinUrl?: string | n
   return rows ?? [];
 }
 
+// Read-only preview of findPeopleByNameOrLinkedin's own match, with enough
+// context (current roles) for a human to tell at a glance whether it's
+// really the same person - backs GET /people/match-candidates, called by
+// the "Add people" panel before POST /organizations would otherwise use
+// that same name/linkedin_url match to silently reuse (or blindly create
+// a duplicate of) an existing person. Same shape as one group's "people"
+// array from findDuplicatePeopleCandidates, reused for the same reason:
+// a name/company summary line, not a bare id.
+async function findPersonMatchCandidates(name: string, linkedinUrl?: string | null) {
+  const rows = await findPeopleByNameOrLinkedin(name, linkedinUrl);
+  if (!rows.length) return [];
+  const detailRows = await supabaseRequest("GET", "people", {
+    params: {
+      id: `in.(${rows.map((r: any) => r.id).join(",")})`,
+      select: "id,full_name,linkedin_url,country,memberships(title,is_current,organizations(name))",
+    },
+  });
+  return (detailRows ?? []).map((r: any) => ({
+    id: r.id, full_name: r.full_name, linkedin_url: r.linkedin_url ?? null, country: r.country ?? null,
+    linkedin_match: !!linkedinUrl && r.linkedin_url === linkedinUrl,
+    roles: (r.memberships ?? []).filter((m: any) => m.is_current)
+      .map((m: any) => ({ title: m.title, organization: m.organizations?.name ?? null })),
+  }));
+}
+
 async function saveOrganization(payload: any) {
   const orgIn = payload.organization ?? {};
   const peopleIn: any[] = payload.people ?? [];
@@ -573,7 +607,26 @@ async function saveOrganization(payload: any) {
       linkedin_url: personLinkedinUrl,
       country: p.country || null,
     };
-    const candidates = await findPeopleByNameOrLinkedin(fullName, personLinkedinUrl);
+    // person_id (set by the "Add people" panel once GET /people/match-
+    // candidates found a same-name record and the user confirmed it's who
+    // they mean) skips the name search entirely and goes straight to that
+    // record. force_new (set once the user said "no, different person")
+    // skips only the name half of the match - a genuine linkedin_url match
+    // is still a near-certain identity signal even then, so it's still
+    // trusted without asking. Neither set (every other caller of
+    // saveOrganization - plain /research, imports, ...) keeps the original
+    // best-effort name-or-linkedin_url match, unchanged.
+    const forcedPersonId = (p.person_id ?? "").trim();
+    let candidates: any[] = [];
+    if (forcedPersonId) {
+      candidates = await supabaseRequest("GET", "people", { params: { id: `eq.${forcedPersonId}`, select: "*" } });
+    } else if (p.force_new) {
+      candidates = personLinkedinUrl
+        ? await supabaseRequest("GET", "people", { params: { linkedin_url: `eq.${personLinkedinUrl}`, select: "*" } })
+        : [];
+    } else {
+      candidates = await findPeopleByNameOrLinkedin(fullName, personLinkedinUrl);
+    }
     let membershipsAtThisOrg: any[] = [];
     if (candidates.length) {
       membershipsAtThisOrg = await supabaseRequest("GET", "memberships", {
@@ -2950,6 +3003,13 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/people/duplicate-candidates/dismiss") {
       const body = await req.json();
       return json(await dismissDuplicateGroup("person", body.ids));
+    }
+    // Same reason as duplicate-candidates above: ahead of the generic
+    // personIdMatch GET, or "match-candidates" would be parsed as a person id.
+    if (req.method === "GET" && path === "/people/match-candidates") {
+      const name = (url.searchParams.get("name") ?? "").trim();
+      if (!name) return json({ error: "name is required" }, 400);
+      return json(await findPersonMatchCandidates(name, normalizeLinkedinUrl(url.searchParams.get("linkedin_url"))));
     }
 
     if (req.method === "GET" && path === "/news") {

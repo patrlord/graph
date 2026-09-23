@@ -747,6 +747,19 @@
   </div>
 </div>
 
+<!-- Asked mid-"Add people" (see confirmPersonMatch) when the person being
+     added shares a name with someone already on file. Same overlay/card
+     styling as the merge-candidates modal above; no close-x on purpose -
+     the row's add can't proceed until it's answered either way. -->
+<div id="personMatchModalOverlay" class="modal-overlay" style="display:none">
+  <div class="modal-card" style="max-width:480px;">
+    <div class="modal-header">
+      <h3>Already on file?</h3>
+    </div>
+    <div class="modal-body" id="personMatchModalBody"></div>
+  </div>
+</div>
+
 <!-- One shared popup, repositioned/repopulated per column - see
      openColumnFilterPopup. Only the org list's Country/Type/Sector/
      Investment Regions headers use it so far (data-filter on the <th>). -->
@@ -3976,6 +3989,40 @@ function handleBulkPeoplePaste(e) {
   });
 }
 
+// Resolves to the id of the existing person the user says this is, or null
+// for "no, a different person". Defaults to the latter - wrongly merging two
+// people is worse than a duplicate the merge-candidates check can catch later.
+function confirmPersonMatch(person, orgName, candidates) {
+  return new Promise(resolve => {
+    const overlay = document.getElementById("personMatchModalOverlay");
+    const body = document.getElementById("personMatchModalBody");
+    const many = candidates.length > 1;
+    body.innerHTML =
+      `<p class="dupe-group-hint">Adding <strong>${person.full_name}</strong>${orgName ? ` (${orgName})` : ""} - ` +
+      `${many ? "people" : "someone"} with the same name ${many ? "are" : "is"} already on file. Is it the same person?</p>` +
+      candidates.map(c => `
+        <label class="dupe-person">
+          <input type="radio" name="person-match-pick" value="${c.id}">
+          <span>
+            <span class="dupe-person-name">${c.full_name}</span>
+            <div class="dupe-person-roles">${dupePersonSubtitle(c)}</div>
+          </span>
+        </label>
+      `).join("") +
+      `<label class="dupe-person">
+        <input type="radio" name="person-match-pick" value="" checked>
+        <span><span class="dupe-person-name">No - add as a new person</span></span>
+      </label>
+      <div class="dupe-group-actions"><button id="personMatchContinueBtn">Continue</button></div>`;
+    overlay.style.display = "flex";
+    document.getElementById("personMatchContinueBtn").addEventListener("click", () => {
+      const picked = body.querySelector('input[name="person-match-pick"]:checked');
+      overlay.style.display = "none";
+      resolve(picked && picked.value ? picked.value : null);
+    });
+  });
+}
+
 async function startBulkPeopleAdd() {
   const rows = [...document.querySelectorAll("#bulkPeopleRows tr")];
   const items = rows.map(tr => ({
@@ -4003,6 +4050,29 @@ async function startBulkPeopleAdd() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Research failed");
       if (!data.people.length || !data.organization.name) throw new Error("Could not identify person/firm");
+
+      // Look the person up before saving rather than letting the backend's
+      // own name match decide silently. A shared linkedin_url is a certain
+      // identity match (reused without asking); a same-name-only match is
+      // just as likely a different person, so that's the one case the user
+      // is asked about. Either way the save below is told the answer
+      // (person_id / force_new), so it doesn't re-decide on its own.
+      const identified = data.people[0];
+      setBulkStatus(statusEls[i], "working", "Checking for existing person…");
+      const matchRes = await apiWithRetry(`/people/match-candidates?${new URLSearchParams({
+        name: identified.full_name, linkedin_url: identified.linkedin_url || "",
+      })}`);
+      const matches = matchRes.ok ? await matchRes.json() : [];
+      const linkedinMatch = matches.find(m => m.linkedin_match);
+      let existingPersonId = linkedinMatch ? linkedinMatch.id : null;
+      if (!existingPersonId && matches.length) {
+        setBulkStatus(statusEls[i], "working", "Waiting for your answer…");
+        existingPersonId = await confirmPersonMatch(identified, data.organization.name, matches);
+      }
+      if (existingPersonId) identified.person_id = existingPersonId;
+      else identified.force_new = true;
+
+      setBulkStatus(statusEls[i], "working", "Saving…");
       const saveRes = await apiWithRetry("/organizations", { method: "POST", body: JSON.stringify(data) });
       const saveData = await saveRes.json();
       if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
