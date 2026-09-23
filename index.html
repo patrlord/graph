@@ -2868,7 +2868,10 @@ function dupeOrgSubtitle(o) {
   const bits = [];
   bits.push(ORG_TYPE_LABEL[o.org_type] || o.org_type || "Unclassified");
   if (o.hq_country) bits.push(o.hq_country);
-  return bits.join(" — ");
+  const linkedin = o.linkedin_url
+    ? `<a class="li-link" href="${o.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(o.linkedin_url)}</a>`
+    : `<span class="none">no LinkedIn URL</span>`;
+  return `${bits.join(" — ")}<br>${linkedin}`;
 }
 
 // A group the user looked at and decided isn't actually a duplicate -
