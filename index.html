@@ -980,7 +980,7 @@ function linkedinStub(url) {
 // already has - see runFindOrgLinkedin/enrichSelectedOrg) shows as a small
 // warning next to the link, clickable to jump straight to that other org so
 // it's a one-click check for whether to merge.
-function linkedinCellFor(entity) {
+function linkedinCellFor(entity, findLabel = "Find") {
   if (entity.linkedin_url) {
     const link = `<a class="li-link li-link-arrow" href="${entity.linkedin_url}" target="_blank" rel="noopener" title="Open LinkedIn profile">↗</a>`;
     if (entity.li_duplicate_of) {
@@ -996,7 +996,7 @@ function linkedinCellFor(entity) {
     const n = entity.li_find_candidates.length;
     return `<button class="secondary tiny find-li-btn" data-id="${entity.id}" title="Open this organization to pick the right LinkedIn page">${n} option${n > 1 ? "s" : ""}</button>`;
   }
-  return `<button class="secondary tiny find-li-btn" data-id="${entity.id}">Find</button>`;
+  return `<button class="secondary tiny find-li-btn" data-id="${entity.id}">${findLabel}</button>`;
 }
 
 function renderPeopleRows(people, getName, getTitle, getFocus, getCountry, getLinkedIn) {
@@ -2648,7 +2648,7 @@ function renderPeopleTableBody() {
       <td>${countryCellFor(p, p.country) || '<span class="none">—</span>'}</td>
       <td${p.roles && p.roles.length > 1 ? ` title="${roleCellTitle(p)}"` : ""}>${roleCellHtml(p)}</td>
       <td class="col-company"${currentPeopleMode === "global" && p.roles && p.roles.length > 1 ? ` title="${companyCellTitle(p)}"` : ""}>${companyCellHtml(p)}</td>
-      <td class="col-li">${linkedinCellFor(p)}</td>
+      <td class="col-li">${linkedinCellFor(p, "Enrich")}</td>
       <td class="ba-cell"><input type="checkbox" class="ba-checkbox"${p.is_ba ? " checked" : ""}></td>
       <td>${connectedCellHtml(p)}</td>
     </tr>
@@ -2662,7 +2662,7 @@ function renderPeopleTableBody() {
     if (findBtn) {
       findBtn.addEventListener("click", e => {
         e.stopPropagation();
-        runFindLinkedin(currentPeopleItems[i], findBtn);
+        runEnrichRowPerson(currentPeopleItems[i], findBtn);
       });
     }
     wireFlagButtons(tr, currentPeopleItems[i], togglePersonFlag);
@@ -2921,13 +2921,22 @@ function personOrgId(p) {
   return currentPeopleMode === "org" ? (selectedOrg && selectedOrg.id) : (p.organization && p.organization.id);
 }
 
-async function runFindLinkedin(person, btnEl) {
+// Row-button version of enrichSelectedPerson's find-then-fetch chain: finds
+// a LinkedIn URL (person.linkedin_url is always blank here - the button only
+// renders when it is, see linkedinCellFor), then immediately fetches the
+// full profile, so one click on a list row does the same two steps as the
+// detail pane's Enrich button. Deliberately doesn't re-render the row until
+// the whole chain settles - re-rendering right after the find would replace
+// btnEl with a plain LinkedIn-link cell (linkedin_url now set) and strand
+// any later "Fetching…"/error text on a detached node the user can't see.
+async function runEnrichRowPerson(person, btnEl) {
   btnEl.disabled = true;
   btnEl.textContent = "Searching…";
   btnEl.title = "";
+  let observedCompany = null;
   try {
     const companyName = personCompanyName(person);
-    const res = await api("/people/find-linkedin", {
+    const findRes = await api("/people/find-linkedin", {
       method: "POST",
       body: JSON.stringify({
         person_id: person.id, name: person.full_name,
@@ -2935,38 +2944,55 @@ async function runFindLinkedin(person, btnEl) {
         organization_id: personOrgId(person) || "",
       }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Search failed");
-    if (data.linkedin_url) {
-      if (data.merged_into_person_id) {
-        // Same real person as an existing different record (found via the
-        // surname/first-name-swapped retry) - person.id no longer exists
-        // server-side, it was merged away. Reload rather than patch in place.
-        await refreshAfterPersonMerge(data.merged_into_person_id, person.id);
-        return;
-      }
-      if (data.renamed_to) person.full_name = data.renamed_to;
-      person.linkedin_url = data.linkedin_url;
-      if (data.title) person.title = data.title;
-      if (data.renamed_to) syncPersonInOrgList(person.id, "full_name", data.renamed_to);
-      syncPersonInOrgList(person.id, "linkedin_url", data.linkedin_url);
-      if (data.title) {
-        const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
-        if (membership) membership.title = data.title;
-      }
-      renderPeopleTableBody();
-      if (data.observed_company && companyName && !data.observed_company.toLowerCase().includes(companyName.toLowerCase())) {
-        const link = document.querySelector(`#peopleList tr[data-id="${person.id}"] .li-link`);
-        if (link) link.title = `LinkedIn shows: ${data.observed_company}`;
-      }
-      if (selectedPersonId === person.id) showPersonDetail(person);
-    } else {
+    const findData = await findRes.json();
+    if (!findRes.ok) throw new Error(findData.error || "Search failed");
+    if (findData.merged_into_person_id) {
+      // Same real person as an existing different record (found via the
+      // surname/first-name-swapped retry) - person.id no longer exists
+      // server-side, it was merged away. Reload rather than patch in place.
+      await refreshAfterPersonMerge(findData.merged_into_person_id, person.id);
+      return;
+    }
+    if (findData.renamed_to) person.full_name = findData.renamed_to;
+    if (!findData.linkedin_url) {
       btnEl.disabled = false;
       btnEl.textContent = "Not found";
+      return;
     }
+    person.linkedin_url = findData.linkedin_url;
+    if (findData.title) person.title = findData.title;
+    if (findData.renamed_to) syncPersonInOrgList(person.id, "full_name", findData.renamed_to);
+    syncPersonInOrgList(person.id, "linkedin_url", findData.linkedin_url);
+    if (findData.title) {
+      const membership = selectedOrg?.people?.find(m => m.people.id === person.id);
+      if (membership) membership.title = findData.title;
+    }
+    if (findData.observed_company && companyName && !findData.observed_company.toLowerCase().includes(companyName.toLowerCase())) {
+      observedCompany = findData.observed_company;
+    }
+
+    btnEl.textContent = "Fetching…";
+    const enrichRes = await api(`/people/${person.id}/enrich-from-apify`, { method: "POST", body: JSON.stringify({}) });
+    const enrichData = await enrichRes.json();
+    if (!enrichRes.ok) throw new Error(enrichData.error || "Fetch failed");
+    Object.assign(person, enrichData);
+    // The fetch can change this person's role/company (syncCurrentRolesForPerson
+    // may close out their old membership or open a new one) - reload whichever
+    // people list could be showing them from the backend, same as
+    // enrichSelectedPerson, rather than hand-patching cached list rows.
+    if (currentPeopleMode === "org" && selectedOrg) {
+      await selectOrg(selectedOrg.id, true);
+    } else {
+      await reloadPeopleList();
+    }
+    if (observedCompany) {
+      const link = document.querySelector(`#peopleList tr[data-id="${person.id}"] .li-link`);
+      if (link) link.title = `LinkedIn shows: ${observedCompany}`;
+    }
+    if (selectedPersonId === person.id) showPersonDetail(person);
   } catch (err) {
     btnEl.disabled = false;
-    btnEl.textContent = "Find";
+    btnEl.textContent = "Enrich";
     btnEl.title = err.message;
   }
 }
@@ -3369,6 +3395,21 @@ async function bulkEnrichPerson(person) {
   }
 }
 
+// Rough, editable per-person estimates for the "Enrich all" confirmation
+// below - each person costs one OpenRouter LinkedIn-search call plus one
+// Apify profile-fetch actor run, but this app has no visibility into actual
+// Apify/OpenRouter billing, so these are placeholders. Adjust them once you
+// know your real per-profile Apify cost and typical actor run time.
+const ENRICH_EST_SECONDS_PER_PERSON = 20;
+const ENRICH_EST_COST_PER_PERSON = 0.02;
+
+function formatEstimatedDuration(totalSeconds) {
+  if (totalSeconds < 60) return `~${Math.round(totalSeconds)} seconds`;
+  const minutes = totalSeconds / 60;
+  if (minutes < 60) return `~${Math.round(minutes)} minute${Math.round(minutes) === 1 ? "" : "s"}`;
+  return `~${(minutes / 60).toFixed(1)} hours`;
+}
+
 // "Enrich all" in the people list's LI column header - same pattern as the
 // org list's "Find all" (runFindAllOrgLinkedin): works through whoever's
 // currently shown (combine with the JPL/starred/BA toggles or a search to
@@ -3377,11 +3418,20 @@ async function bulkEnrichPerson(person) {
 // for that. This can run for a long time over a large list - each person is
 // its own LinkedIn search plus a profile fetch, both real API calls - so it
 // reports live progress on the button itself and a summary at the end,
-// same as "Find all" does.
+// same as "Find all" does. Confirms first with a rough time/cost estimate
+// (see ENRICH_EST_* above) since a large list can mean a lot of paid calls.
 async function runEnrichAllPeople(btnEl) {
   if (btnEl.disabled) return;
   const targets = currentPeopleItems.filter(p => !p.li_profile_fetched_at);
   if (!targets.length) { alert("Everyone currently shown has already been enriched."); return; }
+  const estSeconds = targets.length * ENRICH_EST_SECONDS_PER_PERSON;
+  const estCost = targets.length * ENRICH_EST_COST_PER_PERSON;
+  if (!confirm(
+    `Enrich ${targets.length} ${targets.length === 1 ? "person" : "people"}?\n\n` +
+    `Estimated time: ${formatEstimatedDuration(estSeconds)}\n` +
+    `Estimated cost: ~$${estCost.toFixed(2)} (rough estimate, not pulled from live billing)\n\n` +
+    `Each person needs a LinkedIn search plus a profile fetch - real API calls, run one at a time.`
+  )) return;
   const originalText = btnEl.textContent;
   btnEl.disabled = true;
   let done = 0, enriched = 0, noLinkedin = 0, merged = 0, failed = 0;
