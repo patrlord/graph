@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <title>Graph — VC / Investor Database</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+<link rel="apple-touch-icon" href="favicon-180.png">
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -1719,43 +1723,116 @@ function dismissOrgLinkedinCandidates() {
   renderOrgDetail(selectedOrg);
 }
 
-// Runs the equivalent of clicking every per-row "Find" button for orgs
-// currently in view that are missing a LinkedIn URL, one at a time
-// (each call re-renders the org table, so rows/buttons are re-queried by
-// id on every iteration rather than reusing stale DOM references).
-// Doesn't stop or block on an org that comes back with multiple candidates
-// (see runFindOrgLinkedin) - that row is just left showing "N options" and
-// the batch moves on, since there's no way to ask which one is right
-// mid-loop. The tally at the end is the only place that ever surfaces how
-// many need a look, so it's worth interrupting with an alert for - unlike
-// found/not-found, which are already visible in the list itself.
+// Same find call as runFindOrgLinkedin, but for an org that has no visible
+// row/button - runFindAllOrgLinkedin below pages through every org matching
+// the current filters, not just whatever page is currently loaded/rendered
+// (orgListCache), so most of the orgs it processes never had a row to begin
+// with. Mutates the org object and, if it's also the one open in the detail
+// pane, refreshes that pane too; otherwise saves quietly and becomes visible
+// once the list is next reloaded - same idea as bulkEnrichPerson vs.
+// enrichSelectedPerson for people.
+async function bulkFindOrgLinkedin(org) {
+  try {
+    const res = await api("/organizations/find-linkedin", {
+      method: "POST",
+      body: JSON.stringify({
+        org_id: org.id, name: org.name,
+        website_url: org.website_url || "", country: org.hq_country || "",
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return "error";
+    if (data.linkedin_url) {
+      applyOrgFindResult(org, data);
+      if (selectedOrg && selectedOrg.id === org.id) {
+        applyOrgFindResult(selectedOrg, data);
+        renderOrgDetail(selectedOrg);
+        updatePeopleHeader();
+      }
+      return "found";
+    }
+    if (data.candidates && data.candidates.length) {
+      org.li_find_candidates = data.candidates;
+      if (selectedOrg && selectedOrg.id === org.id) {
+        selectedOrg.li_find_candidates = data.candidates;
+        renderOrgDetail(selectedOrg);
+      }
+      return "candidates";
+    }
+    return "not_found";
+  } catch {
+    return "error";
+  }
+}
+
+// Runs the equivalent of clicking every per-row "Find" button for every org
+// matching the list's current search/filters that's missing a LinkedIn URL -
+// not just whatever page happens to already be loaded (orgListCache holds
+// LIST_PAGE_SIZE=100 at a time; with several thousand orgs still missing a
+// URL across the full list, "loaded so far" was a small, arbitrary slice of
+// the real job and looked like the batch had simply stopped once that
+// page's handful were done - reported bug). The already-loaded page(s)
+// still go through their own visible row/button (runFindOrgLinkedin) so
+// progress is visible there; everything beyond that is fetched and
+// processed off-screen (bulkFindOrgLinkedin, paging via fetchOrgPage the
+// same way loadMoreOrgs does) and only becomes visible once reloadOrgList
+// refreshes the list at the end. Doesn't stop or block on an org that comes
+// back with multiple candidates (see runFindOrgLinkedin) - it's just
+// tallied as "needs review" and the batch moves on, since there's no way to
+// ask which one is right mid-loop.
 async function runFindAllOrgLinkedin(btnEl) {
   if (btnEl.disabled) return;
-  const targets = orgListCache.filter(o => !o.linkedin_url);
-  if (!targets.length) return;
   const originalText = btnEl.textContent;
   btnEl.disabled = true;
-  let done = 0, found = 0, needsReview = 0, notFound = 0;
-  for (const org of targets) {
-    btnEl.textContent = `Finding… ${done}/${targets.length}`;
+  let done = 0, found = 0, needsReview = 0, notFound = 0, failed = 0;
+  const seenIds = new Set();
+  const tally = result => {
+    if (result === "found") found++;
+    else if (result === "candidates") needsReview++;
+    else if (result === "not_found") notFound++;
+    else failed++;
+  };
+
+  for (const org of orgListCache) {
+    if (org.linkedin_url || seenIds.has(org.id)) continue;
+    seenIds.add(org.id);
+    done++;
+    btnEl.textContent = `Finding… ${done}`;
     const row = document.querySelector(`#orgList tr[data-id="${org.id}"]`);
     const findBtn = row ? row.querySelector(".find-li-btn") : null;
     if (findBtn) {
       await runFindOrgLinkedin(org, findBtn);
-      if (org.linkedin_url) found++;
-      else if (org.li_find_candidates && org.li_find_candidates.length) needsReview++;
-      else notFound++;
+      tally(org.linkedin_url ? "found" : (org.li_find_candidates && org.li_find_candidates.length) ? "candidates" : "not_found");
+    } else {
+      tally(await bulkFindOrgLinkedin(org));
     }
-    done++;
   }
+
+  let offset = orgListCache.length;
+  let hasMore = orgHasMore;
+  while (hasMore) {
+    const { orgs } = await fetchOrgPage(offset);
+    if (!orgs.length) break;
+    for (const org of orgs) {
+      if (org.linkedin_url || seenIds.has(org.id)) continue;
+      seenIds.add(org.id);
+      done++;
+      btnEl.textContent = `Finding… ${done}`;
+      tally(await bulkFindOrgLinkedin(org));
+    }
+    offset += orgs.length;
+    hasMore = orgs.length === LIST_PAGE_SIZE;
+  }
+
+  await reloadOrgList();
   btnEl.disabled = false;
   btnEl.textContent = originalText;
-  if (needsReview) {
-    alert(
-      `Find all: found ${found}, ${notFound} not found, and ${needsReview} with more than one possible match.\n\n` +
-      `Open each of those (look for the "N options" button in the LinkedIn column) to pick the right one.`
-    );
-  }
+  if (!done) { alert("Everyone currently shown has already got a LinkedIn URL."); return; }
+  alert(
+    `Find all: found ${found}, ${notFound} not found, ${needsReview} with more than one possible match` +
+    `${failed ? `, ${failed} failed` : ""}.` +
+    (needsReview ? `\n\nOpen each of those (look for the "N options" button in the LinkedIn column) to pick the right one.` : "")
+  );
 }
 
 function highlightSelected(listId, id) {
