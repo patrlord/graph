@@ -2266,7 +2266,49 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
   const data = await res.json();
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error("OpenRouter returned no content.");
-  return JSON.parse(content);
+  try {
+    return JSON.parse(content);
+  } catch {
+    // Despite strict-schema mode, the model occasionally appends stray text
+    // after the JSON object (a trailing note, a markdown fence, ...) -
+    // JSON.parse rejects the whole string for even one extra character past
+    // the object ("Unexpected non-whitespace character after JSON...",
+    // reported failing a real org add). Re-extract just the object (first
+    // "{" through its true matching "}", skipping braces inside string
+    // values) rather than re-querying OpenRouter for what's usually a
+    // formatting slip, not a content problem.
+    const extracted = extractJsonObject(content);
+    if (extracted) {
+      try {
+        return JSON.parse(extracted);
+      } catch {
+        // fall through to the error below
+      }
+    }
+    throw new Error("The research AI returned malformed data - please try again.");
+  }
+}
+
+function extractJsonObject(content: string): string | null {
+  const start = content.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < content.length; i++) {
+    const ch = content[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return content.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 const NEVER_GUESS = "Never invent, guess, or construct a URL, name, or fact you didn't actually find via search - use null for anything you can't confirm.";
