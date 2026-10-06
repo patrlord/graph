@@ -78,6 +78,10 @@
   .panel-header h2 { font-size: 13.5px; margin: 0; font-weight: 600; white-space: nowrap; }
   .panel-title-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .list-count { font-size: 11.5px; color: #8a877e; }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; flex: none;
+    background: #fff; color: #5a5750; border: 1px solid #cfcdc7; border-radius: 4px; cursor: pointer; }
+  .icon-btn:hover:not(:disabled) { background: #f0eeea; color: #1c1c1c; }
+  .icon-btn:disabled { opacity: .5; cursor: progress; }
   .panel-tools { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; justify-content: flex-end; }
   .panel-tools input[type=text] {
     font-size: 12.5px; padding: 6px 8px; border: 1px solid #d8d5cf; border-radius: 6px; width: 130px; min-width: 0;
@@ -455,6 +459,7 @@
           <button class="secondary tiny" id="orgSearchBtn">Search</button>
           <button class="secondary tiny" id="orgSearchClearBtn">Clear</button>
           <button class="tiny" id="orgAddToggleBtn">+ Add</button>
+          <button class="icon-btn" id="orgListDownloadBtn" title="Download the organizations matching the current filters (CSV, every field)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5M4.8 7l3.2 3.2L11.2 7M3 13h10"/></svg></button>
         </div>
       </div>
       <div class="toggle-row" id="orgTogglesRow">
@@ -511,7 +516,7 @@
 
     <!-- Top-right: organization detail -->
     <div class="card" id="orgDetailCard">
-      <div class="panel-header"><h2>Organization</h2></div>
+      <div class="panel-header"><h2>Organization</h2><button class="icon-btn" id="orgDetailDownloadBtn" title="Download this organization as Markdown"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5M4.8 7l3.2 3.2L11.2 7M3 13h10"/></svg></button></div>
       <div class="detail-empty" id="orgDetailEmpty">Select an organization from the list.</div>
       <div id="orgDetailContent" class="detail-content">
         <div class="detail-header">
@@ -620,6 +625,7 @@
           <button class="secondary tiny" id="peopleSearchBtn">Search</button>
           <button class="secondary tiny" id="peopleSearchClearBtn">Clear</button>
           <button class="tiny" id="personAddToggleBtn">+ Add</button>
+          <button class="icon-btn" id="peopleListDownloadBtn" title="Download the people matching the current filters (CSV, every field)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5M4.8 7l3.2 3.2L11.2 7M3 13h10"/></svg></button>
         </div>
       </div>
       <div class="toggle-row" id="peopleTogglesRow">
@@ -674,7 +680,7 @@
 
     <!-- Bottom-right: person detail -->
     <div class="card" id="personDetailCard">
-      <div class="panel-header"><h2>Person</h2></div>
+      <div class="panel-header"><h2>Person</h2><button class="icon-btn" id="personDetailDownloadBtn" title="Download this person as Markdown"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5M4.8 7l3.2 3.2L11.2 7M3 13h10"/></svg></button></div>
       <div class="detail-empty" id="personDetailEmpty">Select a person from the list.</div>
       <div id="personDetailContent" class="detail-content">
         <div class="detail-header">
@@ -907,6 +913,7 @@ function countryCellFor(entity, freeText) {
 let orgListCache = [];   // whatever's currently loaded (search/filter/sort already applied server-side, see reloadOrgList/loadMoreOrgs)
 let selectedOrg = null;   // full org detail incl. .people (membership rows)
 let selectedPersonId = null;
+let peopleListIsSchool = false;  // the "global"-mode people list is a school's alumni (not the server-side search) - decides how its download button exports
 let peopleForceGlobal = false;  // true after "Clear" is pressed: show all people regardless of org selection
 
 // ---------- auth ----------
@@ -1178,8 +1185,10 @@ async function loadMoreOrgs() {
 // totals can't change just from paging in more of an already-fixed result
 // set) asks the backend to also compute X-Total-Count/X-Enriched-Last-
 // Month-Count over everything matching, not just this one page.
-async function fetchOrgPage(offset, withCounts) {
-  const params = new URLSearchParams({ limit: String(LIST_PAGE_SIZE), offset: String(offset) });
+// The list's current search/filters/sort as query params, minus paging -
+// shared by fetchOrgPage and the pane's download button (exportOrgList).
+function buildOrgListParams() {
+  const params = new URLSearchParams();
   const q = document.getElementById("orgSearchInput").value.trim();
   if (q) params.set("q", q);
   if (includeEmployers) params.set("include_employers", "true");
@@ -1194,6 +1203,13 @@ async function fetchOrgPage(offset, withCounts) {
     params.set("sort", orgSort.field);
     params.set("dir", orgSort.dir);
   }
+  return params;
+}
+
+async function fetchOrgPage(offset, withCounts) {
+  const params = buildOrgListParams();
+  params.set("limit", String(LIST_PAGE_SIZE));
+  params.set("offset", String(offset));
   if (withCounts) params.set("with_counts", "true");
   const res = await api(`/organizations?${params.toString()}`);
   if (!res.ok) return { orgs: [], totalCount: 0, enrichedLastMonthCount: 0 };
@@ -3372,6 +3388,7 @@ async function showSchoolPeople(schoolId, schoolName) {
   if (!res.ok) return;
   const people = (await res.json()).map(p => ({ ...p, title: p.degree || null }));  // show degree in the Role column
   peopleForceGlobal = true;
+  peopleListIsSchool = true;
   document.getElementById("peopleSearchInput").value = "";
   renderPeopleList(people, "global");
   document.getElementById("peopleListTitle").textContent = `People who went to ${schoolName}`;
@@ -3850,8 +3867,8 @@ async function loadPersonNews(person) {
 }
 
 async function searchPersonNews() {
-  if (!selectedPersonId) return;
-  const name = document.getElementById("editPersonName").value.trim();
+  if (!selectedPersonId || !selectedPersonObj) return;
+  const name = selectedPersonObj.full_name;
   const btn = document.getElementById("personNewsSearchBtn");
   const status = document.getElementById("personNewsStatus");
   btn.disabled = true; status.textContent = "Searching…"; status.className = "status-line";
@@ -3943,6 +3960,7 @@ async function reloadPeopleList() {
     renderPeopleList([], "empty");
     return;
   }
+  peopleListIsSchool = false;
   peoplePageIndex = 0;
   peopleHasMore = true;
   const { rows, hasMore, totalCount, enrichedLastMonthCount } = await fetchPeoplePage(0, true);
@@ -4056,6 +4074,239 @@ function showPeopleAddView() {
   if (!document.querySelector("#bulkPeopleRows tr")) {
     addBulkPeopleRow(); addBulkPeopleRow(); addBulkPeopleRow();
   }
+}
+
+// ---------- pane download buttons ----------
+
+function downloadTextFile(filename, text, mime) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function exportFileName(base, ext) {
+  const slug = (base || "export").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "export";
+  return `${slug}-${new Date().toISOString().slice(0, 10)}.${ext}`;
+}
+
+// Arrays of plain values join with "; "; nested objects/arrays of objects
+// (the li_* JSON columns) go in as JSON text.
+function csvCell(v) {
+  if (v === null || v === undefined) return "";
+  let t;
+  if (Array.isArray(v) && v.every(x => x === null || typeof x !== "object")) t = v.join("; ");
+  else if (typeof v === "object") t = JSON.stringify(v);
+  else t = String(v);
+  return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+}
+
+// Columns are the union of every row's keys, in first-seen order; the BOM
+// makes Excel read the file as UTF-8 (accented names).
+function rowsToCsv(rows) {
+  const cols = [];
+  const seen = new Set();
+  for (const r of rows) for (const k of Object.keys(r)) if (!seen.has(k)) { seen.add(k); cols.push(k); }
+  return "﻿" + [cols.join(","), ...rows.map(r => cols.map(c => csvCell(r[c])).join(","))].join("\r\n");
+}
+
+function rolesText(roles) {
+  return (roles || []).map(r =>
+    `${[r.title, r.organization].filter(Boolean).join(" @ ") || "(no details)"}${r.is_current === false ? " [past]" : ""}`
+  ).join("; ");
+}
+
+async function withDownloadButton(btn, fn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const originalTitle = btn.title;
+  btn.title = "Preparing download…";
+  try {
+    await fn();
+  } catch (err) {
+    alert(`Download failed: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.title = originalTitle;
+  }
+}
+
+async function exportOrgList(btn) {
+  await withDownloadButton(btn, async () => {
+    const PAGE = 500;
+    const rows = [];
+    for (let offset = 0; ; offset += PAGE) {
+      const params = buildOrgListParams();
+      params.set("limit", String(PAGE));
+      params.set("offset", String(offset));
+      params.set("full", "true");
+      const res = await api(`/organizations?${params.toString()}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      const page = await res.json();
+      rows.push(...page);
+      btn.title = `Preparing download… ${rows.length}`;
+      if (page.length < PAGE) break;
+    }
+    if (!rows.length) { alert("No organizations match the current filters."); return; }
+    downloadTextFile(exportFileName("organizations", "csv"), rowsToCsv(rows), "text/csv;charset=utf-8");
+  });
+}
+
+// Server-search mode pages through the same filters the list uses; an org's
+// team or a school's alumni (the rows already on screen, which can't be
+// re-queried by filter) export by id instead - same full columns either way.
+async function exportPeopleList(btn) {
+  await withDownloadButton(btn, async () => {
+    const people = [];
+    const post = async body => {
+      const res = await api("/people/export", { method: "POST", body: JSON.stringify(body) });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      return { page: await res.json(), hasMore: res.headers.get("X-Has-More") === "true" };
+    };
+    let label = "people";
+    if (currentPeopleMode === "global" && !peopleListIsSchool) {
+      const PAGE = 300;
+      const base = {
+        q: document.getElementById("peopleSearchInput").value.trim(), include_past: includePastRoles,
+        starred_only: peopleStarredOnly, ba_only: peopleBAOnly, show_hidden: peopleShowHidden, jpl_only: peopleJplOnly,
+      };
+      for (let offset = 0; ; offset += PAGE) {
+        const { page, hasMore } = await post({ ...base, limit: PAGE, offset });
+        people.push(...page);
+        btn.title = `Preparing download… ${people.length}`;
+        if (!hasMore) break;
+      }
+    } else {
+      const ids = [...new Set(currentPeopleItems.map(p => p.id))];
+      if (ids.length) people.push(...(await post({ ids })).page);
+      if (currentPeopleMode === "org" && selectedOrg && !peopleForceGlobal) label = `people-${selectedOrg.name}`;
+      else label = document.getElementById("peopleListTitle").textContent || "people";
+    }
+    if (!people.length) { alert("No people in the list to download."); return; }
+    const rows = people.map(p => ({ ...p, roles: rolesText(p.roles) }));
+    downloadTextFile(exportFileName(label, "csv"), rowsToCsv(rows), "text/csv;charset=utf-8");
+  });
+}
+
+function mdSection(title, lines) {
+  const body = lines.filter(Boolean);
+  return body.length ? `## ${title}\n\n${body.join("\n")}\n` : "";
+}
+
+function mdNews(items) {
+  return (items || []).map(n => {
+    const title = stripMarkdownLinks(n.title);
+    const summary = stripMarkdownLinks(n.summary);
+    return `- ${n.published_at ? `${n.published_at} — ` : ""}[${title}](${n.url})${n.source ? ` (${n.source})` : ""}${summary ? `\n  ${summary}` : ""}`;
+  });
+}
+
+function mdDocument(parts) {
+  return parts.filter(Boolean).join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+async function fetchJsonOr(path, fallback) {
+  try {
+    const res = await api(path);
+    return res.ok ? await res.json() : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function exportOrgDetail(btn) {
+  const org = selectedOrg;
+  if (!org) { alert("Select an organization first."); return; }
+  await withDownloadButton(btn, async () => {
+    const [connections, news] = await Promise.all([
+      fetchJsonOr(`/organizations/${org.id}/connections`, []),
+      fetchJsonOr(`/news?entity_type=organization&entity_id=${org.id}`, []),
+    ]);
+    const link = (label, url) => url ? `- ${label}: ${url}` : "";
+    const li = [];
+    if (org.li_tagline) li.push(`**${org.li_tagline}**\n`);
+    const stats = [];
+    if (org.li_company_type) stats.push(org.li_company_type);
+    if (typeof org.li_employee_count === "number") stats.push(`${org.li_employee_count} employees`);
+    else if (org.li_employee_count_range) stats.push(`${org.li_employee_count_range} employees`);
+    if (typeof org.li_follower_count === "number") stats.push(`${org.li_follower_count} followers`);
+    if (org.li_founded_year) stats.push(`Founded ${org.li_founded_year}`);
+    if (stats.length) li.push(`- ${stats.join(" · ")}`);
+    if (Array.isArray(org.li_industries) && org.li_industries.length) {
+      const names = org.li_industries.map(i => (typeof i === "string" ? i : i?.name || i?.localizedName)).filter(Boolean);
+      if (names.length) li.push(`- **Industries:** ${names.join(", ")}`);
+    }
+    if (org.li_specialities && org.li_specialities.length) li.push(`- **Specialities:** ${org.li_specialities.join(", ")}`);
+    const funding = fundingRoundText(org.li_last_funding_round);
+    if (funding) li.push(`- **Last funding round:** ${funding}`);
+    if (org.li_phone) li.push(`- **Phone:** ${org.li_phone}`);
+
+    const people = org.people || [];
+    const personLine = m => `- ${m.people.full_name}${m.title ? ` — ${m.title}` : ""}${m.is_current ? "" : " (past)"}`;
+    const doc = mdDocument([
+      `# ${org.name}\n`,
+      [`**${ORG_TYPE_LABEL[org.org_type] || org.org_type || "Unclassified"}**`, org.hq_country].filter(Boolean).join(" · ") + "\n",
+      [link("Website", org.website_url), link("LinkedIn", org.linkedin_url)].filter(Boolean).join("\n") + "\n",
+      org.sectors && org.sectors.length ? `**Sectors:** ${org.sectors.join(", ")}\n` : "",
+      org.description ? `${org.description}\n` : "",
+      mdSection("Investor profile", [
+        org.ticket_size ? `- **Ticket:** ${org.ticket_size}` : "",
+        org.investment_stages && org.investment_stages.length ? `- **Stages:** ${org.investment_stages.join(", ")}` : "",
+        org.investment_regions && org.investment_regions.length ? `- **Regions:** ${org.investment_regions.join(", ")}` : "",
+        org.fund_type_raw ? `- **Fund type:** ${org.fund_type_raw}` : "",
+      ]),
+      mdSection("LinkedIn profile", li),
+      mdSection("Team", people.filter(m => m.people).map(personLine)),
+      mdSection("Related organizations", connections.map(c => `- ${connectionLabel(c)} ${c.other ? c.other.name : "(deleted)"}`)),
+      mdSection("Latest news", mdNews(news)),
+    ]);
+    downloadTextFile(exportFileName(org.name, "md"), doc, "text/markdown;charset=utf-8");
+  });
+}
+
+async function exportPersonDetail(btn) {
+  const shown = selectedPersonObj;
+  if (!shown) { alert("Select a person first."); return; }
+  await withDownloadButton(btn, async () => {
+    const [full, history, education, news] = await Promise.all([
+      fetchJsonOr(`/people/${shown.id}`, shown),
+      fetchJsonOr(`/people/${shown.id}/employment-history`, []),
+      fetchJsonOr(`/people/${shown.id}/education`, []),
+      fetchJsonOr(`/news?entity_type=person&entity_id=${shown.id}`, []),
+    ]);
+    const person = { ...shown, ...full };
+    const roleLine = r => `- ${r.organizations.name}${r.title ? ` — ${r.title}` : ""}` +
+      `${r.start_date || r.end_date ? ` (${[r.start_date, r.end_date].filter(Boolean).join(" – ")})` : ""}`;
+    const current = history.filter(r => r.is_current && r.organizations).sort(currentRoleComparator);
+    const past = history.filter(r => !r.is_current && r.organizations).sort((a, b) => roleRecencyYear(b) - roleRecencyYear(a));
+    const stats = [];
+    if (typeof person.li_connections_count === "number") stats.push(`${person.li_connections_count} connections`);
+    if (typeof person.li_follower_count === "number") stats.push(`${person.li_follower_count} followers`);
+    const doc = mdDocument([
+      `# ${person.full_name}\n`,
+      current.length ? current.map(roleLine).join("\n") + "\n" : "",
+      [
+        person.linkedin_url ? `- LinkedIn: ${person.linkedin_url}` : "",
+        person.country ? `- Country: ${person.country}` : "",
+        person.is_ba ? "- Business angel" : "",
+      ].filter(Boolean).join("\n") + "\n",
+      person.li_headline ? `**${person.li_headline}**\n` : "",
+      person.li_open_to_work ? "_Open to work_\n" : "",
+      stats.length ? `${stats.join(" · ")}\n` : "",
+      person.li_about ? `${person.li_about}\n` : "",
+      person.li_top_skills ? `**Top skills:** ${person.li_top_skills}\n` : "",
+      mdSection("Past roles", past.map(roleLine)),
+      mdSection("Education", education.map(r =>
+        `- ${r.schools.name}${r.degree ? ` — ${r.degree}` : ""}${r.period ? ` (${r.period})` : ""}`)),
+      mdSection("Latest news", mdNews(news)),
+      person.li_profile_fetched_at ? `_LinkedIn profile fetched ${person.li_profile_fetched_at.slice(0, 10)}_\n` : "",
+    ]);
+    downloadTextFile(exportFileName(person.full_name, "md"), doc, "text/markdown;charset=utf-8");
+  });
 }
 
 // ---------- add organizations (bulk: names and/or LinkedIn URLs) ----------
@@ -4317,6 +4568,10 @@ document.getElementById("peopleListScrollBox").addEventListener("scroll", e => {
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) loadMorePeople();
 });
 document.getElementById("orgAddToggleBtn").addEventListener("click", showOrgAddView);
+document.getElementById("orgListDownloadBtn").addEventListener("click", e => exportOrgList(e.currentTarget));
+document.getElementById("peopleListDownloadBtn").addEventListener("click", e => exportPeopleList(e.currentTarget));
+document.getElementById("orgDetailDownloadBtn").addEventListener("click", e => exportOrgDetail(e.currentTarget));
+document.getElementById("personDetailDownloadBtn").addEventListener("click", e => exportPersonDetail(e.currentTarget));
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
 document.getElementById("peopleEnrichAllBtn").addEventListener("click", e => runEnrichAllPeople(e.currentTarget));
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);

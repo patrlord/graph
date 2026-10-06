@@ -113,6 +113,10 @@
 //   POST   /people/duplicate-candidates/dismiss { ids: [id, id, ...] } -> { ok: true }
 //     (same idea as the organizations version above - records that this exact set of people was judged NOT duplicates so it
 //     stops resurfacing; idempotent; a different combination sharing the same fingerprint still surfaces)
+//   POST   /people/export  { ids: [...] } | { q?, include_past?, starred_only?, ba_only?, show_hidden?, jpl_only?, limit? (<=500, default 300), offset? }
+//     -> [ {every people column..., roles: [{organization, title, focus, is_current, start_date, end_date}]} ] one per person, X-Has-More header
+//     (backs the people pane's download button: ids = the rows already showing for an org's team / a school's alumni; otherwise the
+//     same filters as GET /people, paged). GET /organizations also accepts full=true (select=*) for the org pane's download button
 //   GET    /people/match-candidates?name=...&linkedin_url=... -> [ {id, full_name, linkedin_url, country, linkedin_match, roles: [{title, organization}]}, ... ]
 //     (checked ahead of GET /people/:id below - read-only preview of who saveOrganization would match a new person to: exact
 //     case-insensitive name OR linkedin_url, with current roles for context. Called by the "Add people" panel before saving so the
@@ -530,6 +534,48 @@ async function findPeopleByNameOrLinkedin(name: string, linkedinUrl?: string | n
   return rows ?? [];
 }
 
+// One entry per person with every people column plus a `roles` array
+// ({organization, title, focus, is_current, start_date, end_date}) - the
+// shape the people pane's download button turns into a CSV. Two modes: ids
+// (the rows the frontend is already showing for an org's team / a school's
+// alumni, which it can't re-query by filter), or the same filters as GET
+// /people, paged by limit/offset (hasMore in the result) so a few thousand
+// full li_* profiles never need to fit in one response.
+async function exportPeople(body: any): Promise<{ people: any[]; hasMore: boolean }> {
+  const embed = "memberships(id,organization_id,is_current,title,focus,start_date,end_date,organizations(id,name))";
+  const toRole = (m: any) => ({
+    organization: m.organizations?.name ?? null, title: m.title ?? null, focus: m.focus ?? null,
+    is_current: m.is_current ?? null, start_date: m.start_date ?? null, end_date: m.end_date ?? null,
+  });
+  if (Array.isArray(body.ids)) {
+    const ids: string[] = [...new Set<string>(body.ids.filter((i: unknown) => typeof i === "string"))];
+    const people: any[] = [];
+    for (let i = 0; i < ids.length; i += 100) {
+      const rows = await supabaseRequest("GET", "people", {
+        params: { id: `in.(${ids.slice(i, i + 100).join(",")})`, select: `*,${embed}`, order: "full_name.asc" },
+      });
+      for (const r of rows ?? []) {
+        const { memberships, ...rest } = r;
+        people.push({ ...rest, roles: (memberships ?? []).map(toRole) });
+      }
+    }
+    return { people, hasMore: false };
+  }
+  const limit = Math.min(Math.max(parseInt(body.limit ?? "300", 10) || 300, 1), 500);
+  const { rows, hasMore } = await searchPeopleGlobal({
+    query: (body.q ?? "").trim(), includePast: !!body.include_past, limit, offset: parseInt(body.offset ?? "0", 10) || 0,
+    starredOnly: !!body.starred_only, baOnly: !!body.ba_only, showHidden: !!body.show_hidden, jplOnly: !!body.jpl_only,
+    full: true,
+  });
+  const byId = new Map<string, any>();
+  for (const r of rows) {
+    const { title, focus, membership_id, is_current, start_date, end_date, organization, ...base } = r;
+    if (!byId.has(base.id)) byId.set(base.id, { ...base, roles: [] });
+    if (membership_id) byId.get(base.id).roles.push(toRole({ organizations: organization, title, focus, is_current, start_date, end_date }));
+  }
+  return { people: [...byId.values()], hasMore };
+}
+
 // Read-only preview of findPeopleByNameOrLinkedin's own match, with enough
 // context (current roles) for a human to tell at a glance whether it's
 // really the same person - backs GET /people/match-candidates, called by
@@ -803,6 +849,7 @@ type ListOrganizationsOptions = {
   orgTypes?: string[];
   sectors?: string[];
   investmentRegions?: string[];
+  full?: boolean;  // select=* (every column) instead of the lean list columns - for the pane's download button
 };
 
 // Same "one calendar month back from right now" window as the frontend's
@@ -845,7 +892,9 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
     // "enriched in the last month" for the count tooltip (index.html)
     // without a separate fetch. investment_regions joins sectors as a
     // second array column now shown as its own list column (index.html).
-    select: "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,investment_regions,updated_at,is_starred,is_hidden,li_profile_fetched_at",
+    select: opts.full
+      ? "*"
+      : "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,investment_regions,updated_at,is_starred,is_hidden,li_profile_fetched_at",
     order: `${sortColumn}.${sortDir}`,
   };
   // org_type <> 'employer' would silently also exclude NULL org_type rows -
@@ -1194,6 +1243,7 @@ type SearchPeopleOptions = {
   showHidden?: boolean;
   jplOnly?: boolean;
   withCounts?: boolean;
+  full?: boolean;  // select=* (every people column) plus the memberships embed - for the pane's download button
 };
 
 // limit omitted: returns everything, paginated internally
@@ -1243,7 +1293,7 @@ async function searchPeopleGlobal(opts: SearchPeopleOptions): Promise<{ rows: an
     // a single cheap timestamp, not one of the heavy fields - so the bulk
     // "Enrich all" button (runEnrichAllPeople in index.html) can tell who's
     // already been enriched without a per-person fetch.
-    select: "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,li_profile_fetched_at,memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))",
+    select: `${opts.full ? "*" : "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,li_profile_fetched_at"},memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))`,
     order: "full_name.asc",
   };
   if (opts.starredOnly) params.is_starred = "eq.true";
@@ -3031,6 +3081,7 @@ Deno.serve(async (req) => {
         orgTypes: parseListParam(url.searchParams.get("org_types")),
         sectors: parseListParam(url.searchParams.get("sectors")),
         investmentRegions: parseListParam(url.searchParams.get("investment_regions")),
+        full: url.searchParams.get("full") === "true",
       });
       return json(orgs, 200, {
         ...(totalCount !== undefined ? { "X-Total-Count": String(totalCount) } : {}),
@@ -3085,6 +3136,10 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/people/duplicate-candidates/dismiss") {
       const body = await req.json();
       return json(await dismissDuplicateGroup("person", body.ids));
+    }
+    if (req.method === "POST" && path === "/people/export") {
+      const { people, hasMore } = await exportPeople(await req.json());
+      return json(people, 200, { "X-Has-More": String(hasMore) });
     }
     // Same reason as duplicate-candidates above: ahead of the generic
     // personIdMatch GET, or "match-candidates" would be parsed as a person id.
