@@ -665,7 +665,7 @@
         </div>
         <div class="bulk-people-wrap">
           <table class="bulk-people-table">
-            <thead><tr><th>Name</th><th>Company (optional)</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Company (optional)</th><th>or LinkedIn URL</th><th></th></tr></thead>
             <tbody id="bulkPeopleRows"></tbody>
           </table>
         </div>
@@ -4362,7 +4362,7 @@ async function startBulkOrgAdd() {
 
 // ---------- add people (bulk: name + optional company, table entry) ----------
 
-function buildBulkPeopleRow(name = "", company = "") {
+function buildBulkPeopleRow(name = "", company = "", linkedin = "") {
   const tr = document.createElement("tr");
   const nameTd = document.createElement("td");
   const nameInput = document.createElement("input");
@@ -4373,17 +4373,21 @@ function buildBulkPeopleRow(name = "", company = "") {
   const companyInput = document.createElement("input");
   companyInput.type = "text"; companyInput.className = "bp-company"; companyInput.placeholder = "Company (optional)"; companyInput.value = company;
   companyTd.appendChild(companyInput);
+  const linkedinTd = document.createElement("td");
+  const linkedinInput = document.createElement("input");
+  linkedinInput.type = "text"; linkedinInput.className = "bp-linkedin"; linkedinInput.placeholder = "linkedin.com/in/…"; linkedinInput.value = linkedin;
+  linkedinTd.appendChild(linkedinInput);
   const removeTd = document.createElement("td");
   const removeBtn = document.createElement("button");
   removeBtn.className = "bp-remove"; removeBtn.title = "Remove row"; removeBtn.textContent = "✕";
   removeBtn.addEventListener("click", () => tr.remove());
   removeTd.appendChild(removeBtn);
-  tr.append(nameTd, companyTd, removeTd);
+  tr.append(nameTd, companyTd, linkedinTd, removeTd);
   return tr;
 }
 
-function addBulkPeopleRow(name = "", company = "") {
-  const tr = buildBulkPeopleRow(name, company);
+function addBulkPeopleRow(name = "", company = "", linkedin = "") {
+  const tr = buildBulkPeopleRow(name, company, linkedin);
   document.getElementById("bulkPeopleRows").appendChild(tr);
   return tr;
 }
@@ -4396,12 +4400,17 @@ function handleBulkPeoplePaste(e) {
   if (!lines.length) return;
   let row = e.target.closest("tr");
   lines.forEach((line, i) => {
-    const [name, company] = line.split(/\t|,/).map(s => (s || "").trim());
+    // A column that's a LinkedIn URL goes to the URL field wherever it
+    // was pasted (a lone URL per line, or name,company,url).
+    const cells = line.split(/\t|,/).map(s => (s || "").trim());
+    const linkedin = cells.find(c => /linkedin\.com\//i.test(c)) || "";
+    const [name, company] = cells.filter(c => c !== linkedin);
     if (i === 0) {
       row.querySelector(".bp-name").value = name || "";
       row.querySelector(".bp-company").value = company || "";
+      row.querySelector(".bp-linkedin").value = linkedin;
     } else {
-      const newRow = buildBulkPeopleRow(name || "", company || "");
+      const newRow = buildBulkPeopleRow(name || "", company || "", linkedin);
       row.insertAdjacentElement("afterend", newRow);
       row = newRow;
     }
@@ -4447,14 +4456,15 @@ async function startBulkPeopleAdd() {
   const items = rows.map(tr => ({
     name: tr.querySelector(".bp-name").value.trim(),
     company: tr.querySelector(".bp-company").value.trim(),
-  })).filter(item => item.name);
+    linkedin_url: tr.querySelector(".bp-linkedin").value.trim(),
+  })).filter(item => item.name || item.linkedin_url);
   const status = document.getElementById("bulkPeopleStatus");
   const btn = document.getElementById("bulkPeopleStartBtn");
-  if (!items.length) { status.className = "status-line error"; status.textContent = "Enter at least one name."; return; }
+  if (!items.length) { status.className = "status-line error"; status.textContent = "Enter at least one name or LinkedIn URL."; return; }
 
   const resultsEl = document.getElementById("bulkPeopleResults");
   resultsEl.innerHTML = "";
-  const statusEls = items.map(item => addBulkResultRow(resultsEl, item.name));
+  const statusEls = items.map(item => addBulkResultRow(resultsEl, item.name || item.linkedin_url));
 
   btn.disabled = true; status.className = "status-line";
   let succeeded = 0;
@@ -4464,7 +4474,7 @@ async function startBulkPeopleAdd() {
     try {
       const res = await apiWithRetry("/research-person", {
         method: "POST",
-        body: JSON.stringify({ name: items[i].name, company_hint: items[i].company, linkedin_url: "" }),
+        body: JSON.stringify({ name: items[i].name, company_hint: items[i].company, linkedin_url: items[i].linkedin_url }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Research failed");
@@ -4477,6 +4487,7 @@ async function startBulkPeopleAdd() {
       // is asked about. Either way the save below is told the answer
       // (person_id / force_new), so it doesn't re-decide on its own.
       const identified = data.people[0];
+      if (!identified.linkedin_url && items[i].linkedin_url) identified.linkedin_url = items[i].linkedin_url;
       setBulkStatus(statusEls[i], "working", "Checking for existing person…");
       const matchRes = await apiWithRetry(`/people/match-candidates?${new URLSearchParams({
         name: identified.full_name, linkedin_url: identified.linkedin_url || "",

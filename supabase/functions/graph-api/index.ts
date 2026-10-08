@@ -2288,55 +2288,73 @@ function applyInvestmentRegionFallback(org: Record<string, any>) {
 async function openRouterCall(userContent: string, schemaName: string, jsonSchema: any, timeoutMs = 45000): Promise<any> {
   if (!OPENROUTER_API_KEY) throw new HttpError(503, "OPENROUTER_API_KEY is not configured.");
 
-  let res: Response;
-  try {
-    res = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://patrlord.github.io/graph/",
-        "X-Title": "Graph",
-      },
-      body: JSON.stringify({
-        model: OPENROUTER_MODEL,
-        messages: [{ role: "user", content: userContent }],
-        plugins: [{ id: "web", engine: "native", max_results: 10 }],
-        response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
-      }),
-    }, timeoutMs);
-  } catch (err) {
-    throw new Error(`OpenRouter request timed out or failed (network error): ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  if (!res.ok) {
-    const detail = (await res.text()).slice(0, 500);
-    throw new Error(`OpenRouter request failed (${res.status}): ${detail}`);
-  }
-  const data = await res.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("OpenRouter returned no content.");
-  try {
-    return JSON.parse(content);
-  } catch {
-    // Despite strict-schema mode, the model occasionally appends stray text
-    // after the JSON object (a trailing note, a markdown fence, ...) -
-    // JSON.parse rejects the whole string for even one extra character past
-    // the object ("Unexpected non-whitespace character after JSON...",
-    // reported failing a real org add). Re-extract just the object (first
-    // "{" through its true matching "}", skipping braces inside string
-    // values) rather than re-querying OpenRouter for what's usually a
-    // formatting slip, not a content problem.
-    const extracted = extractJsonObject(content);
-    if (extracted) {
-      try {
-        return JSON.parse(extracted);
-      } catch {
-        // fall through to the error below
-      }
+  // An empty or unparseable answer is usually a one-off from the model/
+  // provider (reported: "OpenRouter returned no content" adding a person
+  // that then worked on a direct retry), so it's worth one more attempt -
+  // but only if the first one didn't already eat most of the edge
+  // function's wall-clock budget.
+  const startedAt = Date.now();
+  let lastError: Error = new Error("OpenRouter call failed.");
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (attempt > 1 && Date.now() - startedAt > 70000) break;
+    let res: Response;
+    try {
+      res = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://patrlord.github.io/graph/",
+          "X-Title": "Graph",
+        },
+        body: JSON.stringify({
+          model: OPENROUTER_MODEL,
+          messages: [{ role: "user", content: userContent }],
+          plugins: [{ id: "web", engine: "native", max_results: 10 }],
+          response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
+        }),
+      }, timeoutMs);
+    } catch (err) {
+      throw new Error(`OpenRouter request timed out or failed (network error): ${err instanceof Error ? err.message : String(err)}`);
     }
-    throw new Error("The research AI returned malformed data - please try again.");
+
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 500);
+      lastError = new Error(`OpenRouter request failed (${res.status}): ${detail}`);
+      if (res.status >= 500 || res.status === 429) continue;
+      throw lastError;
+    }
+    const data = await res.json();
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content;
+    if (!content) {
+      lastError = new Error(
+        `OpenRouter returned no content (finish_reason: ${choice?.finish_reason ?? "none"}${data.error ? `, error: ${JSON.stringify(data.error).slice(0, 200)}` : ""}).`,
+      );
+      continue;
+    }
+    try {
+      return JSON.parse(content);
+    } catch {
+      // Despite strict-schema mode, the model occasionally appends stray text
+      // after the JSON object (a trailing note, a markdown fence) -
+      // JSON.parse rejects the whole string for even one extra character past
+      // the object ("Unexpected non-whitespace character after JSON...",
+      // reported failing a real org add). Re-extract just the object (first
+      // "{" through its true matching "}", skipping braces inside string
+      // values) before giving up on this attempt.
+      const extracted = extractJsonObject(content);
+      if (extracted) {
+        try {
+          return JSON.parse(extracted);
+        } catch {
+          // fall through to the next attempt
+        }
+      }
+      lastError = new Error("The research AI returned malformed data - please try again.");
+    }
   }
+  throw lastError;
 }
 
 function extractJsonObject(content: string): string | null {
