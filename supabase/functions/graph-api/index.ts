@@ -2289,14 +2289,19 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
   if (!OPENROUTER_API_KEY) throw new HttpError(503, "OPENROUTER_API_KEY is not configured.");
 
   // An empty or unparseable answer is usually a one-off from the model/
-  // provider (reported: "OpenRouter returned no content" adding a person
-  // that then worked on a direct retry), so it's worth one more attempt -
-  // but only if the first one didn't already eat most of the edge
-  // function's wall-clock budget.
+  // provider, and OpenRouter reports an upstream rate limit as an HTTP 200
+  // whose body is {error: {code: 429}} with no choices (reported: "OpenRouter
+  // returned no content ... temporarily rate-limited upstream") - so retry,
+  // pausing between attempts so a rate limit has a moment to clear, but
+  // never past the edge function's wall-clock budget.
   const startedAt = Date.now();
+  const retryDelaysMs = [0, 4000, 9000];
   let lastError: Error = new Error("OpenRouter call failed.");
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    if (attempt > 1 && Date.now() - startedAt > 70000) break;
+  for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
+    if (attempt > 0) {
+      if (Date.now() - startedAt + retryDelaysMs[attempt] > 75000) break;
+      await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
+    }
     let res: Response;
     try {
       res = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
@@ -2328,6 +2333,11 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
     const choice = data.choices?.[0];
     const content = choice?.message?.content;
     if (!content) {
+      const errCode = Number(data.error?.code);
+      if (errCode === 429) {
+        lastError = new Error("OpenRouter is rate-limiting the research model right now (429) - wait a minute and try again.");
+        continue;
+      }
       lastError = new Error(
         `OpenRouter returned no content (finish_reason: ${choice?.finish_reason ?? "none"}${data.error ? `, error: ${JSON.stringify(data.error).slice(0, 200)}` : ""}).`,
       );
