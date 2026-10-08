@@ -161,6 +161,9 @@
 //     see loadPersonCareerSections in index.html)
 //   GET    /schools/:id/people            -> [ {id, full_name, linkedin_url, country, degree, period}, ... ]
 //   POST   /people/find-linkedin  { person_id, name, title?, company?, organization_id? } -> { linkedin_url, title, observed_company, renamed_to, merged_into_person_id }
+//     (looks the person up FIRST by name via the Apify harvestapi/linkedin-profile-search-by-name actor, ~3s - accepting a lone exact-name
+//     match, or the one result whose headline mentions the company, narrowing by the org's LinkedIn page if needed - and only falls back to
+//     the slow LLM web search when that finds nobody or can't tell several apart)
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
@@ -1651,6 +1654,11 @@ async function backfillFromApollo(org: Record<string, any>) {
 
 const APIFY_LINKEDIN_PROFILE_ACTOR = "LpVuK3Zozwuipa5bp";
 const APIFY_LINKEDIN_COMPANY_ACTOR = "UwSdACBp7ymaGUJjS";
+// harvestapi/linkedin-profile-search-by-name: first/last name (+ optional
+// current-company filter, as full LinkedIn company URLs) -> up to 10 short
+// profiles per search page ({name, position (headline), location,
+// linkedinUrl}), ~3s and ~$0.004 per page. See searchPersonLinkedinViaApify.
+const APIFY_LINKEDIN_PERSON_SEARCH_ACTOR = "harvestapi~linkedin-profile-search-by-name";
 
 // Starts a run and polls it directly (rather than the run-sync-get-
 // dataset-items shortcut) specifically so a failed/aborted/timed-out run
@@ -1820,8 +1828,10 @@ async function enrichPersonFromApify(personId: string) {
   if (!person) throw new HttpError(404, "person not found");
   if (!person.linkedin_url) throw new HttpError(400, "This person has no LinkedIn URL yet.");
 
+  const t0 = Date.now();
   const profile = await fetchLinkedinProfileViaApify(person.linkedin_url);
   if (!profile) throw new HttpError(502, "Apify found no profile data for this LinkedIn URL.");
+  const apifyMs = Date.now() - t0;
 
   const fields = mapApifyProfileToLiFields(profile);
   const countryFromProfile = profile.location?.parsed?.country;
@@ -1844,7 +1854,7 @@ async function enrichPersonFromApify(personId: string) {
   await importEducationForPerson(personId, profile.education);
   await importPastEmploymentForPerson(personId, profile.experience);
   await syncCurrentRolesForPerson(personId, profile.experience, profile.currentPosition);
-  return updated;
+  return { updated, timings: { apifyMs, dbMs: Date.now() - t0 - apifyMs } };
 }
 
 // A live response (confirmed against an actual run, unlike the rest of this
@@ -2326,7 +2336,9 @@ function applyInvestmentRegionFallback(org: Record<string, any>) {
 // The one exception is findPersonLinkedin's own name-order-swap retry, which
 // passes a shorter timeoutMs specifically so two sequential calls still fit
 // safely inside the 150s budget - see there for why that one case is worth it.
-async function openRouterCall(userContent: string, schemaName: string, jsonSchema: any, timeoutMs = 45000): Promise<any> {
+async function openRouterCall(
+  userContent: string, schemaName: string, jsonSchema: any, timeoutMs = 45000, maxTotalMs = 100000,
+): Promise<any> {
   if (!OPENROUTER_API_KEY) throw new HttpError(503, "OPENROUTER_API_KEY is not configured.");
 
   // An empty or unparseable answer is usually a one-off from the model/
@@ -2340,9 +2352,14 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
   let lastError: Error = new Error("OpenRouter call failed.");
   for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
     if (attempt > 0) {
-      if (Date.now() - startedAt + retryDelaysMs[attempt] > 75000) break;
+      // maxTotalMs bounds the whole call, retries included - each attempt's
+      // own timeout is capped to what's left of it (a slow first attempt
+      // used to leave the retry a full fresh timeoutMs, which pushed a
+      // person lookup past the edge function's 150s kill).
+      if (maxTotalMs - (Date.now() - startedAt) - retryDelaysMs[attempt] < 15000) break;
       await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
     }
+    const attemptTimeoutMs = Math.min(timeoutMs, maxTotalMs - (Date.now() - startedAt));
     let res: Response;
     try {
       res = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
@@ -2359,7 +2376,7 @@ async function openRouterCall(userContent: string, schemaName: string, jsonSchem
           plugins: [{ id: "web", engine: "native", max_results: 10 }],
           response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
         }),
-      }, timeoutMs);
+      }, attemptTimeoutMs);
     } catch (err) {
       throw new Error(`OpenRouter request timed out or failed (network error): ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2693,6 +2710,89 @@ const FIND_ORG_LINKEDIN_SCHEMA = {
   additionalProperties: false,
 };
 
+// Every item of a short actor run, via Apify's synchronous endpoint (one
+// request: start + wait + dataset) - unlike runApifyActorAndGetFirstItem's
+// start/poll/read, which is built for slow multi-minute scrapers.
+async function runApifyActorAndGetItems(actorId: string, input: Record<string, unknown>, timeoutMs: number): Promise<any[]> {
+  if (!APIFY_API_TOKEN) throw new HttpError(503, "APIFY_API_TOKEN is not configured.");
+  const res = await fetchWithTimeout(
+    `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${APIFY_API_TOKEN}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) },
+    timeoutMs,
+  );
+  if (!res.ok) throw new Error(`Apify run failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
+  const items = await res.json();
+  return Array.isArray(items) ? items : [];
+}
+
+function foldForMatch(s: string): string {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+// The first (up to 2) significant words of the company name must all appear
+// in the profile's headline - "Partner at Mantra Investment Partners" for
+// "Mantra Investment Partners". Loose on purpose: it only has to separate a
+// handful of same-named people, not verify a company.
+function headlineMentionsCompany(headline: string, company: string): boolean {
+  const words = (foldForMatch(company).match(/[a-z0-9]+/g) ?? []).filter((w) => w.length > 2).slice(0, 2);
+  if (!words.length) return false;
+  const h = foldForMatch(headline);
+  return words.every((w) => h.includes(w));
+}
+
+function splitHeadline(headline: string): { title: string | null; company: string | null } {
+  const m = headline.match(/^(.*?)\s+(?:at|@|chez|bei)\s+(.+)$/i);
+  return m ? { title: m[1].trim() || null, company: m[2].trim() || null } : { title: headline.trim() || null, company: null };
+}
+
+// Looks a person up by name with the Apify search actor instead of an LLM
+// web search (44-68s per call, and only ~half right on a 20-person check
+// against stored URLs; this takes ~3s and had the right profile among its
+// results 18 times out of 20). Returns a result only when it's confident:
+// a single profile with that exact name, or exactly one of several whose
+// headline mentions the company - narrowing a crowd by the org's LinkedIn
+// page (currentCompanies filter) once if that isn't enough. null means
+// "can't tell" (nobody found, or still ambiguous), and the caller falls back
+// to the slower web search. Names are split first-word / rest; a name with
+// accents that finds nothing is retried accent-folded.
+async function searchPersonLinkedinViaApify(
+  name: string, company: string, orgLinkedinUrl: string | null, deadline: number,
+): Promise<{ linkedin_url: string | null; observed_title: string | null; observed_company: string | null } | null> {
+  const cleaned = name.replace(/^(dr|prof|professor|mr|mrs|ms)\.?\s+/i, "").trim();
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  const search = async (first: string, last: string, extra: Record<string, unknown> = {}) =>
+    await runApifyActorAndGetItems(APIFY_LINKEDIN_PERSON_SEARCH_ACTOR, {
+      firstName: first, lastName: last, profileScraperMode: "Short", maxPages: 1, maxItems: 10, ...extra,
+    }, Math.max(3000, Math.min(20000, deadline - Date.now() - 20000)));  // ~3-7s in practice; capped so it can't eat the fallback's time
+
+  let items = await search(tokens[0], tokens.slice(1).join(" "));
+  if (!items.length) {
+    const folded = foldForMatch(cleaned).split(/\s+/);
+    if (folded.join(" ") !== cleaned.toLowerCase()) items = await search(folded[0], folded.slice(1).join(" "));
+  }
+  const pick = (candidates: any[]): any | null => {
+    if (candidates.length === 1) return candidates[0];
+    if (company) {
+      const matching = candidates.filter((c) => c.position && headlineMentionsCompany(c.position, company));
+      if (matching.length === 1) return matching[0];
+    }
+    return null;
+  };
+  let chosen = pick(items);
+  if (!chosen && items.length > 1 && orgLinkedinUrl) {
+    const narrowed = await search(tokens[0], tokens.slice(1).join(" "), { currentCompanies: [orgLinkedinUrl] });
+    chosen = pick(narrowed);
+  }
+  if (!chosen?.linkedinUrl) return null;
+  const headline = splitHeadline(chosen.position ?? "");
+  return {
+    linkedin_url: normalizeLinkedinUrl(chosen.linkedinUrl),
+    observed_title: headline.title,
+    observed_company: headline.company,
+  };
+}
+
 // Pure search+verify step, no DB writes - shared by the initial attempt and
 // the name-order-swapped retry below. Google-style search for "linkedin
 // <name>, <title>, <company>", then checks the resulting linkedin.com/in/
@@ -2700,7 +2800,23 @@ const FIND_ORG_LINKEDIN_SCHEMA = {
 // at the first one that's actually verifiable as this person from what the
 // search result says about them - rather than returning the top hit
 // unconditionally.
-async function searchPersonLinkedinCandidate(name: string, title: string, company: string, timeoutMs: number) {
+async function searchPersonLinkedinCandidate(
+  name: string, title: string, company: string, deadline: number, orgLinkedinUrl: string | null = null,
+  allowWebSearch = true,
+) {
+  // The fast path (see searchPersonLinkedinViaApify) - any failure there just
+  // means "use the web search below", never a failed lookup.
+  try {
+    const viaApify = await searchPersonLinkedinViaApify(name, company, orgLinkedinUrl, deadline);
+    if (viaApify?.linkedin_url) return viaApify;
+  } catch {
+    // fall through to the web search
+  }
+  if (!allowWebSearch) return { linkedin_url: null, observed_title: null, observed_company: null };
+  // Whatever's left of the caller's budget, up to the measured 44-68s a
+  // web-search call takes - and not worth starting with under 20s left.
+  const timeoutMs = Math.min(65000, deadline - Date.now() - 5000);
+  if (timeoutMs < 20000) return { linkedin_url: null, observed_title: null, observed_company: null };
   const who = [name, title, company].filter(Boolean).join(", ");
   const prompt = `Search for: linkedin ${who}
 
@@ -2714,7 +2830,7 @@ If none of the candidates confidently match, return null for everything - never 
 
 ${NEVER_GUESS}`;
 
-  const data = await openRouterCall(prompt, "find_person_linkedin", FIND_PERSON_LINKEDIN_SCHEMA, timeoutMs);
+  const data = await openRouterCall(prompt, "find_person_linkedin", FIND_PERSON_LINKEDIN_SCHEMA, timeoutMs, timeoutMs);
   return {
     linkedin_url: normalizeLinkedinUrl(data.linkedin_url),
     observed_title: data.observed_title || null,
@@ -2744,10 +2860,20 @@ ${NEVER_GUESS}`;
 async function findPersonLinkedin(
   personId: string, name: string, title: string, company: string, organizationId: string,
 ) {
-  const PERSON_SEARCH_TIMEOUT_MS = 25000;
+  // The web-search fallback was measured at 44-68s a call; the old 25s limit
+  // cut nearly every one off and reported "not found". Every step here
+  // shares one deadline well inside the edge function's 150s wall-clock
+  // kill, each taking only what's left of it. The swapped-name retry is
+  // Apify-only - a minute of web search on a reordered guess rarely pays off.
+  const deadline = Date.now() + 120000;
+  let orgLinkedinUrl: string | null = null;
+  if (organizationId) {
+    const orgRows = await supabaseRequest("GET", "organizations", { params: { id: `eq.${organizationId}`, select: "linkedin_url" } });
+    orgLinkedinUrl = orgRows?.[0]?.linkedin_url ?? null;
+  }
   let result;
   try {
-    result = await searchPersonLinkedinCandidate(name, title, company, PERSON_SEARCH_TIMEOUT_MS);
+    result = await searchPersonLinkedinCandidate(name, title, company, deadline, orgLinkedinUrl);
   } catch {
     result = { linkedin_url: null, observed_title: null, observed_company: null };
   }
@@ -2755,10 +2881,10 @@ async function findPersonLinkedin(
 
   if (!result.linkedin_url) {
     const tokens = name.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length >= 2) {
+    if (tokens.length >= 2 && deadline - Date.now() > 10000) {
       const swapped = [...tokens].reverse().join(" ");
       try {
-        const swappedResult = await searchPersonLinkedinCandidate(swapped, title, company, PERSON_SEARCH_TIMEOUT_MS);
+        const swappedResult = await searchPersonLinkedinCandidate(swapped, title, company, deadline, orgLinkedinUrl, false);
         if (swappedResult.linkedin_url) {
           result = swappedResult;
           renamedTo = swapped;
@@ -3381,7 +3507,8 @@ Deno.serve(async (req) => {
 
     const personApifyMatch = path.match(/^\/people\/([^/]+)\/enrich-from-apify$/);
     if (personApifyMatch && req.method === "POST") {
-      return json(await enrichPersonFromApify(personApifyMatch[1]));
+      const { updated, timings } = await enrichPersonFromApify(personApifyMatch[1]);
+      return json(updated, 200, { "Server-Timing": `apify;dur=${timings.apifyMs}, db;dur=${timings.dbMs}` });
     }
 
     const personMergeMatch = path.match(/^\/people\/([^/]+)\/merge-into$/);
