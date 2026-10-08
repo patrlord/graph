@@ -915,6 +915,7 @@ function countryCellFor(entity, freeText) {
 let orgListCache = [];   // whatever's currently loaded (search/filter/sort already applied server-side, see reloadOrgList/loadMoreOrgs)
 let selectedOrg = null;   // full org detail incl. .people (membership rows)
 let selectedPersonId = null;
+let peopleViewToken = 0;  // bumped by every renderPeopleList/reloadPeopleList - a slow server fetch that finds the token changed when it lands is stale (the user has since picked an org, toggled a filter, ...) and is dropped
 let peopleListIsSchool = false;  // the "global"-mode people list is a school's alumni (not the server-side search) - decides how its download button exports
 let peopleForceGlobal = false;  // true after "Clear" is pressed: show all people regardless of org selection
 
@@ -978,7 +979,10 @@ function showApp(user) {
   checkForDuplicatePeople();
 }
 
+let appShownForUserId = null;  // who showApp last initialized the app for - see the onAuthStateChange handler
+
 function showLogin() {
+  appShownForUserId = null;
   document.getElementById("loginScreen").style.display = "block";
   document.getElementById("main").style.display = "none";
   document.getElementById("signedInAs").style.display = "none";
@@ -997,9 +1001,22 @@ function showLogin() {
 // Every other event with a session (TOKEN_REFRESHED, USER_UPDATED, ...)
 // is left alone; the api() helper reads a fresh token from sb.auth on
 // every call regardless, so there's nothing more to do for those anyway.
+//
+// SIGNED_IN itself also re-fires, with no sign-in having happened, whenever
+// the browser tab regains focus (supabase-js re-validates the stored
+// session on visibilitychange and reports it as SIGNED_IN again) - which
+// ran showApp's "show all people, clear the org scope" reset every time
+// the user switched back to the tab. Hence appShownForUserId: once the app
+// has been initialized for this user, further SIGNED_IN/INITIAL_SESSION
+// events for the same user are ignored (showLogin clears it, so a real
+// sign-out followed by a sign-in still initializes normally).
 sb.auth.onAuthStateChange((event, session) => {
   if (event === "SIGNED_OUT" || !session) { showLogin(); return; }
-  if (event === "SIGNED_IN" || event === "INITIAL_SESSION") showApp(session.user);
+  if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
+    if (appShownForUserId === session.user.id) return;
+    appShownForUserId = session.user.id;
+    showApp(session.user);
+  }
 });
 
 // ---------- shared render helpers ----------
@@ -2710,6 +2727,7 @@ function peopleComparator() {
 }
 
 function renderPeopleList(items, mode) {
+  peopleViewToken++;
   currentPeopleMode = mode;
   const normalized = normalizePeopleItems(items, mode);
   let filtered = includePastRoles ? normalized : normalized.filter(item => item.is_current !== false);
@@ -3979,6 +3997,7 @@ async function fetchPeoplePage(offset, withCounts) {
 // existing cheap client-side filter/render there, unchanged from before
 // pagination; only the global "all people" case is actually paginated.
 async function reloadPeopleList() {
+  const token = ++peopleViewToken;
   const q = document.getElementById("peopleSearchInput").value.trim().toLowerCase();
   if (selectedOrg && !peopleForceGlobal) {
     const filtered = !q ? selectedOrg.people : selectedOrg.people.filter(m =>
@@ -3997,6 +4016,7 @@ async function reloadPeopleList() {
   peoplePageIndex = 0;
   peopleHasMore = true;
   const { rows, hasMore, totalCount, enrichedLastMonthCount } = await fetchPeoplePage(0, true);
+  if (token !== peopleViewToken) return;  // superseded while this was loading - e.g. an org was selected meanwhile
   peoplePageIndex = 1;
   peopleHasMore = hasMore;
   peopleTotalCount = totalCount;
@@ -4019,8 +4039,10 @@ async function loadMorePeople() {
   if (peopleLoadingMore || !peopleHasMore || currentPeopleMode !== "global") return;
   peopleLoadingMore = true;
   document.getElementById("peopleLoadingMore").style.display = "block";
+  const token = peopleViewToken;
   try {
     const { rows, hasMore } = await fetchPeoplePage(peoplePageIndex * LIST_PAGE_SIZE);
+    if (token !== peopleViewToken) return;  // the list was replaced while this page loaded
     peoplePageIndex += 1;
     peopleHasMore = hasMore;
     if (!rows.length) return;
