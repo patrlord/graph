@@ -248,6 +248,10 @@
   .org-header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .org-header h3 { margin: 0; font-size: 15.5px; }
   .org-header .entity-links { margin-top: 0; }
+  .type-checks { display: flex; flex-wrap: wrap; gap: 3px 14px; max-height: 118px; overflow-y: auto; font-size: 12px; padding: 4px 2px; }
+  .edit-field .type-checks label { display: inline-flex; align-items: center; gap: 4px; margin: 0; cursor: pointer; white-space: nowrap;
+    font-size: 12px; text-transform: none; letter-spacing: 0; color: #1c1c1c; font-weight: 400; }
+  .edit-field .type-checks input { width: auto; padding: 0; margin: 0; }
   .type-pill {
     display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
     background: #f0eee9; color: #6b6862; border: 1px solid #e2e0dc; text-transform: uppercase; letter-spacing: .03em;
@@ -533,7 +537,6 @@
           </div>
           <div id="orgHeaderEdit" class="edit-name-row" style="display:none">
             <input type="text" id="editOrgName" class="name-input" placeholder="Organization name">
-            <select id="editOrgType" class="type-select"></select>
           </div>
         </div>
         <div class="scroll-box">
@@ -561,6 +564,7 @@
             </div>
           </div>
           <div id="orgBodyEdit" style="display:none">
+            <div class="edit-field"><label>Types</label><div class="type-checks" id="editOrgTypes"></div></div>
             <div class="edit-field"><label for="editOrgWebsite">Website</label><div class="input-with-link"><input type="text" id="editOrgWebsite" placeholder="https://…"><a id="editOrgWebsiteOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
             <div class="edit-field"><label for="editOrgLinkedin">LinkedIn</label><div class="input-with-link"><input type="text" id="editOrgLinkedin" placeholder="https://www.linkedin.com/company/…"><a id="editOrgLinkedinOpen" target="_blank" rel="noopener" class="open-link" style="display:none">↗</a></div></div>
             <div class="edit-field"><label for="editOrgHqCountry">HQ location</label><input type="text" id="editOrgHqCountry" placeholder="e.g. London, UK"></div>
@@ -819,6 +823,15 @@ const FUNCTION_BASE = `${SUPABASE_URL}/functions/v1/graph-api`;
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // Keep in sync with ORG_TYPES/ALL_ORG_TYPE_SLUGS in the Edge Function and
 // the DB check constraint (migration_012) - no shared module to enforce that.
+// An org's types (multi-select, migration_029): org_types, falling back to
+// the single org_type for any row that predates it in a cached response.
+function orgTypeSlugs(o) {
+  return o.org_types && o.org_types.length ? o.org_types : (o.org_type ? [o.org_type] : []);
+}
+function orgTypeLabels(o) {
+  return orgTypeSlugs(o).map(t => ORG_TYPE_LABEL[t] || t);
+}
+
 const ORG_TYPE_LABEL = {
   vc: "VC", cvc: "CVC", angel: "Angel", angel_network: "Angel network", family_office: "Family office",
   investment_syndicate: "Investment syndicate", pe: "PE", asset_manager: "Asset manager",
@@ -1307,7 +1320,7 @@ function renderOrgList(orgs) {
       ${flagButtonsHtml(o)}
       <td class="li-name">${o.name}</td>
       <td>${countryCellFor(o, o.hq_country) || '<span class="none">—</span>'}</td>
-      <td>${ORG_TYPE_LABEL[o.org_type] || o.org_type || '<span class="none">—</span>'}</td>
+      <td title="${listCellTitle(orgTypeLabels(o))}">${listCellHtml(orgTypeLabels(o))}</td>
       <td title="${listCellTitle(o.sectors)}">${listCellHtml(o.sectors)}</td>
       <td title="${listCellTitle(o.investment_regions)}">${listCellHtml(o.investment_regions)}</td>
       <td class="col-li">${linkedinCellFor(o)}</td>
@@ -1432,6 +1445,7 @@ function wireOrgFilterableHeaders() {
 // The one shared popup (colFilterPopup) currently open for, or null.
 let activeColFilterField = null;
 let colFilterPendingValues = null;   // Set of raw values, mutated by checkbox clicks until Apply/Cancel
+const BLANK_FILTER_TOKEN = "__blank__";  // keep in sync with the Edge Function
 let colFilterGroups = null;          // this open's buildGroups() result, cached so the search box doesn't refetch
 
 function closeColumnFilterPopup() {
@@ -1478,6 +1492,11 @@ async function openColumnFilterPopup(field, thEl) {
   const options = await fetchOrgFilterOptions();
   if (activeColFilterField !== field) return;  // closed (or moved to another column) while that was in flight
   colFilterGroups = config.buildGroups(options[config.optionsKey] || []);
+  // "(Blanks)": orgs where this column is empty, offered first - only if
+  // there are any (options.blanks, see getOrgFilterOptions), so it's never a
+  // checkbox that matches nothing. The token is what the backend recognizes
+  // as "or empty" in the filter list.
+  if (options.blanks && options.blanks[config.optionsKey]) colFilterGroups.unshift({ label: "(Blanks)", values: [BLANK_FILTER_TOKEN] });
   colFilterPendingValues = new Set(config.get());
   renderColFilterOptionsList();
 
@@ -1652,6 +1671,7 @@ function applyOrgFindResult(org, data) {
   org.linkedin_url = data.linkedin_url;
   if (data.name) org.name = data.name;
   if (data.org_type) org.org_type = data.org_type;
+  if (data.org_types) org.org_types = data.org_types;
   if (data.sectors) org.sectors = data.sectors;
   if (data.hq_country) org.hq_country = data.hq_country;
   org.li_duplicate_of = data.duplicate_of || null;
@@ -1732,7 +1752,7 @@ async function useOrgLinkedinCandidate(candidate) {
       if (clash) nameClash = newName;
       else fields.name = newName;
     }
-    if (!selectedOrg.org_type && candidate.org_type) fields.org_type = candidate.org_type;
+    if (!orgTypeSlugs(selectedOrg).length && candidate.org_type) fields.org_type = candidate.org_type;
     if ((!selectedOrg.hq_country || selectedOrg.hq_country === "null") && candidate.hq) fields.hq_country = candidate.hq;
     if ((!selectedOrg.sectors || !selectedOrg.sectors.length) && candidate.industry) fields.sectors = [candidate.industry];
 
@@ -2042,7 +2062,7 @@ function renderOrgDetail(org) {
   document.getElementById("orgDetailContent").classList.add("shown");
   document.getElementById("detOrgName").textContent = org.name;
   syncDetailStar(document.getElementById("detOrgStarBtn"), org.is_starred);
-  document.getElementById("detOrgType").textContent = ORG_TYPE_LABEL[org.org_type] || org.org_type || "Unclassified";
+  document.getElementById("detOrgType").textContent = orgTypeLabels(org).join(" · ") || "Unclassified";
   document.getElementById("detOrgLinks").innerHTML = entityLinksHtml(org.website_url, org.linkedin_url, org.hq_country);
   const dupWarning = document.getElementById("detOrgDupWarning");
   dupWarning.innerHTML = orgDuplicateWarningHtml(org);
@@ -2075,11 +2095,10 @@ function renderOrgDetail(org) {
 
 function populateOrgEditForm(org) {
   document.getElementById("editOrgName").value = org.name || "";
-  document.getElementById("editOrgType").innerHTML =
-    `<option value=""${org.org_type ? "" : " selected"}>Unclassified</option>` +
-    Object.entries(ORG_TYPE_LABEL)
-      .sort(([, labelA], [, labelB]) => labelA.localeCompare(labelB))
-      .map(([v, label]) => `<option value="${v}"${v === org.org_type ? " selected" : ""}>${label}</option>`).join("");
+  const selectedTypes = new Set(orgTypeSlugs(org));
+  document.getElementById("editOrgTypes").innerHTML = Object.entries(ORG_TYPE_LABEL)
+    .sort(([, labelA], [, labelB]) => labelA.localeCompare(labelB))
+    .map(([v, label]) => `<label><input type="checkbox" value="${v}"${selectedTypes.has(v) ? " checked" : ""}>${label}</label>`).join("");
   document.getElementById("editOrgWebsite").value = org.website_url || "";
   document.getElementById("editOrgLinkedin").value = org.linkedin_url || "";
   document.getElementById("editOrgHqCountry").value = org.hq_country || "";
@@ -2142,7 +2161,7 @@ async function saveOrgEdits() {
   try {
     const fields = {
       name,
-      org_type: document.getElementById("editOrgType").value,
+      org_types: [...document.querySelectorAll("#editOrgTypes input:checked")].map(cb => cb.value),
       website_url: document.getElementById("editOrgWebsite").value.trim(),
       linkedin_url: document.getElementById("editOrgLinkedin").value.trim(),
       hq_country: document.getElementById("editOrgHqCountry").value.trim(),
@@ -2979,7 +2998,7 @@ function dupePersonSubtitle(p) {
 
 function dupeOrgSubtitle(o) {
   const bits = [];
-  bits.push(ORG_TYPE_LABEL[o.org_type] || o.org_type || "Unclassified");
+  bits.push(orgTypeLabels(o).join(" · ") || "Unclassified");
   if (o.hq_country) bits.push(o.hq_country);
   const linkedin = o.linkedin_url
     ? `<a class="li-link" href="${o.linkedin_url}" target="_blank" rel="noopener">${linkedinStub(o.linkedin_url)}</a>`
@@ -4304,7 +4323,7 @@ async function exportOrgDetail(btn) {
     const personLine = m => `- ${m.people.full_name}${m.title ? ` — ${m.title}` : ""}${m.is_current ? "" : " (past)"}`;
     const doc = mdDocument([
       `# ${org.name}\n`,
-      [`**${ORG_TYPE_LABEL[org.org_type] || org.org_type || "Unclassified"}**`, org.hq_country].filter(Boolean).join(" · ") + "\n",
+      [`**${orgTypeLabels(org).join(" · ") || "Unclassified"}**`, org.hq_country].filter(Boolean).join(" · ") + "\n",
       [link("Website", org.website_url), link("LinkedIn", org.linkedin_url)].filter(Boolean).join("\n") + "\n",
       org.sectors && org.sectors.length ? `**Sectors:** ${org.sectors.join(", ")}\n` : "",
       org.description ? `${org.description}\n` : "",

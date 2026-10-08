@@ -23,7 +23,7 @@
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true&countries=France,Germany&org_types=vc,cvc&sectors=Fintech&investment_regions=Europe
+//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true&countries=France,Germany&org_types=vc,cvc (overlap on org_types[])&sectors=Fintech&investment_regions=Europe
 //     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, investment_regions, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
 //     (is_starred/is_hidden filter server-side here now (starred_only/show_hidden), same for jpl_only (connected_to_user) - the main org list is
 //     paginated (see limit/offset below) so it can no longer filter client-side against data it hasn't loaded. q searches name or hq_country,
@@ -47,7 +47,8 @@
 //     (org_type "employer" - past employers pulled from LinkedIn experience history, see enrich-from-apify - excluded unless include_employers=true.
 //     connected_to_user: true if any person with a membership at this org - past or current - is themselves flagged
 //     is_user, or is connected to one via a person<->person row in `connections`; see getUserConnectedPersonIds)
-//   GET    /organizations/filter-options -> { countries: [string, ...], org_types: [string, ...], sectors: [string, ...], investment_regions: [string, ...] }
+//   GET    /organizations/filter-options -> { countries: [string, ...], org_types: [string, ...], sectors: [string, ...], investment_regions: [string, ...], blanks: {countries, org_types, sectors, investment_regions: bool} }
+//     (each of countries/org_types/sectors/investment_regions on GET /organizations also accepts the value __blank__ = "or empty")
 //     (checked ahead of GET /organizations/:id below, same reason as .../duplicate-candidates - backs the org list's column-header filter
 //     dropdowns' checkbox options: every distinct non-null value currently on any organization for that field, alphabetical. Deliberately NOT
 //     scoped to the current include_employers/show_hidden/other-filter state - see getOrgFilterOptions)
@@ -65,7 +66,7 @@
 //     group is fine. A different combination sharing the same name fingerprint - e.g. a third org added later -
 //     still surfaces, since that's a genuinely new set the user hasn't judged)
 //   POST   /organizations       { organization, people } -> saved { organization, people }
-//     organization fields: name, org_type, website_url, linkedin_url, hq_country, description,
+//     organization fields: name, org_type (the primary type; a DB trigger keeps it = org_types[1], see migration_029), org_types[] (all types), website_url, linkedin_url, hq_country, description,
 //     sectors[]; plus investor-profile fields not touched by research (ticket_size, investment_stages[],
 //     investment_regions[], fund_type_raw) - sourced only from list-style bulk imports, merge-only-blanks
 //     like everything else here
@@ -876,6 +877,9 @@ async function computeConnectedOrgIds(): Promise<Set<string>> {
   return connectedOrgIds;
 }
 
+// Sent in a filter list (countries/org_types/sectors/investment_regions) to also match rows where that column is empty.
+const BLANK_FILTER_TOKEN = "__blank__";
+
 const ORG_SORT_COLUMNS = new Set(["name", "hq_country", "org_type", "updated_at"]);
 
 type ListOrganizationsOptions = {
@@ -938,7 +942,7 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
     // second array column now shown as its own list column (index.html).
     select: opts.full
       ? "*"
-      : "id,name,org_type,website_url,linkedin_url,hq_country,country_code,sectors,investment_regions,updated_at,is_starred,is_hidden,li_profile_fetched_at",
+      : "id,name,org_type,org_types,website_url,linkedin_url,hq_country,country_code,sectors,investment_regions,updated_at,is_starred,is_hidden,li_profile_fetched_at",
     order: `${sortColumn}.${sortDir}`,
   };
   // org_type <> 'employer' would silently also exclude NULL org_type rows -
@@ -955,10 +959,28 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
   // "employer" under Type while "Include past employers" is off still
   // yields nothing, same as it would for any other filter combination that
   // can't simultaneously be satisfied).
-  if (opts.countries?.length) params.hq_country = inList(opts.countries);
-  if (opts.orgTypes?.length) params.org_type = inList(opts.orgTypes);
-  if (opts.sectors?.length) params.sectors = arrayOverlap(opts.sectors);
-  if (opts.investmentRegions?.length) params.investment_regions = arrayOverlap(opts.investmentRegions);
+  //
+  // Each dropdown also offers "(Blanks)" (BLANK_FILTER_TOKEN in the list):
+  // that adds "OR the column is empty" to just that one filter. PostgREST
+  // can't take two top-level `or=` params (and `or` is already taken by the
+  // employer exclusion below), so any filter that includes blanks goes into
+  // one `and=(or(...),or(...))` instead.
+  const blankAware = (column: string, values: string[] | undefined, array: boolean) => {
+    if (!values?.length) return;
+    const real = values.filter((v) => v !== BLANK_FILTER_TOKEN);
+    const match = array ? arrayOverlap(real) : inList(real);
+    if (!values.includes(BLANK_FILTER_TOKEN)) { params[column] = match; return; }
+    const parts = real.length ? [`${column}.${match}`] : [];
+    parts.push(array ? `${column}.eq.{}` : `${column}.is.null`);
+    if (!array) parts.push(`${column}.eq.""`);
+    blankOr.push(`or(${parts.join(",")})`);
+  };
+  const blankOr: string[] = [];
+  blankAware("hq_country", opts.countries, false);
+  blankAware("org_types", opts.orgTypes, true);
+  blankAware("sectors", opts.sectors, true);
+  blankAware("investment_regions", opts.investmentRegions, true);
+  if (blankOr.length) params.and = `(${blankOr.join(",")})`;
 
   // jpl_only used to add `?id=in.(<every connected org id>)` - that list
   // commonly runs into the thousands, and stuffing it into the URL blew
@@ -1014,15 +1036,20 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
 // is currently classified as doesn't show up as a dead-end checkbox.
 async function getOrgFilterOptions() {
   const rows = await supabaseRequestAllPages("organizations", {
-    select: "hq_country,org_type,sectors,investment_regions",
+    select: "hq_country,org_types,sectors,investment_regions",
   });
   const countries = new Set<string>();
   const orgTypes = new Set<string>();
   const sectors = new Set<string>();
   const investmentRegions = new Set<string>();
+  const blanks = { countries: false, org_types: false, sectors: false, investment_regions: false };
   for (const r of rows) {
+    if (!r.hq_country) blanks.countries = true;
+    if (!(r.org_types ?? []).length) blanks.org_types = true;
+    if (!(r.sectors ?? []).length) blanks.sectors = true;
+    if (!(r.investment_regions ?? []).length) blanks.investment_regions = true;
     if (r.hq_country) countries.add(r.hq_country);
-    if (r.org_type) orgTypes.add(r.org_type);
+    for (const t of r.org_types ?? []) if (t) orgTypes.add(t);
     for (const s of r.sectors ?? []) if (s) sectors.add(s);
     for (const region of r.investment_regions ?? []) if (region) investmentRegions.add(region);
   }
@@ -1032,6 +1059,7 @@ async function getOrgFilterOptions() {
     org_types: sortedList(orgTypes),
     sectors: sortedList(sectors),
     investment_regions: sortedList(investmentRegions),
+    blanks,  // which of the four lists have at least one empty row, so "(Blanks)" is only offered where it can match something
   };
 }
 
@@ -1078,7 +1106,7 @@ function sectorTagInstructions(existingTags: string[]): string {
 // everyone rather than fetch in two steps.
 async function findDuplicateOrgCandidates() {
   const [rows, dismissed] = await Promise.all([
-    supabaseRequestAllPages("organizations", { select: "id,name,org_type,linkedin_url,hq_country,li_company_id" }),
+    supabaseRequestAllPages("organizations", { select: "id,name,org_type,org_types,linkedin_url,hq_country,li_company_id" }),
     getDismissedDuplicateKeys("organization"),
   ]);
   const rowsById = new Map((rows ?? []).map((r: any) => [r.id, r]));
@@ -1094,7 +1122,7 @@ async function findDuplicateOrgCandidates() {
     .map((ids) => ids.map((id) => rowsById.get(id)))
     .filter((g) => g.length > 1 && !dismissed.has(groupMemberKey(g.map((o: any) => o.id))))
     .map((g) => ({
-      orgs: g.map((o: any) => ({ id: o.id, name: o.name, org_type: o.org_type, linkedin_url: o.linkedin_url, hq_country: o.hq_country })),
+      orgs: g.map((o: any) => ({ id: o.id, name: o.name, org_type: o.org_type, org_types: o.org_types, linkedin_url: o.linkedin_url, hq_country: o.hq_country })),
     }));
 }
 
@@ -2046,7 +2074,7 @@ async function findOrgLinkedinByCompanyId(
     params: { linkedin_url: `eq.${resolvedUrl}`, id: `neq.${orgId}`, select: "id,name", limit: "1" },
   });
   return {
-    linkedin_url: updated.linkedin_url, name: updated.name, org_type: updated.org_type,
+    linkedin_url: updated.linkedin_url, name: updated.name, org_type: updated.org_type, org_types: updated.org_types,
     sectors: updated.sectors, hq_country: updated.hq_country,
     duplicate_of: clash?.[0] ? { id: clash[0].id, name: clash[0].name } : null,
     name_clash: rename.name_clash, candidates: [],
@@ -3223,7 +3251,7 @@ ${NEVER_GUESS}`;
   const duplicateOf = clash?.[0] ? { id: clash[0].id, name: clash[0].name } : null;
 
   return {
-    linkedin_url: updated.linkedin_url, name: updated.name, org_type: updated.org_type,
+    linkedin_url: updated.linkedin_url, name: updated.name, org_type: updated.org_type, org_types: updated.org_types,
     sectors: updated.sectors, hq_country: updated.hq_country,
     duplicate_of: duplicateOf, name_clash: rename.name_clash, candidates: [],
   };
@@ -3411,7 +3439,7 @@ Deno.serve(async (req) => {
     if (orgIdMatch && req.method === "PATCH") {
       const body = await req.json();
       const fields = pickDefined(body, [
-        "name", "org_type", "website_url", "linkedin_url", "hq_country", "country_code", "description",
+        "name", "org_type", "org_types", "website_url", "linkedin_url", "hq_country", "country_code", "description",
         "sectors", "ticket_size", "investment_stages", "investment_regions", "fund_type_raw",
         "is_starred", "is_hidden",
       ]);
@@ -3429,6 +3457,15 @@ Deno.serve(async (req) => {
           return json({ error: `An organization named "${clash[0].name}" already exists - pick a different name, or merge into it instead.` }, 409);
         }
         fields.name = newName;
+      }
+      if ("org_types" in fields) {
+        // The multi-select: wins over org_type if both are sent (the DB trigger,
+        // migration_029, then sets org_type to the first one).
+        const types = Array.isArray(fields.org_types) ? [...new Set<string>(fields.org_types.filter(Boolean))] : [];
+        const bad = types.find((t) => !ALL_ORG_TYPE_SLUGS.includes(t));
+        if (bad) return json({ error: `org_types may only contain: ${ALL_ORG_TYPE_SLUGS.join(", ")} (got "${bad}")` }, 400);
+        fields.org_types = types;
+        delete fields.org_type;
       }
       if ("org_type" in fields) {
         if (fields.org_type && !ALL_ORG_TYPE_SLUGS.includes(fields.org_type)) {
