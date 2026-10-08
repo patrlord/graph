@@ -169,7 +169,8 @@
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
 //   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, name, org_type, sectors, hq_country, duplicate_of, name_clash, candidates }
-//     (when the org already has li_company_id - LinkedIn's own numeric id for it, see migration_027 - tries findOrgLinkedinByCompanyId FIRST: resolves it via the
+//     (order: li_company_id (below), then a NAME search with the same Apify company actor (input `searches`, ~9s, accepted only if the result's website
+//     or name matches the org's - see findOrgLinkedinByNameSearch), then the slow LLM web search. When the org already has li_company_id - LinkedIn's own numeric id for it, see migration_027 - tries findOrgLinkedinByCompanyId FIRST: resolves it via the
 //     Apify company actor fed https://www.linkedin.com/company/<id> instead of a name search, which has no name-collision risk at all and, on success, also fully
 //     enriches the org in the same call (applyApifyCompanyData) since the actor's response is the full company profile either way. Falls back to the LLM name
 //     search below only if that isn't available or doesn't resolve. Either path: saved if found; sectors/hq_country/org_type only filled if currently blank; name is
@@ -1915,6 +1916,17 @@ function formatEmployeeRange(range: any): string | null {
 // li_experience/li_education on people. Funding data comes nested under
 // fundingData (numFundingRounds, lastFundingRound) rather than as flat
 // top-level fields.
+// The actor returns the phone as {number, extension}, which was being saved
+// as that object's JSON text and displayed raw - store just "number" /
+// "number x123".
+function formatLinkedinPhone(phone: unknown): string | null {
+  if (!phone) return null;
+  if (typeof phone === "string") return phone;
+  const p = phone as { number?: unknown; extension?: unknown };
+  if (!p.number) return null;
+  return `${p.number}${p.extension ? ` x${p.extension}` : ""}`;
+}
+
 function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string, any> {
   const founded = company.foundedOn;
   const foundedYear = typeof founded === "number" ? founded : (typeof founded?.year === "number" ? founded.year : null);
@@ -1930,7 +1942,7 @@ function mapApifyCompanyToLiFields(company: Record<string, any>): Record<string,
     li_company_id: (company.companyId || company.id) ? String(company.companyId || company.id) : null,
     li_universal_name: company.universalName || null,
     li_company_type: company.companyType || null,
-    li_phone: company.phone || null,
+    li_phone: formatLinkedinPhone(company.phone),
     li_employee_count: typeof company.employeeCount === "number" ? company.employeeCount : null,
     li_employee_count_range: formatEmployeeRange(company.employeeCountRange),
     li_follower_count: typeof company.followerCount === "number" ? company.followerCount : null,
@@ -1993,9 +2005,80 @@ async function renameOrgIfPossible(orgId: string, currentName: string, candidate
 // logic either caller needs. extraFields lets the company-id path also set
 // linkedin_url itself, which mapApifyCompanyToLiFields never touches (in
 // the normal enrich flow linkedin_url is the input, not an output).
+// LinkedIn's own industry names -> org types (high signal, unlike free text).
+// Left out on purpose: "Financial Services" (far too broad),
+// "Non-profit Organization Management" and "Staffing and Recruiting" (could
+// be several types). "Venture Capital and Private Equity Principals" is
+// handled separately in suggestOrgTypes since it covers both vc and pe.
+const LI_INDUSTRY_TO_TYPES: Record<string, string[]> = {
+  "investment banking": ["investment_bank"],
+  "banking": ["bank"],
+  "insurance": ["insurer"], "insurance carriers": ["insurer"], "insurance agencies and brokerages": ["insurer"],
+  "investment management": ["asset_manager"],
+  "law practice": ["legal"], "legal services": ["legal"],
+  "accounting": ["audit_accounting"],
+  "business consulting and services": ["consulting"], "strategic management services": ["consulting"],
+  "higher education": ["university"],
+  "executive search services": ["exec_search"],
+  "advertising services": ["media_agency"], "public relations and communications services": ["media_agency"],
+  "marketing services": ["media_agency"],
+  "professional organizations": ["association"],
+};
+
+function linkedinIndustryNames(company: Record<string, any>): string[] {
+  return (Array.isArray(company.industries) ? company.industries : [])
+    .map((i: any) => (typeof i === "string" ? i : i?.name || i?.title || i?.localizedName))
+    .filter(Boolean);
+}
+
+// Suggested org_types for an org that has none: from LinkedIn's industry
+// names, plus a few unambiguous phrases in the FIRST SENTENCE of its
+// description/tagline only ("X is a family office ...") - later sentences
+// mention customers, investors and programs it belongs to, which say
+// nothing about what the org itself is. Conservative: [] when unsure.
+function suggestOrgTypes(company: Record<string, any>, description: string | null | undefined): string[] {
+  const types = new Set<string>();
+  const industries = linkedinIndustryNames(company).map((n: string) => n.toLowerCase());
+  for (const ind of industries) for (const t of LI_INDUSTRY_TO_TYPES[ind] ?? []) types.add(t);
+  const intro = `${company.tagline ?? ""}. ${description ?? company.description ?? ""}`.toLowerCase().split(/(?<=[.!?])\s/).slice(0, 2).join(" ");
+  const ventureCue = /\b(venture capital|venture fund|vc fund|vc firm|early[- ]stage investor)\b/.test(intro);
+  const peCue = /\b(private equity|buyouts?|growth equity)\b/.test(intro);
+  if (ventureCue) types.add("vc");
+  if (peCue) types.add("pe");
+  if (industries.includes("venture capital and private equity principals") && !ventureCue && !peCue) types.add("vc");
+  if (/\bfamily office\b/.test(intro)) types.add("family_office");
+  if (/\b(business angels?|angel (network|investors?|group))\b/.test(intro)) types.add("angel_network");
+  if (/\b(accelerator|incubator)\b/.test(intro)) types.add("incubator_accelerator");
+  if (/\binvestment bank\b/.test(intro)) types.add("investment_bank");
+  if (/\basset manag(er|ement)\b/.test(intro)) types.add("asset_manager");
+  return [...types];
+}
+
+// Industries that describe what KIND of organization it is (covered by
+// suggestOrgTypes), not a sector - never sector tags.
+const LI_TYPE_LIKE_INDUSTRIES = new Set([
+  "financial services", "venture capital and private equity principals", "capital markets",
+  ...Object.keys(LI_INDUSTRY_TO_TYPES), "non-profit organization management", "staffing and recruiting",
+]);
+
+// Suggested sectors for an org that has none: only a LinkedIn industry that
+// loosely matches (accent/case/punctuation-insensitive) a sector tag
+// ALREADY in use by 2+ orgs - never a new tag, since keeping the tag list
+// free of near-duplicates is the point of getEstablishedSectorTags.
+async function suggestSectors(company: Record<string, any>): Promise<string[]> {
+  const industries = linkedinIndustryNames(company).filter((n: string) => !LI_TYPE_LIKE_INDUSTRIES.has(n.toLowerCase()));
+  if (!industries.length) return [];
+  const loose = (t: string) => foldForMatch(t).replace(/[&/,\-]/g, " ").replace(/\s+/g, " ").trim();
+  const established = new Map((await getEstablishedSectorTags()).map((t) => [loose(t), t]));
+  return [...new Set(industries.map((n: string) => established.get(loose(n))).filter(Boolean) as string[])];
+}
+
 async function applyApifyCompanyData(
   orgId: string,
-  org: { name: string; website_url?: string | null; hq_country?: string | null; description?: string | null },
+  org: {
+    name: string; website_url?: string | null; hq_country?: string | null; description?: string | null;
+    org_types?: string[] | null; sectors?: string[] | null;
+  },
   company: Record<string, any>,
   extraFields: Record<string, any> = {},
 ) {
@@ -2007,6 +2090,16 @@ async function applyApifyCompanyData(
   const hqCountry = hqLocationText(fields.li_headquarter);
   if ((!org.hq_country || org.hq_country === "null") && hqCountry) fields.hq_country = hqCountry;
   if (!org.description && company.description) fields.description = company.description;
+  // Blank-only, and only when the caller told us the current values (an
+  // undefined org_types/sectors means "unknown" - leave it alone).
+  if (Array.isArray(org.org_types) && !org.org_types.length) {
+    const types = suggestOrgTypes(company, org.description || company.description);
+    if (types.length) fields.org_types = types;
+  }
+  if (Array.isArray(org.sectors) && !org.sectors.length) {
+    const sectors = await suggestSectors(company);
+    if (sectors.length) fields.sectors = sectors;
+  }
 
   const rename = await renameOrgIfPossible(orgId, org.name, company.name);
   if (rename.name) fields.name = rename.name;
@@ -2021,7 +2114,7 @@ async function applyApifyCompanyData(
 
 async function enrichOrgFromApify(orgId: string) {
   const rows = await supabaseRequest("GET", "organizations", {
-    params: { id: `eq.${orgId}`, select: "name,linkedin_url,website_url,hq_country,description" },
+    params: { id: `eq.${orgId}`, select: "name,linkedin_url,website_url,hq_country,description,org_types,sectors" },
   });
   const org = rows?.[0];
   if (!org) throw new HttpError(404, "organization not found");
@@ -2063,6 +2156,15 @@ async function findOrgLinkedinByCompanyId(
     return null;
   }
   if (!company) return null;
+  return await saveFoundCompany(orgId, org, company);
+}
+
+// Shared tail of the two Apify-based finds (by LinkedIn company id, by name
+// search): the actor's company record IS the full profile, so saving the
+// URL also saves everything else it returned (applyApifyCompanyData) - the
+// same end state as a Find followed by an Enrich. null if the record carries
+// no usable URL.
+async function saveFoundCompany(orgId: string, org: any, company: Record<string, any>) {
   const resolvedUrl = normalizeLinkedinUrl(
     company.linkedinUrl || (company.universalName ? `https://www.linkedin.com/company/${company.universalName}` : null),
   );
@@ -2079,6 +2181,36 @@ async function findOrgLinkedinByCompanyId(
     duplicate_of: clash?.[0] ? { id: clash[0].id, name: clash[0].name } : null,
     name_clash: rename.name_clash, candidates: [],
   };
+}
+
+// Looks the company up by NAME with the same Apify actor
+// (harvestapi/linkedin-company, input `searches`): one best match with its
+// full profile, ~9s - against 44-68s for the LLM web search below. A name
+// search can return a different company that just shares the name (a
+// 45-org check against stored URLs: 4 of 45 top results were, e.g. "Key
+// Capital" -> KeyBanc Capital Markets, "PSV" -> the football club), so the
+// result is only accepted if its website matches the org's, or its name
+// matches (accent/legal-suffix-insensitive, orgNameFingerprint) with no
+// website conflict. That accepted 36 of those 45, every one correct, and
+// rejected all four wrong ones. null = "not confident" (nothing found or not
+// verifiable) and the caller falls back to the LLM search, which also
+// handles several look-alike candidates.
+async function findOrgLinkedinByNameSearch(orgId: string, org: any, websiteUrl: string) {
+  if (!org.name) return null;
+  let company: Record<string, any> | undefined;
+  try {
+    company = (await runApifyActorAndGetItems(APIFY_LINKEDIN_COMPANY_ACTOR, { searches: [org.name] }, 45000))[0];
+  } catch {
+    return null;
+  }
+  if (!company?.name) return null;
+  const ours = domainFromUrl(websiteUrl || org.website_url);
+  const theirs = domainFromUrl(company.website);
+  const websiteMatches = !!(ours && theirs && ours === theirs);
+  const websiteConflicts = !!(ours && theirs && ours !== theirs);
+  const nameMatches = orgNameFingerprint(company.name) === orgNameFingerprint(org.name);
+  if (!(websiteMatches || (nameMatches && !websiteConflicts))) return null;
+  return await saveFoundCompany(orgId, org, company);
 }
 
 // ---------- Schools / education (normalized from profile.education) ----------
@@ -3171,13 +3303,16 @@ async function findOrgLinkedin(orgId: string, name: string, websiteUrl: string, 
   const rows = await supabaseRequest("GET", "organizations", {
     params: {
       id: `eq.${orgId}`,
-      select: "name,org_type,description,sectors,ticket_size,investment_stages,investment_regions,hq_country,website_url,li_company_id",
+      select: "name,org_type,org_types,description,sectors,ticket_size,investment_stages,investment_regions,hq_country,website_url,li_company_id",
     },
   });
   const current = rows?.[0] || {};
 
   const byCompanyId = await findOrgLinkedinByCompanyId(orgId, current);
   if (byCompanyId) return byCompanyId;
+
+  const byNameSearch = await findOrgLinkedinByNameSearch(orgId, current, websiteUrl);
+  if (byNameSearch) return byNameSearch;
 
   const effectiveWebsite = websiteUrl || current.website_url || "";
   const effectiveCountry = country || current.hq_country || "";
