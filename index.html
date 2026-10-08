@@ -78,6 +78,8 @@
   .panel-header h2 { font-size: 13.5px; margin: 0; font-weight: 600; white-space: nowrap; }
   .panel-title-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .list-count { font-size: 11.5px; color: #8a877e; }
+  .jpl-check { margin-left: 12px; font-size: 11.5px; color: #5a5750; cursor: pointer; white-space: nowrap; }
+  .jpl-check input { margin: 0 3px 0 0; vertical-align: -2px; }
   .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; flex: none;
     background: #fff; color: #5a5750; border: 1px solid #cfcdc7; border-radius: 4px; cursor: pointer; }
   .icon-btn:hover:not(:disabled) { background: #f0eeea; color: #1c1c1c; }
@@ -3211,8 +3213,7 @@ function showPersonDetail(person) {
   // it as if it were their role at all; always resolved (as HTML, "Company
   // — Title" per current role) by loadPersonCareerSections below.
   document.getElementById("detPersonMeta").innerHTML = "";
-  document.getElementById("detPersonLinks").innerHTML =
-    entityLinksHtml(null, person.linkedin_url, person.country) + personNetworkStatsHtml(person);
+  renderPersonLinks(person);
   document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
   setupAboutClamp();
   loadPersonCareerSections(person);
@@ -3241,8 +3242,7 @@ async function loadPersonLinkedinDetail(person) {
     const photoEl = document.getElementById("detPersonPhoto");
     if (person.li_photo_url) { photoEl.src = person.li_photo_url; photoEl.style.display = "block"; }
     else { photoEl.style.display = "none"; photoEl.removeAttribute("src"); }
-    document.getElementById("detPersonLinks").innerHTML =
-      entityLinksHtml(null, person.linkedin_url, person.country) + personNetworkStatsHtml(person);
+    renderPersonLinks(person);
     document.getElementById("detPersonLinkedinProfile").innerHTML = linkedinProfileHtml(person);
     setupAboutClamp();
     updatePersonEnrichStatus(person);
@@ -3279,7 +3279,40 @@ function personNetworkStatsHtml(person) {
   const stats = [];
   if (typeof person.li_connections_count === "number") stats.push(`${person.li_connections_count} connections`);
   if (typeof person.li_follower_count === "number") stats.push(`${person.li_follower_count} followers`);
-  return stats.length ? `<span style="margin-left:12px;">${stats.join(" · ")}</span>` : "";
+  // A team member (is_user) is "jpl" by definition - shown ticked and
+  // locked; the flag itself is changed in Edit.
+  const jpl = `<label class="jpl-check" title="${person.is_user ? "A team member" : "Connected to a team member"}">` +
+    `<input type="checkbox" id="detPersonJplCheckbox"${person.connected_to_user || person.is_user ? " checked" : ""}${person.is_user ? " disabled" : ""}>jpl</label>`;
+  return (stats.length ? `<span style="margin-left:12px;">${stats.join(" · ")}</span>` : "") + jpl;
+}
+
+// Sets the links line (LinkedIn/country/stats/jpl checkbox) and wires the
+// checkbox - the one place both showPersonDetail and loadPersonLinkedinDetail
+// render it, so it's never left without its handler.
+function renderPersonLinks(person) {
+  document.getElementById("detPersonLinks").innerHTML =
+    entityLinksHtml(null, person.linkedin_url, person.country) + personNetworkStatsHtml(person);
+  const cb = document.getElementById("detPersonJplCheckbox");
+  if (cb) cb.addEventListener("change", () => toggleTeamConnection(person, cb));
+}
+
+async function toggleTeamConnection(person, cb) {
+  const wanted = cb.checked;
+  cb.disabled = true;
+  try {
+    const res = await api(`/people/${person.id}/team-connection`, { method: "POST", body: JSON.stringify({ connected: wanted }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Update failed");
+    person.connected_to_user = data.connected_to_user;
+    syncPersonInOrgList(person.id, "connected_to_user", data.connected_to_user);
+    for (const item of currentPeopleItems) if (item.id === person.id) item.connected_to_user = data.connected_to_user;
+    renderPeopleTableBody();
+  } catch (err) {
+    cb.checked = !wanted;
+    alert(err.message);
+  } finally {
+    cb.disabled = false;
+  }
 }
 
 // Shows "Read more" only if the about text actually overflows its 3-line

@@ -125,7 +125,10 @@
 //   POST   /people/:id/memberships  { organization_id | organization_name, title?, focus?, is_current? (default true) } -> membership
 //     (manual "Add role": links the person to an existing org by id, or by name - matched like saveOrganization, else a new blank-type org
 //     is created; marked is_manual so LinkedIn syncs never close it. Additive - other current roles are left alone; the same person/org/title is updated rather than duplicated)
-//   GET    /people/:id          -> full person row (select=*, every li_* field included) - fetched once a person is actually opened
+//   POST   /people/:id/team-connection  { connected: bool } -> { connected_to_user }  (the person pane's "jpl" checkbox: adds one person<->person
+//     connection from the first is_user person, or removes every connection between this person and any is_user person; refused for an
+//     is_user person themselves)
+//   GET    /people/:id          -> full person row (+ connected_to_user) (select=*, every li_* field included) - fetched once a person is actually opened
 //     in the detail pane (see loadPersonLinkedinDetail in index.html), not carried by every row in a list of thousands
 //   PATCH  /people/:id          { any subset of full_name, linkedin_url, country, country_code, is_user, is_starred, is_hidden, is_ba } -> updated person (direct set, same as organizations PATCH)
 //   DELETE /memberships/:id     -> { ok: true }  (only a manually-added role, is_manual - LinkedIn-synced ones are refused with 404)
@@ -783,6 +786,44 @@ async function saveOrganization(payload: any) {
   }
 
   return { organization: org, people: savedPeople, organization_existed: orgExisted };
+}
+
+// The "jpl" checkbox in the person pane: is this one person connected to a
+// team member (a person flagged is_user) - themselves flagged, or a
+// person<->person row in `connections` to one, either direction. A targeted
+// version of getUserConnectedPersonIds (which scans every connection for the
+// whole list) for when only one person matters.
+async function personTeamConnection(personId: string): Promise<{ isUser: boolean; userIds: string[]; rowIds: string[] }> {
+  const users = await supabaseRequest("GET", "people", { params: { is_user: "eq.true", select: "id", order: "created_at.asc" } });
+  const userIds: string[] = (users ?? []).map((u: any) => u.id);
+  const isUser = userIds.includes(personId);
+  if (!userIds.length || isUser) return { isUser, userIds, rowIds: [] };
+  const list = `(${userIds.join(",")})`;
+  const rows = await supabaseRequest("GET", "connections", {
+    params: {
+      entity_a_type: "eq.person", entity_b_type: "eq.person",
+      or: `(and(entity_a_id.eq.${personId},entity_b_id.in.${list}),and(entity_b_id.eq.${personId},entity_a_id.in.${list}))`,
+      select: "id",
+    },
+  });
+  return { isUser, userIds, rowIds: (rows ?? []).map((r: any) => r.id) };
+}
+
+// Ticking adds one person<->person connection from the first team member;
+// unticking removes every connection between this person and any team
+// member, including ones that came from a LinkedIn-connections import.
+async function setPersonTeamConnection(personId: string, connected: boolean) {
+  const { isUser, userIds, rowIds } = await personTeamConnection(personId);
+  if (isUser) throw new HttpError(400, "This person is a team member themselves - change that with \"is user\" in Edit.");
+  if (connected && !rowIds.length) {
+    if (!userIds.length) throw new HttpError(400, "No team member exists to connect to - flag a person as is_user first.");
+    await supabaseRequest("POST", "connections", {
+      body: { entity_a_type: "person", entity_a_id: userIds[0], entity_b_type: "person", entity_b_id: personId, relationship_type: "team_connection" },
+    });
+  } else if (!connected && rowIds.length) {
+    await supabaseRequest("DELETE", "connections", { params: { id: `in.(${rowIds.join(",")})` } });
+  }
+  return { connected_to_user: connected };
 }
 
 // Person ids "in the user's network": everyone flagged is_user themselves,
@@ -3301,7 +3342,13 @@ Deno.serve(async (req) => {
     if (personIdMatch && req.method === "GET") {
       const rows = await supabaseRequest("GET", "people", { params: { id: `eq.${personIdMatch[1]}`, select: "*" } });
       if (!rows?.length) return json({ error: "person not found" }, 404);
-      return json(rows[0]);
+      const conn = await personTeamConnection(personIdMatch[1]);
+      return json({ ...rows[0], connected_to_user: conn.isUser || conn.rowIds.length > 0 });
+    }
+    const teamConnectionMatch = path.match(/^\/people\/([^/]+)\/team-connection$/);
+    if (teamConnectionMatch && req.method === "POST") {
+      const body = await req.json();
+      return json(await setPersonTeamConnection(teamConnectionMatch[1], !!body.connected));
     }
     if (personIdMatch && req.method === "PATCH") {
       const body = await req.json();
