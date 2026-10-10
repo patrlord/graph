@@ -78,6 +78,9 @@
   .panel-header h2 { font-size: 13.5px; margin: 0; font-weight: 600; white-space: nowrap; }
   .panel-title-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .list-count { font-size: 11.5px; color: #8a877e; }
+  .unverified-flag { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 5px;
+    border-radius: 50%; background: #fff4e0; color: #b26b00; font-size: 10px; font-weight: 700; cursor: help; vertical-align: 1px; }
+  .unverified-note { margin-left: 12px; font-size: 11.5px; color: #b26b00; }
   .jpl-check { margin-left: 12px; font-size: 11.5px; color: #5a5750; cursor: pointer; white-space: nowrap; }
   .jpl-check input { margin: 0 3px 0 0; vertical-align: -2px; }
   .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; flex: none;
@@ -2403,6 +2406,25 @@ async function mergeSelectedOrg() {
 // A "N options" (multiple LinkedIn candidates, see applyOrgFindResult's
 // caller below) shows up as a badge in the list either way, exactly like a
 // plain row Find button, so there's nothing to resolve immediately.
+// Second step of org research, run on its result BEFORE saving it: reads the
+// org's own team pages for senior investment people and checks each person on
+// LinkedIn (POST /research/refine - people it can't confirm come back flagged
+// li_unverified). Best-effort: any failure just means the unrefined research
+// is saved as it was.
+async function refineResearchData(data) {
+  if (!data.organization || !data.organization.name) return data;
+  try {
+    const res = await api("/research/refine", {
+      method: "POST", body: JSON.stringify({ organization: data.organization, people: data.people || [] }),
+    });
+    if (!res.ok) return data;
+    const refined = await res.json();
+    return { ...data, organization: refined.organization, people: refined.people };
+  } catch {
+    return data;
+  }
+}
+
 async function enrichSelectedOrg() {
   if (!selectedOrg) return;
   const orgId = selectedOrg.id;
@@ -2417,8 +2439,10 @@ async function enrichSelectedOrg() {
       method: "POST",
       body: JSON.stringify({ name: org.name, linkedin_url: org.linkedin_url || "" }),
     });
-    const data = await res.json();
+    let data = await res.json();
     if (!res.ok) throw new Error(data.error || "Research failed");
+    if (isCurrent()) status.textContent = "Checking team pages and LinkedIn…";
+    data = await refineResearchData(data);
     const saveRes = await apiWithRetry("/organizations", { method: "POST", body: JSON.stringify(data) });
     const saveData = await saveRes.json();
     if (!saveRes.ok) throw new Error(saveData.error || "Save failed");
@@ -2825,7 +2849,7 @@ function renderPeopleTableBody() {
   listEl.innerHTML = currentPeopleItems.map(p => `
     <tr data-id="${p.id}">
       ${flagButtonsHtml(p)}
-      <td class="li-name">${p.full_name}</td>
+      <td class="li-name">${p.full_name}${p.li_unverified ? '<span class="unverified-flag" title="Couldn\'t confirm this person on LinkedIn at their organization - check them">?</span>' : ""}</td>
       <td>${countryCellFor(p, p.country) || '<span class="none">—</span>'}</td>
       <td${p.roles && p.roles.length > 1 ? ` title="${roleCellTitle(p)}"` : ""}>${roleCellHtml(p)}</td>
       <td class="col-company"${currentPeopleMode === "global" && p.roles && p.roles.length > 1 ? ` title="${companyCellTitle(p)}"` : ""}>${companyCellHtml(p)}</td>
@@ -3320,7 +3344,10 @@ function personNetworkStatsHtml(person) {
   // locked; the flag itself is changed in Edit.
   const jpl = `<label class="jpl-check" title="${person.is_user ? "A team member" : "Connected to a team member"}">` +
     `<input type="checkbox" id="detPersonJplCheckbox"${person.connected_to_user || person.is_user ? " checked" : ""}${person.is_user ? " disabled" : ""}>jpl</label>`;
-  return (stats.length ? `<span style="margin-left:12px;">${stats.join(" · ")}</span>` : "") + jpl;
+  const unverified = person.li_unverified
+    ? `<span class="unverified-note" title="Added from research, but a LinkedIn name search couldn't confirm them at their organization">⚠ not verified on LinkedIn <a href="#" id="clearUnverifiedLink">mark checked</a></span>`
+    : "";
+  return (stats.length ? `<span style="margin-left:12px;">${stats.join(" · ")}</span>` : "") + jpl + unverified;
 }
 
 // Sets the links line (LinkedIn/country/stats/jpl checkbox) and wires the
@@ -3331,6 +3358,17 @@ function renderPersonLinks(person) {
     entityLinksHtml(null, person.linkedin_url, person.country) + personNetworkStatsHtml(person);
   const cb = document.getElementById("detPersonJplCheckbox");
   if (cb) cb.addEventListener("change", () => toggleTeamConnection(person, cb));
+  const clearLink = document.getElementById("clearUnverifiedLink");
+  if (clearLink) clearLink.addEventListener("click", async e => {
+    e.preventDefault();
+    const res = await api(`/people/${person.id}`, { method: "PATCH", body: JSON.stringify({ li_unverified: false }) });
+    if (!res.ok) return;
+    person.li_unverified = false;
+    syncPersonInOrgList(person.id, "li_unverified", false);
+    for (const item of currentPeopleItems) if (item.id === person.id) item.li_unverified = false;
+    renderPersonLinks(person);
+    renderPeopleTableBody();
+  });
 }
 
 async function toggleTeamConnection(person, cb) {
@@ -4410,9 +4448,11 @@ async function startBulkOrgAdd() {
         method: "POST",
         body: JSON.stringify({ name: items[i].name, linkedin_url: items[i].linkedin_url }),
       });
-      const data = await res.json();
+      let data = await res.json();
       if (!res.ok) throw new Error(data.error || "Research failed");
       if (!data.organization.name) throw new Error("Could not identify this firm");
+      setBulkStatus(statusEls[i], "working", "Checking team pages and LinkedIn…");
+      data = await refineResearchData(data);
       const saveRes = await apiWithRetry("/organizations", { method: "POST", body: JSON.stringify(data) });
       const saveData = await saveRes.json();
       if (!saveRes.ok) throw new Error(saveData.error || "Save failed");

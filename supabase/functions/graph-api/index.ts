@@ -22,6 +22,10 @@
 //   POST   /research            { name?, linkedin_url? } -> { organization, people }  (org_type is identified by research, not supplied)
 //     organization also carries ticket_size, investment_stages[], investment_regions[], fund_type_raw
 //     when research finds them; investment_regions falls back to [hq_country] if research finds nothing
+//   POST   /research/refine  { organization, people } -> { organization, people, refine: {website_checked, website_people_added, verified, unverified, unchecked} }
+//     (call on a /research result BEFORE saving it: reads the org's own team/leadership/about pages and merges in senior investment people named
+//     there, then looks each person up on LinkedIn by name via Apify - a confident hit sets/corrects linkedin_url, no hit sets li_unverified: true,
+//     which POST /organizations saves on newly-created people; cleared by Find/Enrich/a hand-entered URL or PATCH li_unverified)
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
 //   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true&countries=France,Germany&org_types=vc,cvc (overlap on org_types[])&sectors=Fintech&investment_regions=Europe
 //     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, investment_regions, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
@@ -296,7 +300,13 @@ async function supabaseRequest(
   const res = await fetchWithTimeout(url, {
     method,
     headers,
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    // Postgres text/jsonb can't hold a NUL (\u0000) - one stray in an LLM or
+    // scraper string (reported enriching "2A Capital": 22P05 "\u0000 cannot
+    // be converted to text") failed the whole insert - so every string going
+    // to the database has them stripped here, at the one place all writes pass.
+    body: opts.body !== undefined
+      ? JSON.stringify(opts.body, (_key, value) => (typeof value === "string" ? value.replace(/\u0000/g, "") : value))
+      : undefined,
   }, 20000);
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 500);
@@ -747,7 +757,7 @@ async function saveOrganization(payload: any) {
       }))[0];
     } else {
       person = (await supabaseRequest("POST", "people", {
-        body: personFields,
+        body: p.li_unverified === true ? { ...personFields, li_unverified: true } : personFields,
         prefer: "return=representation",
       }))[0];
     }
@@ -1366,7 +1376,7 @@ async function searchPeopleGlobal(opts: SearchPeopleOptions): Promise<{ rows: an
     // a single cheap timestamp, not one of the heavy fields - so the bulk
     // "Enrich all" button (runEnrichAllPeople in index.html) can tell who's
     // already been enriched without a per-person fetch.
-    select: `${opts.full ? "*" : "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,li_profile_fetched_at"},memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))`,
+    select: `${opts.full ? "*" : "id,full_name,linkedin_url,country,country_code,is_user,is_starred,is_hidden,is_ba,li_unverified,li_profile_fetched_at"},memberships(id,organization_id,is_current,updated_at,title,focus,start_date,end_date,organizations(id,name))`,
     order: "full_name.asc",
   };
   if (opts.starredOnly) params.is_starred = "eq.true";
@@ -1874,6 +1884,7 @@ async function enrichPersonFromApify(personId: string) {
   // actor plausibly uses.
   const nameFromProfile = stripPictograms(profile.fullName || profile.name || [profile.firstName, profile.lastName].filter(Boolean).join(" "));
   if (nameFromProfile) fields.full_name = nameFromProfile;
+  fields.li_unverified = false;  // fetched by its LinkedIn URL - whatever flagged them is settled
 
   const updated = (await supabaseRequest("PATCH", "people", {
     params: { id: `eq.${personId}` },
@@ -2497,7 +2508,7 @@ function applyInvestmentRegionFallback(org: Record<string, any>) {
 // passes a shorter timeoutMs specifically so two sequential calls still fit
 // safely inside the 150s budget - see there for why that one case is worth it.
 async function openRouterCall(
-  userContent: string, schemaName: string, jsonSchema: any, timeoutMs = 45000, maxTotalMs = 100000,
+  userContent: string, schemaName: string, jsonSchema: any, timeoutMs = 45000, maxTotalMs = 100000, useWebSearch = true,
 ): Promise<any> {
   if (!OPENROUTER_API_KEY) throw new HttpError(503, "OPENROUTER_API_KEY is not configured.");
 
@@ -2533,7 +2544,7 @@ async function openRouterCall(
         body: JSON.stringify({
           model: OPENROUTER_MODEL,
           messages: [{ role: "user", content: userContent }],
-          plugins: [{ id: "web", engine: "native", max_results: 10 }],
+          ...(useWebSearch ? { plugins: [{ id: "web", engine: "native", max_results: 10 }] } : {}),
           response_format: { type: "json_schema", json_schema: { name: schemaName, strict: true, schema: jsonSchema } },
         }),
       }, attemptTimeoutMs);
@@ -2756,6 +2767,212 @@ ${NEVER_GUESS}`;
   if (data.organization.name) await backfillFromApollo(data.organization);
   applyInvestmentRegionFallback(data.organization);
   return data;
+}
+
+// ---------- research refinement: the company's own team pages + LinkedIn check ----------
+//
+// researchOrganization's people come from a general web search - it never
+// opens the company's own site, and nothing checks they're real. The
+// frontend calls POST /research/refine on that result before saving it:
+//   1. reads the site's team/leadership/about pages and has the model list
+//      the senior investment people named there (merged into the list), and
+//   2. looks every person up on LinkedIn by name (Apify, see
+//      searchPersonLinkedinViaApify) - a confident hit fills/corrects their
+//      LinkedIn URL, no hit sets li_unverified so the UI flags them.
+
+const WEBSITE_TEAM_SCHEMA = {
+  type: "object",
+  properties: {
+    people: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          full_name: { type: "string" },
+          title: { type: ["string", "null"] },
+          linkedin_url: { type: ["string", "null"] },
+        },
+        required: ["full_name", "title", "linkedin_url"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["people"],
+  additionalProperties: false,
+};
+
+// This function fetches URLs the research step (an LLM) supplied, so it only
+// follows plain public http(s) hosts - never localhost, private ranges or
+// IPv6 literals.
+function isPublicHttpUrl(u: URL): boolean {
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const h = u.hostname.toLowerCase();
+  if (!h.includes(".") || h === "localhost" || h.endsWith(".local") || h.endsWith(".internal") || h.includes(":")) return false;
+  const ip = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (ip) {
+    const [a, b] = [Number(ip[1]), Number(ip[2])];
+    if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return false;
+  }
+  return true;
+}
+
+async function fetchHtml(url: string, timeoutMs: number): Promise<string | null> {
+  let u: URL;
+  try { u = new URL(url); } catch { return null; }
+  if (!isPublicHttpUrl(u)) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);  // covers reading the body too, unlike fetchWithTimeout
+  try {
+    const res = await fetch(u.toString(), {
+      signal: controller.signal, redirect: "follow",
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; GraphBot/1.0)", Accept: "text/html" },
+    });
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("html")) return null;
+    return (await res.text()).slice(0, 1_500_000);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Visible text, with each linkedin.com/in link kept inline as
+// "[linkedin: url]" so the model can attach it to the person beside it.
+function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<a\s[^>]*href=["']([^"']*linkedin\.com\/in\/[^"']*)["'][^>]*>/gi, " [linkedin: $1] ")
+    .replace(/<\/(p|div|li|h[1-6]|tr|section|article)>|<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#160;/g, " ").replace(/&amp;/g, "&").replace(/&#8217;|&rsquo;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&#?\w+;/g, " ")
+    .replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
+}
+
+// Same-site links that look like a team/leadership/about page, best first.
+// Matched on whole path segments or the link's exact text - the first version
+// matched substrings and ranked "/finance-management", "/solutions/teams/..."
+// and "/assurance-sante/tech" as team pages on big marketing sites, crowding
+// out the real one.
+function findTeamLinks(html: string, base: URL): string[] {
+  const strongSegment = /(?:^|[/_-])(?:team|our-team|the-team|people|our-people|leadership|leadership-team|management-team|executive-team|executives|investment-team|investment-professionals|founders|equipe|équipe|notre-equipe|ueber-uns|über-uns)(?:$|[/_-])/i;
+  const strongText = /^(?:our |the |meet the |meet our |notre )?(?:team|people|leadership|management|management team|leadership team|équipe|equipe|founders)$/i;
+  const weakSegment = /(?:^|[/_-])(?:about|about-us|company|who-we-are|partners|qui-sommes-nous|a-propos|à-propos)(?:$|[/_-])/i;
+  const skip = /\/(?:solutions?|products?|blog|news|resources?|ressources|careers|jobs|customers|case-stud|insights|press|events|webinars?|guides?)(?:\/|$)/i;
+  const scored = new Map<string, number>();
+  const withoutScripts = html.replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ");
+  const re = /<a\s[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  const host = base.hostname.replace(/^www\./, "");
+  while ((m = re.exec(withoutScripts))) {
+    let u: URL;
+    try { u = new URL(m[1], base); } catch { continue; }
+    if (!isPublicHttpUrl(u) || u.hostname.replace(/^www\./, "") !== host) continue;
+    if (/\.(pdf|jpe?g|png|gif|svg|zip|docx?|pptx?)$/i.test(u.pathname) || skip.test(u.pathname)) continue;
+    const text = m[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    const score = strongSegment.test(u.pathname) || strongText.test(text) ? 3 : weakSegment.test(u.pathname) ? 1 : 0;
+    if (!score || u.pathname === "/" || u.pathname === base.pathname) continue;
+    u.hash = "";
+    const key = u.toString();
+    scored.set(key, Math.max(scored.get(key) ?? 0, score));
+  }
+  // Best score first, then the shorter (higher-level) path.
+  return [...scored.entries()]
+    .sort((a, b) => b[1] - a[1] || new URL(a[0]).pathname.length - new URL(b[0]).pathname.length)
+    .slice(0, 3).map(([url]) => url);
+}
+
+async function fetchTeamPagesText(websiteUrl: string): Promise<string> {
+  const home = await fetchHtml(websiteUrl, 8000);
+  if (!home) return "";
+  const pages = await Promise.all(findTeamLinks(home, new URL(websiteUrl)).map((l) => fetchHtml(l, 7000)));
+  const parts = [`HOME PAGE:\n${htmlToText(home).slice(0, 3000)}`];
+  pages.forEach((html, i) => { if (html) parts.push(`PAGE ${i + 1}:\n${htmlToText(html).slice(0, 8000)}`); });
+  return parts.join("\n\n").slice(0, 20000);
+}
+
+// Org types whose "senior people" means the investment team - everything else
+// (startups, banks, consultancies, universities, ... or no type at all) gets
+// its general senior leadership instead.
+const INVESTOR_ORG_TYPES = new Set([
+  "vc", "cvc", "angel", "angel_network", "family_office", "investment_syndicate", "pe", "asset_manager",
+  "investment_bank", "secondary", "incubator_accelerator",
+]);
+
+async function extractPeopleFromWebsite(
+  orgName: string, text: string, isInvestor: boolean,
+): Promise<{ full_name: string; title: string | null; linkedin_url: string | null }[]> {
+  const who = isInvestor
+    ? `an investment organization.
+
+List the senior people on the INVESTMENT side of this organization that it names - partners, principals, managing directors, heads of investment/venture/private equity, investment team members, and its founders and CEO. Exclude functional C-suite and staff (marketing, technology, operations, legal/compliance, finance/CFO, HR, assistants), and exclude board members, advisors, investors in the organization, portfolio-company executives and former employees unless the text shows they work on this organization's investment team.`
+    : `an organization.
+
+List its senior leadership that the text names - CEO/managing director, founders, partners, and the heads of its main business lines or functions (C-suite, directors, department heads). Exclude board members and advisors who aren't also executives, investors, customers/clients, people quoted in testimonials or case studies, partner-company staff, former employees, and junior staff or assistants.`;
+  const prompt = `Below is text copied from the website of "${orgName}", ${who} Only people literally named in the text below; never add anyone from memory. Give each person's title exactly as written. Set linkedin_url only if a "[linkedin: ...]" link appears right next to that person; otherwise null. If the text doesn't name any such people, return an empty list.
+
+${text}`;
+  const data = await openRouterCall(prompt, "website_team", WEBSITE_TEAM_SCHEMA, 40000, 45000, false);
+  return (data.people ?? []).filter((p: any) => p.full_name && p.full_name.trim().split(/\s+/).length >= 2).slice(0, 25);
+}
+
+async function refineResearch(payload: any) {
+  const startedAt = Date.now();
+  const org = payload.organization ?? {};
+  const people: any[] = (Array.isArray(payload.people) ? payload.people : []).map((p: any) => ({ ...p }));
+  const stats = { website_checked: false, website_people_added: 0, verified: 0, unverified: 0, unchecked: 0 };
+  if (!org.name) return { organization: org, people, refine: stats };
+
+  const siteUrl = normalizeWebsiteUrl(org.website_url);
+  if (siteUrl) {
+    try {
+      const text = await fetchTeamPagesText(siteUrl);
+      if (text.length > 400) {
+        stats.website_checked = true;
+        const byName = new Map<string, any>(people.map((p) => [nameFingerprint(p.full_name ?? ""), p]));
+        const orgTypes: string[] = Array.isArray(org.org_types) && org.org_types.length ? org.org_types : (org.org_type ? [org.org_type] : []);
+        for (const found of await extractPeopleFromWebsite(org.name, text, orgTypes.some((t) => INVESTOR_ORG_TYPES.has(t)))) {
+          const existing = byName.get(nameFingerprint(found.full_name));
+          if (existing) {
+            if (!existing.title && found.title) existing.title = found.title;
+            if (!existing.linkedin_url && found.linkedin_url) existing.linkedin_url = found.linkedin_url;
+          } else if (people.length < 30) {
+            const added = { full_name: found.full_name.trim(), title: found.title, focus: null, country: null, linkedin_url: found.linkedin_url };
+            people.push(added);
+            byName.set(nameFingerprint(added.full_name), added);
+            stats.website_people_added++;
+          }
+        }
+      }
+    } catch {
+      // best-effort - the unrefined list is still returned below
+    }
+  }
+
+  const orgLinkedinUrl = normalizeLinkedinUrl(org.linkedin_url);
+  const deadline = startedAt + 110000;
+  const queue = people.slice(0, 12);
+  stats.unchecked = people.length - queue.length;
+  const worker = async () => {
+    for (let p = queue.shift(); p; p = queue.shift()) {
+      if (Date.now() > deadline - 15000) { stats.unchecked++; continue; }
+      try {
+        const hit = await searchPersonLinkedinViaApify(p.full_name, org.name, orgLinkedinUrl, deadline);
+        if (hit?.linkedin_url) {
+          p.linkedin_url = hit.linkedin_url;
+          if (!p.title && hit.observed_title) p.title = hit.observed_title;
+          stats.verified++;
+        } else {
+          p.li_unverified = true;
+          stats.unverified++;
+        }
+      } catch {
+        stats.unchecked++;
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  return { organization: org, people, refine: stats };
 }
 
 const NEWS_JSON_SCHEMA = {
@@ -3072,7 +3289,7 @@ async function findPersonLinkedin(
     }
   }
 
-  const patchBody: Record<string, any> = { linkedin_url: linkedinUrl };
+  const patchBody: Record<string, any> = { linkedin_url: linkedinUrl, li_unverified: false };
   if (renamedTo) patchBody.full_name = renamedTo;
   await supabaseRequest("PATCH", "people", { params: { id: `eq.${personId}` }, body: patchBody });
 
@@ -3412,6 +3629,10 @@ Deno.serve(async (req) => {
       return json(await researchOrganization(name, linkedinUrl));
     }
 
+    if (req.method === "POST" && path === "/research/refine") {
+      return json(await refineResearch(await req.json()));
+    }
+
     if (req.method === "POST" && path === "/research-person") {
       const body = await req.json();
       return json(await researchPerson(
@@ -3650,9 +3871,12 @@ Deno.serve(async (req) => {
     }
     if (personIdMatch && req.method === "PATCH") {
       const body = await req.json();
-      const fields = pickDefined(body, ["full_name", "linkedin_url", "country", "country_code", "is_user", "is_starred", "is_hidden", "is_ba"]);
+      const fields = pickDefined(body, ["full_name", "linkedin_url", "country", "country_code", "is_user", "is_starred", "is_hidden", "is_ba", "li_unverified"]);
       if ("full_name" in fields && !String(fields.full_name ?? "").trim()) return json({ error: "full_name cannot be blank" }, 400);
-      if ("linkedin_url" in fields) fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);
+      if ("linkedin_url" in fields) {
+        fields.linkedin_url = normalizeLinkedinUrl(fields.linkedin_url);
+        if (fields.linkedin_url && !("li_unverified" in fields)) fields.li_unverified = false;  // a URL entered by hand has been looked at
+      }
       if (!Object.keys(fields).length) return json({ error: "no editable fields provided" }, 400);
       const updated = await supabaseRequest("PATCH", "people", {
         params: { id: `eq.${personIdMatch[1]}` },
