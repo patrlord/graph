@@ -3602,10 +3602,28 @@ ${NEVER_GUESS}`;
   });
   const duplicateOf = clash?.[0] ? { id: clash[0].id, name: clash[0].name } : null;
 
+  // Now that the URL is known, fetch the full company profile too (the same
+  // Apify actor the faster routes above get it from) so a Find that fell all
+  // the way back to the web search still saves everything - not just the URL
+  // - without a separate Enrich. Best-effort and time-boxed: the URL is
+  // already saved, so a failure here just leaves the profile for Enrich.
+  let final = updated;
+  let nameClash = rename.name_clash;
+  try {
+    const company = (await runApifyActorAndGetItems(APIFY_LINKEDIN_COMPANY_ACTOR, { companies: [linkedinUrl] }, 35000))[0];
+    if (company?.name) {
+      const applied = await applyApifyCompanyData(orgId, updated, company);
+      final = applied.updated;
+      nameClash = applied.rename.name_clash ?? nameClash;
+    }
+  } catch {
+    // leave it for Enrich
+  }
+
   return {
-    linkedin_url: updated.linkedin_url, name: updated.name, org_type: updated.org_type, org_types: updated.org_types,
-    sectors: updated.sectors, hq_country: updated.hq_country,
-    duplicate_of: duplicateOf, name_clash: rename.name_clash, candidates: [],
+    linkedin_url: final.linkedin_url, name: final.name, org_type: final.org_type, org_types: final.org_types,
+    sectors: final.sectors, hq_country: final.hq_country,
+    duplicate_of: duplicateOf, name_clash: nameClash, candidates: [],
   };
 }
 
