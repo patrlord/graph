@@ -78,6 +78,42 @@
   .panel-header h2 { font-size: 13.5px; margin: 0; font-weight: 600; white-space: nowrap; }
   .panel-title-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .list-count { font-size: 11.5px; color: #8a877e; }
+  #tabBar { display: none; gap: 2px; padding: 0 20px; max-width: 1800px; margin: 0 auto; width: 100%; border-bottom: 1px solid #e2e0dc; flex: 0 0 auto; }
+  #tabBar .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 16px; font-size: 13px; color: #6b6862; cursor: pointer; }
+  #tabBar .tab-btn:hover { color: #1c1c1c; }
+  #tabBar .tab-btn.active { color: #1c1c1c; font-weight: 600; border-bottom-color: #2b5a8a; }
+  #importView { display: none; flex: 1 1 auto; min-height: 0; padding: 20px; max-width: 1800px; margin: 0 auto; width: 100%; }
+  #importGrid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; width: 100%; height: 100%; min-height: 0; }
+  #importMain, #importPromptCard { height: 100%; min-height: 0; min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
+  #importEventBar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: #6b6862; margin-bottom: 8px; flex: 0 0 auto; }
+  #importEventBar input { padding: 4px 6px; font-size: 12px; border: 1px solid #d8d5cf; border-radius: 4px; width: 130px; }
+  #importTableWrap { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid #eeece7; border-radius: 6px; }
+  table.import-table { border-collapse: separate; border-spacing: 0; font-size: 12px; width: max-content; min-width: 100%; }
+  table.import-table th, table.import-table td { padding: 4px 8px; border-bottom: 1px solid #f1efeb; text-align: left; white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+  table.import-table thead th { position: sticky; background: #fff; z-index: 2; }
+  table.import-table thead tr:first-child th { top: 0; font-weight: 600; color: #3b3935; }
+  table.import-table thead tr:nth-child(2) th { top: 27px; border-bottom: 2px solid #e2e0dc; padding-bottom: 6px; }
+  table.import-table select { font-size: 11.5px; max-width: 220px; padding: 2px 3px; }
+  table.import-table select.mapped { border-color: #2b7a4b; background: #f1f9f4; }
+  table.import-table select.ai-mapped { border-color: #7a4bc0; background: #f6f1fc; }
+  table.import-table tr.unticked td { opacity: .42; }
+  table.import-table td.row-status { font-size: 11px; max-width: 280px; }
+  table.import-table td.row-status.ok { color: #2b7a4b; }
+  table.import-table td.row-status.error, table.import-table td.row-status.skipped { color: #b33; }
+  #importFooter { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex: 0 0 auto; flex-wrap: wrap; }
+  #importFooter .spacer { flex: 1 1 auto; }
+  #importPromptText { width: 100%; font-family: inherit; font-size: 12.5px; padding: 8px; border: 1px solid #d8d5cf; border-radius: 6px; resize: vertical; box-sizing: border-box; }
+  #importPromptLog { overflow-y: auto; flex: 1 1 auto; min-height: 0; margin-top: 10px; font-size: 12px; }
+  .prompt-log-item { border: 1px solid #eeece7; border-radius: 6px; padding: 7px 9px; margin-bottom: 8px; }
+  .prompt-log-item .q { font-weight: 600; margin-bottom: 2px; }
+  .prompt-log-item .a { color: #5a5750; }
+  .prompt-log-item.err { border-color: #e6bcbc; color: #a33; }
+  @media (max-width: 900px) {
+    #importView { overflow: auto; padding: 14px; }
+    #importGrid { grid-template-columns: minmax(0, 1fr); height: auto; }
+    #importMain { height: 75vh; }
+    #importPromptCard { height: auto; min-height: 300px; }
+  }
   .unverified-flag { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 5px;
     border-radius: 50%; background: #fff4e0; color: #b26b00; font-size: 10px; font-weight: 700; cursor: help; vertical-align: 1px; }
   .unverified-note { margin-left: 12px; font-size: 11.5px; color: #b26b00; }
@@ -447,6 +483,60 @@
     <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
     <button id="loginBtn">Sign in</button>
     <div id="loginStatus"></div>
+  </div>
+</div>
+
+<nav id="tabBar">
+  <button class="tab-btn active" data-tab="db">Database</button>
+  <button class="tab-btn" data-tab="import">Import</button>
+</nav>
+
+<div id="importView">
+  <div id="importGrid">
+    <div class="card" id="importMain">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <h2>Import a CSV</h2>
+          <span class="list-count" id="importCount"></span>
+        </div>
+        <div class="panel-tools">
+          <input type="file" id="importFile" accept=".csv,.tsv,.txt,text/csv,text/plain">
+          <button class="secondary tiny" id="importResuggestBtn" style="display:none" title="Ask the AI to re-suggest which database field each column should go to (replaces the current choices)">Re-suggest with AI</button>
+        </div>
+      </div>
+      <div id="importEventBar" style="display:none">
+        <strong>Event for every row (optional):</strong>
+        <input type="text" id="importEventName" placeholder="Event name">
+        <input type="text" id="importEventDate" placeholder="Date (2026-09-22)">
+        <input type="text" id="importEventLocation" placeholder="Location">
+        <input type="text" id="importEventRole" placeholder="Attendee role">
+        <span>(a column mapped to Event overrides these)</span>
+      </div>
+      <div class="detail-empty" id="importEmpty">Choose a CSV file to begin. Each column is matched to a database field (people, roles, organizations, events) - check the matches in the second header row, tick the rows you want, then import.<br><br>Existing people and organizations are matched and only their empty fields are filled; nothing already on file is overwritten.</div>
+      <div id="importTableWrap" style="display:none">
+        <table class="import-table"><thead id="importHead"></thead><tbody id="importBody"></tbody></table>
+        <div style="padding:8px;"><button class="secondary tiny" id="importMoreBtn" style="display:none"></button></div>
+      </div>
+      <div id="importFooter" style="display:none">
+        <span class="status-line" id="importSummary" style="margin:0"></span>
+        <span class="spacer"></span>
+        <label style="font-size:12px;">Show <select id="importShow"><option value="all">all rows</option><option value="ticked">ticked only</option><option value="unticked">unticked only</option></select></label>
+        <button class="secondary tiny" id="importTickAllBtn">Tick all</button>
+        <button class="secondary tiny" id="importUntickAllBtn">Untick all</button>
+        <button id="importRunBtn">Import</button>
+      </div>
+    </div>
+    <div class="card" id="importPromptCard">
+      <div class="panel-header"><h2>Which rows to keep?</h2></div>
+      <textarea id="importPromptText" rows="5" placeholder="Describe in plain English, e.g.&#10;Keep only people whose company is a bank or insurer, and whose country is France or Germany&#10;&#10;or: Untick everyone with no job title"></textarea>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+        <button id="importPromptBtn" disabled>Apply</button>
+        <button class="secondary tiny" id="importUndoBtn" disabled>Undo last</button>
+        <span class="status-line" id="importPromptStatus" style="margin:0"></span>
+      </div>
+      <div style="font-size:11px;color:#8a877e;margin-top:8px;">"Keep only…" ticks matching rows and unticks the rest. "Untick / remove / exclude…" clears matching rows. "Also include…" adds, "of those, only…" narrows further. It works on the text in your columns.</div>
+      <div id="importPromptLog"></div>
+    </div>
   </div>
 </div>
 
@@ -980,7 +1070,8 @@ async function signOut() { await sb.auth.signOut(); }
 
 function showApp(user) {
   document.getElementById("loginScreen").style.display = "none";
-  document.getElementById("main").style.display = "block";
+  document.getElementById("tabBar").style.display = "flex";
+  showTab("db");
   document.getElementById("signedInAs").textContent = user.email;
   document.getElementById("signedInAs").style.display = "inline";
   document.getElementById("signOutBtn").style.display = "inline";
@@ -999,6 +1090,8 @@ let appShownForUserId = null;  // who showApp last initialized the app for - see
 
 function showLogin() {
   appShownForUserId = null;
+  document.getElementById("tabBar").style.display = "none";
+  document.getElementById("importView").style.display = "none";
   document.getElementById("loginScreen").style.display = "block";
   document.getElementById("main").style.display = "none";
   document.getElementById("signedInAs").style.display = "none";
@@ -1851,8 +1944,21 @@ async function runFindAllOrgLinkedin(btnEl) {
     else failed++;
   };
 
-  for (const org of orgListCache) {
-    if (org.linkedin_url || seenIds.has(org.id)) continue;
+  // Anything that calls reloadOrgList mid-run - saving an edit to an org, a
+  // filter toggle - replaces orgListCache wholesale, so this snapshots what
+  // was loaded (and how far paging got) up front instead of re-reading it,
+  // and re-resolves each org to its CURRENT list object by id before
+  // updating it. Reading orgListCache.length after the first loop used to
+  // point the paging at the freshly reloaded list, and results written onto
+  // the old objects never showed up in the table - which looked like the run
+  // had stopped.
+  const snapshot = [...orgListCache];
+  let offset = snapshot.length;
+  let hasMore = orgHasMore;
+  for (const snap of snapshot) {
+    if (snap.linkedin_url || seenIds.has(snap.id)) continue;
+    const org = orgListCache.find(o => o.id === snap.id) || snap;
+    if (org.linkedin_url) continue;
     seenIds.add(org.id);
     done++;
     btnEl.textContent = `Finding… ${done}`;
@@ -1866,8 +1972,6 @@ async function runFindAllOrgLinkedin(btnEl) {
     }
   }
 
-  let offset = orgListCache.length;
-  let hasMore = orgHasMore;
   while (hasMore) {
     const { orgs } = await fetchOrgPage(offset);
     if (!orgs.length) break;
@@ -4421,6 +4525,415 @@ async function exportPersonDetail(btn) {
   });
 }
 
+// ---------- Import tab: CSV -> field matching -> English row filter -> import ----------
+
+// Keep in sync with IMPORT_FIELDS in the Edge Function.
+const IMPORT_FIELDS = [
+  ["people.full_name", "Person: full name", "Person"],
+  ["people.first_name", "Person: first name", "Person"],
+  ["people.last_name", "Person: last name", "Person"],
+  ["people.linkedin_url", "Person: LinkedIn URL", "Person"],
+  ["people.country", "Person: country", "Person"],
+  ["memberships.title", "Role: job title", "Role"],
+  ["memberships.focus", "Role: focus", "Role"],
+  ["memberships.start_date", "Role: start date", "Role"],
+  ["memberships.end_date", "Role: end date", "Role"],
+  ["organizations.name", "Organization: name", "Organization"],
+  ["organizations.website_url", "Organization: website", "Organization"],
+  ["organizations.linkedin_url", "Organization: LinkedIn URL", "Organization"],
+  ["organizations.hq_country", "Organization: HQ", "Organization"],
+  ["organizations.description", "Organization: description", "Organization"],
+  ["organizations.org_types", "Organization: type(s)", "Organization"],
+  ["organizations.sectors", "Organization: sectors", "Organization"],
+  ["organizations.ticket_size", "Organization: ticket size", "Organization"],
+  ["organizations.investment_stages", "Organization: investment stages", "Organization"],
+  ["organizations.investment_regions", "Organization: investment regions", "Organization"],
+  ["organizations.fund_type_raw", "Organization: fund type", "Organization"],
+  ["events.name", "Event: name", "Event"],
+  ["events.event_date", "Event: date", "Event"],
+  ["events.location", "Event: location", "Event"],
+  ["event_attendees.role", "Event: attendee role", "Event"],
+];
+const IMPORT_FIELD_LABEL = Object.fromEntries(IMPORT_FIELDS.map(([k, l]) => [k, l]));
+const IMPORT_CHUNK = 200;   // table rows rendered at a time
+const IMPORT_BATCH = 10;    // rows per POST /import/rows
+
+let importState = null;     // { fileName, headers, rows, mapping, mappingSource, selected, rowStatus, shown, history }
+
+// RFC-4180-style parse; the delimiter (comma / semicolon / tab - European
+// exports use semicolons) is whichever of them is commonest in the first line.
+function parseCsv(text) {
+  text = text.replace(/^﻿/, "");
+  const firstLine = text.split(/\r?\n/, 1)[0] || "";
+  const delim = [",", ";", "\t"].map(d => [d, firstLine.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = [];
+  let row = [], cell = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else inQuotes = false; }
+      else cell += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === delim) { row.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell); cell = "";
+      if (row.some(c => c.trim() !== "")) rows.push(row);
+      row = [];
+    } else cell += ch;
+  }
+  row.push(cell);
+  if (row.some(c => c.trim() !== "")) rows.push(row);
+  return rows;
+}
+
+// Header-name rules, first match wins; content checks refine the LinkedIn /
+// website columns. Used instantly on load; the AI fills what these miss.
+function guessImportField(header, values) {
+  const k = foldAccents(header.toLowerCase()).replace(/[^a-z0-9]+/g, " ").trim();
+  const mostly = re => { const v = values.filter(Boolean).slice(0, 40); return v.length >= 2 && v.filter(x => re.test(x)).length >= v.length * 0.6; };
+  if (mostly(/linkedin\.com\/company\//i)) return "organizations.linkedin_url";
+  if (mostly(/linkedin\.com\/in\//i)) return "people.linkedin_url";
+  if (/linkedin/.test(k)) return /(company|organi[sz]ation|firm|employer|page)/.test(k) ? "organizations.linkedin_url" : "people.linkedin_url";
+  if (/^(first name|firstname|given name|prenom|vorname|forename)$/.test(k)) return "people.first_name";
+  if (/^(last name|lastname|surname|family name|nom de famille|nachname)$/.test(k)) return "people.last_name";
+  if (/(event|attendee|delegate|badge|ticket|conference|summit|speaker).*(role|type|category)|^(attendee type|delegate type|badge type)$/.test(k)) return "event_attendees.role";
+  if (/(event|conference|summit).*(date)|^(event date)$/.test(k)) return "events.event_date";
+  if (/(event|conference|summit).*(location|venue|city)|^venue$/.test(k)) return "events.location";
+  if (/^(event|event name|conference|conference name|summit|evenement)$/.test(k)) return "events.name";
+  if (/^(company|company name|organi[sz]ation|organi[sz]ation name|firm|firm name|employer|current company|current employer|entreprise|societe|institution|account|account name|fund|fund name|investor|investor name)$/.test(k)) return "organizations.name";
+  if (/^(name|full name|fullname|contact|contact name|person|attendee|attendee name|delegate|delegate name|participant|nom complet|nom|investor contact)$/.test(k)) return "people.full_name";
+  if (/(job ?title|^title$|position|^role$|fonction|poste|designation|occupation|^function$)/.test(k)) return "memberships.title";
+  if (/(start date|date started|from date|^since$|^start$)/.test(k)) return "memberships.start_date";
+  if (/(end date|date ended|to date|^until$|^end$)/.test(k)) return "memberships.end_date";
+  if (/(website|web site|site web|homepage|^url$|^domain$|^web$)/.test(k)) return "organizations.website_url";
+  if (/(hq|headquarter|company country|organi[sz]ation country|company location|registered)/.test(k)) return "organizations.hq_country";
+  if (/(ticket|check size|cheque|investment size|deal size)/.test(k)) return "organizations.ticket_size";
+  if (/fund type/.test(k)) return "organizations.fund_type_raw";
+  if (/(stage)/.test(k)) return "organizations.investment_stages";
+  if (/(invest.*(region|geograph)|geograph|geo focus)/.test(k)) return "organizations.investment_regions";
+  if (/(sector|industry|industries|vertical|focus|secteur)/.test(k)) return "organizations.sectors";
+  if (/^(type|organi[sz]ation type|org type|firm type|company type|category|investor type|kind)$/.test(k)) return "organizations.org_types";
+  if (/(description|^about$|^bio$|summary|overview)/.test(k)) return "organizations.description";
+  if (/^(country|location|region|city|based in|pays|land)$/.test(k)) return "people.country";
+  return "";
+}
+
+function guessImportMapping(headers, rows) {
+  const taken = new Set();
+  return headers.map((h, i) => {
+    const f = guessImportField(h, rows.slice(0, 60).map(r => r[i] || ""));
+    if (!f || taken.has(f)) return "";
+    taken.add(f);
+    return f;
+  });
+}
+
+function mappingSelectHtml(i) {
+  const current = importState.mapping[i];
+  const groups = [...new Set(IMPORT_FIELDS.map(f => f[2]))];
+  return `<select class="import-map" data-col="${i}">` +
+    `<option value="">(ignore this column)</option>` +
+    groups.map(g => `<optgroup label="${g}">` +
+      IMPORT_FIELDS.filter(f => f[2] === g).map(([k, l]) => `<option value="${k}"${k === current ? " selected" : ""}>${l}</option>`).join("") +
+      `</optgroup>`).join("") + `</select>`;
+}
+
+function importVisibleIndices() {
+  const mode = document.getElementById("importShow").value;
+  const out = [];
+  for (let i = 0; i < importState.rows.length; i++) {
+    if (mode === "ticked" && !importState.selected[i]) continue;
+    if (mode === "unticked" && importState.selected[i]) continue;
+    out.push(i);
+  }
+  return out;
+}
+
+function renderImportHead() {
+  const st = importState;
+  document.getElementById("importHead").innerHTML =
+    `<tr><th><input type="checkbox" id="importHeadCheck" title="Tick / untick every row"></th><th>#</th>` +
+    st.headers.map(h => `<th title="${h.replace(/"/g, "&quot;")}">${h}</th>`).join("") + `<th>Result</th></tr>` +
+    `<tr><th></th><th></th>` + st.headers.map((h, i) => `<th>${mappingSelectHtml(i)}</th>`).join("") + `<th></th></tr>`;
+  refreshImportSelectStyles();
+  document.getElementById("importHeadCheck").addEventListener("change", e => {
+    st.selected.fill(e.target.checked);
+    renderImportBody(); updateImportSummary();
+  });
+  document.querySelectorAll("#importHead select.import-map").forEach(sel => sel.addEventListener("change", () => {
+    const i = parseInt(sel.dataset.col, 10);
+    st.mapping[i] = sel.value;
+    st.mappingSource[i] = "user";
+    refreshImportSelectStyles(); updateImportSummary();
+  }));
+}
+
+function refreshImportSelectStyles() {
+  document.querySelectorAll("#importHead select.import-map").forEach(sel => {
+    const i = parseInt(sel.dataset.col, 10);
+    sel.className = "import-map" + (importState.mapping[i] ? (importState.mappingSource[i] === "ai" ? " ai-mapped" : " mapped") : "");
+    sel.title = importState.mappingSource[i] === "ai" ? "Suggested by the AI" : (importState.mappingSource[i] === "auto" ? "Matched from the column name" : "");
+  });
+}
+
+function renderImportBody() {
+  const st = importState;
+  const idx = importVisibleIndices();
+  const shown = idx.slice(0, st.shown);
+  document.getElementById("importBody").innerHTML = shown.map(i => {
+    const status = st.rowStatus[i];
+    return `<tr data-i="${i}" class="${st.selected[i] ? "" : "unticked"}"><td><input type="checkbox" class="import-row-check"${st.selected[i] ? " checked" : ""}></td><td>${i + 1}</td>` +
+      st.rows[i].map(c => `<td title="${(c || "").replace(/"/g, "&quot;")}">${(c || "").replace(/</g, "&lt;")}</td>`).join("") +
+      `<td class="row-status ${status ? status.status : ""}" title="${status ? status.message.replace(/"/g, "&quot;") : ""}">${status ? (status.status === "ok" ? "✓ " : "") + status.message : ""}</td></tr>`;
+  }).join("");
+  const more = document.getElementById("importMoreBtn");
+  more.style.display = idx.length > shown.length ? "inline-block" : "none";
+  more.textContent = `Show ${Math.min(IMPORT_CHUNK, idx.length - shown.length)} more (${idx.length - shown.length} not shown)`;
+}
+
+function updateImportSummary() {
+  const st = importState;
+  const ticked = st.selected.reduce((n, v) => n + (v ? 1 : 0), 0);
+  const done = st.rowStatus.filter(r => r && r.status === "ok").length;
+  const todo = st.selected.reduce((n, v, i) => n + (v && !(st.rowStatus[i] && st.rowStatus[i].status === "ok") ? 1 : 0), 0);
+  const mapped = st.mapping.filter(Boolean).length;
+  document.getElementById("importCount").textContent = `${st.rows.length} rows`;
+  document.getElementById("importSummary").textContent =
+    `${ticked} of ${st.rows.length} ticked · ${mapped} of ${st.headers.length} columns matched` + (done ? ` · ${done} imported` : "");
+  const btn = document.getElementById("importRunBtn");
+  btn.textContent = `Import ${todo} row${todo === 1 ? "" : "s"}`;
+  btn.disabled = !todo || importState.running;
+  document.getElementById("importPromptBtn").disabled = false;
+}
+
+async function loadImportFile(file) {
+  const text = await file.text();
+  const parsed = parseCsv(text);
+  if (parsed.length < 2) { alert("That file has no data rows."); return; }
+  const headers = parsed[0].map((h, i) => (h || "").trim() || `Column ${i + 1}`);
+  const rows = parsed.slice(1).map(r => headers.map((_, i) => (r[i] ?? "").trim()));
+  importState = {
+    fileName: file.name, headers, rows, mapping: guessImportMapping(headers, rows),
+    mappingSource: [], selected: rows.map(() => true), rowStatus: rows.map(() => null), shown: IMPORT_CHUNK, history: [], running: false,
+  };
+  importState.mappingSource = importState.mapping.map(m => (m ? "auto" : ""));
+  document.getElementById("importEmpty").style.display = "none";
+  document.getElementById("importTableWrap").style.display = "block";
+  document.getElementById("importFooter").style.display = "flex";
+  document.getElementById("importEventBar").style.display = "flex";
+  document.getElementById("importResuggestBtn").style.display = "inline-block";
+  document.getElementById("importPromptLog").innerHTML = "";
+  document.getElementById("importShow").value = "all";
+  renderImportHead(); renderImportBody(); updateImportSummary();
+  suggestImportMappingWithAi(false);
+}
+
+// fillBlanksOnly: the automatic pass after loading only fills columns the name
+// rules left unmatched; the button replaces every choice.
+async function suggestImportMappingWithAi(replaceAll) {
+  const st = importState;
+  if (!st) return;
+  const status = document.getElementById("importSummary");
+  const btn = document.getElementById("importResuggestBtn");
+  btn.disabled = true;
+  try {
+    const res = await api("/import/suggest-mapping", { method: "POST", body: JSON.stringify({ headers: st.headers, sample_rows: st.rows.slice(0, 10) }) });
+    if (!res.ok) throw new Error("AI suggestions unavailable");
+    if (importState !== st) return;  // another file was loaded meanwhile
+    const { mappings } = await res.json();
+    const taken = new Set(replaceAll ? [] : st.mapping.filter(Boolean));
+    if (replaceAll) { st.mapping = st.mapping.map(() => ""); st.mappingSource = st.mapping.map(() => ""); }
+    mappings.forEach(m => {
+      const i = st.headers.indexOf(m.column);
+      if (i < 0 || !m.field || !IMPORT_FIELD_LABEL[m.field]) return;
+      if (!replaceAll && (st.mapping[i] || st.mappingSource[i] === "user")) return;
+      if (taken.has(m.field)) return;
+      st.mapping[i] = m.field; st.mappingSource[i] = "ai"; taken.add(m.field);
+    });
+    renderImportHead(); updateImportSummary();
+  } catch (err) {
+    if (replaceAll) status.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---- English row filter ----
+
+function normCell(v) { return foldAccents(String(v ?? "").toLowerCase()).trim(); }
+
+function importColumnIndex(name) {
+  const st = importState;
+  const n = normCell(name);
+  let i = st.headers.findIndex(h => normCell(h) === n);
+  if (i < 0) i = st.mapping.findIndex(f => f && normCell(f) === n);
+  return i;
+}
+
+function evalImportCondition(cond, row) {
+  const i = importColumnIndex(cond.column);
+  if (i < 0) throw new Error(`There's no column called "${cond.column}"`);
+  const cell = normCell(row[i]);
+  const val = normCell(cond.value);
+  const vals = (cond.values || []).map(normCell);
+  const num = x => parseFloat(String(x).replace(/[^0-9.\-]/g, ""));
+  switch (cond.op) {
+    case "equals": return cell === val;
+    case "not_equals": return cell !== val;
+    case "contains": return val !== "" && cell.includes(val);
+    case "not_contains": return !cell.includes(val);
+    case "starts_with": return cell.startsWith(val);
+    case "ends_with": return cell.endsWith(val);
+    case "is_empty": return cell === "";
+    case "is_not_empty": return cell !== "";
+    case "in_list": return vals.includes(cell);
+    case "not_in_list": return !vals.includes(cell);
+    case "greater_than": { const a = num(cell), b = num(val); return !Number.isNaN(a) && !Number.isNaN(b) ? a > b : (Date.parse(cell) > Date.parse(val)); }
+    case "less_than": { const a = num(cell), b = num(val); return !Number.isNaN(a) && !Number.isNaN(b) ? a < b : (Date.parse(cell) < Date.parse(val)); }
+    default: throw new Error(`Unknown comparison "${cond.op}"`);
+  }
+}
+
+function evalImportFilter(filter, row) {
+  const groupResults = filter.groups.map(g => {
+    const results = g.conditions.map(c => evalImportCondition(c, row));
+    return g.logic === "or" ? results.some(Boolean) : results.every(Boolean);
+  });
+  return filter.groups_logic === "or" ? groupResults.some(Boolean) : groupResults.every(Boolean);
+}
+
+function addPromptLog(question, answer, isError) {
+  const log = document.getElementById("importPromptLog");
+  log.insertAdjacentHTML("afterbegin",
+    `<div class="prompt-log-item${isError ? " err" : ""}"><div class="q">${question.replace(/</g, "&lt;")}</div><div class="a">${answer.replace(/</g, "&lt;")}</div></div>`);
+}
+
+async function applyImportPrompt() {
+  const st = importState;
+  const input = document.getElementById("importPromptText");
+  const prompt = input.value.trim();
+  if (!st) { alert("Load a CSV first."); return; }
+  if (!prompt) return;
+  const btn = document.getElementById("importPromptBtn");
+  const status = document.getElementById("importPromptStatus");
+  btn.disabled = true; status.textContent = "Thinking…";
+  try {
+    const columns = st.headers.map((h, i) => {
+      const samples = [];
+      for (let r = 0; r < st.rows.length && samples.length < 6; r++) {
+        const v = st.rows[r][i];
+        if (v && !samples.includes(v)) samples.push(v);
+      }
+      return { name: h, field: st.mapping[i] ? IMPORT_FIELD_LABEL[st.mapping[i]] : null, samples };
+    });
+    const res = await api("/import/filter", { method: "POST", body: JSON.stringify({ prompt, columns, row_count: st.rows.length }) });
+    const filter = await res.json();
+    if (!res.ok) throw new Error(filter.error || "Couldn't interpret that");
+    if (filter.problem || !filter.groups.length) {
+      addPromptLog(prompt, filter.problem || "That couldn't be turned into a filter on these columns.", true);
+      return;
+    }
+    const matches = st.rows.map(row => evalImportFilter(filter, row));  // throws on an unknown column before anything changes
+    st.history.push([...st.selected]);
+    if (st.history.length > 15) st.history.shift();
+    st.selected = st.selected.map((cur, i) => {
+      switch (filter.action) {
+        case "add": return cur || matches[i];
+        case "remove": return cur && !matches[i];
+        case "restrict": return cur && matches[i];
+        default: return matches[i];
+      }
+    });
+    const matched = matches.filter(Boolean).length;
+    const ticked = st.selected.filter(Boolean).length;
+    addPromptLog(prompt, `${filter.explanation} - ${matched} row${matched === 1 ? "" : "s"} matched; ${ticked} of ${st.rows.length} now ticked.`, false);
+    document.getElementById("importUndoBtn").disabled = false;
+    input.value = "";
+    renderImportBody(); updateImportSummary();
+  } catch (err) {
+    addPromptLog(prompt, err.message, true);
+  } finally {
+    btn.disabled = false; status.textContent = "";
+  }
+}
+
+function undoImportPrompt() {
+  const st = importState;
+  if (!st || !st.history.length) return;
+  st.selected = st.history.pop();
+  if (!st.history.length) document.getElementById("importUndoBtn").disabled = true;
+  renderImportBody(); updateImportSummary();
+}
+
+// ---- the import itself ----
+
+function importRowFields(row) {
+  const fields = {};
+  importState.mapping.forEach((key, i) => { if (key && row[i] && !fields[key]) fields[key] = row[i]; });
+  return fields;
+}
+
+async function runImport() {
+  const st = importState;
+  if (!st || st.running) return;
+  const mapped = new Set(st.mapping.filter(Boolean));
+  if (!mapped.has("people.full_name") && !(mapped.has("people.first_name") || mapped.has("people.last_name")) && !mapped.has("organizations.name")) {
+    alert("Match at least one column to a person's name or an organization's name first (second header row).");
+    return;
+  }
+  const todo = st.selected.map((v, i) => (v && !(st.rowStatus[i] && st.rowStatus[i].status === "ok") ? i : -1)).filter(i => i >= 0);
+  if (!todo.length) return;
+  const event = {
+    name: document.getElementById("importEventName").value.trim(), event_date: document.getElementById("importEventDate").value.trim(),
+    location: document.getElementById("importEventLocation").value.trim(), role: document.getElementById("importEventRole").value.trim(),
+  };
+  if (!confirm(
+    `Import ${todo.length} row${todo.length === 1 ? "" : "s"} into the database?\n\n` +
+    `Existing people and organizations are matched and only their EMPTY fields are filled - nothing already on file is overwritten.` +
+    (event.name ? `\nEveryone will also be added as an attendee of "${event.name}".` : "")
+  )) return;
+  st.running = true;
+  const btn = document.getElementById("importRunBtn");
+  btn.disabled = true;
+  let doneCount = 0;
+  const counts = { ok: 0, skipped: 0, error: 0 };
+  try {
+    for (let b = 0; b < todo.length; b += IMPORT_BATCH) {
+      const batch = todo.slice(b, b + IMPORT_BATCH);
+      btn.textContent = `Importing… ${doneCount}/${todo.length}`;
+      let results;
+      try {
+        const res = await api("/import/rows", {
+          method: "POST",
+          body: JSON.stringify({ rows: batch.map(i => ({ index: i, fields: importRowFields(st.rows[i]) })), options: { event } }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Import failed");
+        results = data.results;
+      } catch (err) {
+        results = batch.map(i => ({ index: i, status: "error", message: err.message }));
+      }
+      for (const r of results) { st.rowStatus[r.index] = { status: r.status, message: r.message || r.status }; counts[r.status] = (counts[r.status] || 0) + 1; }
+      doneCount += batch.length;
+      renderImportBody();
+    }
+  } finally {
+    st.running = false;
+    updateImportSummary();
+  }
+  peopleNamesCache = null;
+  reloadOrgList();
+  alert(`Import finished: ${counts.ok} imported, ${counts.skipped} skipped, ${counts.error} failed.` +
+    (counts.skipped + counts.error ? `\n\nSee the Result column for why. Rows that didn't import stay ticked - fix the cause and click Import again to retry only those.` : ""));
+}
+
+function showTab(name) {
+  document.querySelectorAll("#tabBar .tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.getElementById("main").style.display = name === "db" ? "block" : "none";
+  document.getElementById("importView").style.display = name === "import" ? "flex" : "none";
+}
+
 // ---------- add organizations (bulk: names and/or LinkedIn URLs) ----------
 
 async function startBulkOrgAdd() {
@@ -4697,6 +5210,24 @@ document.getElementById("orgListDownloadBtn").addEventListener("click", e => exp
 document.getElementById("peopleListDownloadBtn").addEventListener("click", e => exportPeopleList(e.currentTarget));
 document.getElementById("orgDetailDownloadBtn").addEventListener("click", e => exportOrgDetail(e.currentTarget));
 document.getElementById("personDetailDownloadBtn").addEventListener("click", e => exportPersonDetail(e.currentTarget));
+document.querySelectorAll("#tabBar .tab-btn").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+document.getElementById("importFile").addEventListener("change", e => { const f = e.target.files[0]; if (f) loadImportFile(f); e.target.value = ""; });
+document.getElementById("importResuggestBtn").addEventListener("click", () => suggestImportMappingWithAi(true));
+document.getElementById("importPromptBtn").addEventListener("click", applyImportPrompt);
+document.getElementById("importPromptText").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) applyImportPrompt(); });
+document.getElementById("importUndoBtn").addEventListener("click", undoImportPrompt);
+document.getElementById("importTickAllBtn").addEventListener("click", () => { if (importState) { importState.selected.fill(true); renderImportBody(); updateImportSummary(); } });
+document.getElementById("importUntickAllBtn").addEventListener("click", () => { if (importState) { importState.selected.fill(false); renderImportBody(); updateImportSummary(); } });
+document.getElementById("importShow").addEventListener("change", () => { if (importState) { importState.shown = IMPORT_CHUNK; renderImportBody(); } });
+document.getElementById("importMoreBtn").addEventListener("click", () => { importState.shown += IMPORT_CHUNK; renderImportBody(); });
+document.getElementById("importRunBtn").addEventListener("click", runImport);
+document.getElementById("importBody").addEventListener("change", e => {
+  if (!e.target.classList.contains("import-row-check")) return;
+  const tr = e.target.closest("tr");
+  importState.selected[parseInt(tr.dataset.i, 10)] = e.target.checked;
+  tr.classList.toggle("unticked", !e.target.checked);
+  updateImportSummary();
+});
 document.getElementById("orgFindAllBtn").addEventListener("click", e => runFindAllOrgLinkedin(e.currentTarget));
 document.getElementById("peopleEnrichAllBtn").addEventListener("click", e => runEnrichAllPeople(e.currentTarget));
 document.getElementById("orgAddCloseBtn").addEventListener("click", showOrgListView);

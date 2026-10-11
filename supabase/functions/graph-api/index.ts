@@ -26,6 +26,12 @@
 //     (call on a /research result BEFORE saving it: reads the org's own team/leadership/about pages and merges in senior investment people named
 //     there, then looks each person up on LinkedIn by name via Apify - a confident hit sets/corrects linkedin_url, no hit sets li_unverified: true,
 //     which POST /organizations saves on newly-created people; cleared by Find/Enrich/a hand-entered URL or PATCH li_unverified)
+//   POST   /import/suggest-mapping  { headers[], sample_rows[][] } -> { mappings: [{column, field|null}] }   (the Import tab; AI, no web search)
+//   POST   /import/filter  { prompt, columns: [{name, field, samples[]}], row_count } -> { action, groups_logic, groups[], explanation, problem }
+//     (English instruction about which CSV rows to keep -> a structured filter the page evaluates locally against every row)
+//   POST   /import/rows  { rows: [{index, fields: {"people.full_name": "...", ...}}] (max 15), options: {event?: {name,event_date,location,role}} }
+//     -> { results: [{index, status: ok|skipped|error, message, person_id, organization_id}] }  (find-or-create org / person / role / event
+//     attendance per row, FILLING BLANKS ONLY - never overwrites; a same-named person with a different LinkedIn URL is a different person)
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
 //   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true&countries=France,Germany&org_types=vc,cvc (overlap on org_types[])&sectors=Fintech&investment_regions=Europe
 //     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, investment_regions, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
@@ -3005,6 +3011,342 @@ async function refineResearch(payload: any) {
   return { organization: org, people, refine: stats };
 }
 
+// ---------- CSV import tab: field suggestions, English row filters, row import ----------
+
+// The target fields a CSV column can map to, key -> what it means (also the
+// description the AI is given). Keep in sync with IMPORT_FIELDS in index.html.
+const IMPORT_FIELDS: Record<string, string> = {
+  "people.full_name": "a person's full name (use this OR first + last name columns)",
+  "people.first_name": "a person's first / given name",
+  "people.last_name": "a person's last / family name / surname",
+  "people.linkedin_url": "a person's personal LinkedIn profile URL (linkedin.com/in/...)",
+  "people.country": "country (or location) the person is based in",
+  "memberships.title": "the person's job title / position at the organization",
+  "memberships.focus": "the person's sector or investment focus",
+  "memberships.start_date": "when the person started that role",
+  "memberships.end_date": "when the person left that role",
+  "organizations.name": "the organization / company / firm name (where the person works, or the organization itself)",
+  "organizations.website_url": "the organization's website",
+  "organizations.linkedin_url": "the organization's LinkedIn company page URL (linkedin.com/company/...)",
+  "organizations.hq_country": "the organization's headquarters location / country",
+  "organizations.description": "a description of the organization",
+  "organizations.org_types": "what kind of organization it is (VC, PE, bank, family office, ...)",
+  "organizations.sectors": "sector / industry tags of the organization",
+  "organizations.ticket_size": "typical investment ticket / check size",
+  "organizations.investment_stages": "investment stages (seed, series A, ...)",
+  "organizations.investment_regions": "geographic regions it invests in",
+  "organizations.fund_type_raw": "a fund-type label (Corporate VC, Family Office, ...)",
+  "events.name": "name of an event / conference the people attended",
+  "events.event_date": "date of the event",
+  "events.location": "where the event took place",
+  "event_attendees.role": "the person's role at the event (speaker, delegate, sponsor, ...)",
+};
+
+const IMPORT_MAPPING_SCHEMA = {
+  type: "object",
+  properties: {
+    mappings: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { column: { type: "string" }, field: { type: ["string", "null"], enum: [...Object.keys(IMPORT_FIELDS), null] } },
+        required: ["column", "field"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["mappings"],
+  additionalProperties: false,
+};
+
+async function suggestImportMapping(headers: string[], sampleRows: string[][]) {
+  const columns = headers.map((h, i) => {
+    const samples = [...new Set(sampleRows.map((r) => (r[i] ?? "").trim()).filter(Boolean))].slice(0, 5);
+    return `- "${h}": ${samples.length ? samples.map((v) => JSON.stringify(v.slice(0, 80))).join(", ") : "(empty in the sample)"}`;
+  });
+  const prompt = `A CSV is being imported into a database of investors (people, organizations, their roles, and events). For each CSV column, choose the database field it should be stored in, or null if none fits (emails, phone numbers, notes, internal ids and so on have no field).
+
+Fields:
+${Object.entries(IMPORT_FIELDS).map(([k, d]) => `- ${k}: ${d}`).join("\n")}
+
+Rules: each field at most once (if two columns could both be a person's full name, pick the better one and use null for the other); a plain "Name" column next to a "Company" column is the person's name; use people.first_name / people.last_name only when the file splits the name that way; a LinkedIn URL column is people.linkedin_url unless its values are linkedin.com/company/... pages (then organizations.linkedin_url); a bare "Country" or "Location" column is people.country unless the file is clearly about organizations only.
+
+CSV columns with sample values:
+${columns.join("\n")}
+
+Return one entry per column, in the same order, with the column name exactly as given.`;
+  const data = await openRouterCall(prompt, "import_mapping", IMPORT_MAPPING_SCHEMA, 40000, 45000, false);
+  return (data.mappings ?? []).filter((m: any) => headers.includes(m.column));
+}
+
+const IMPORT_FILTER_SCHEMA = {
+  type: "object",
+  properties: {
+    action: { type: "string", enum: ["set", "add", "remove", "restrict"] },
+    groups_logic: { type: "string", enum: ["and", "or"] },
+    groups: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          logic: { type: "string", enum: ["and", "or"] },
+          conditions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                column: { type: "string" },
+                op: {
+                  type: "string",
+                  enum: ["equals", "not_equals", "contains", "not_contains", "starts_with", "ends_with", "is_empty", "is_not_empty", "in_list", "not_in_list", "greater_than", "less_than"],
+                },
+                value: { type: ["string", "null"] },
+                values: { type: "array", items: { type: "string" } },
+              },
+              required: ["column", "op", "value", "values"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["logic", "conditions"],
+        additionalProperties: false,
+      },
+    },
+    explanation: { type: "string" },
+    problem: { type: ["string", "null"] },
+  },
+  required: ["action", "groups_logic", "groups", "explanation", "problem"],
+  additionalProperties: false,
+};
+
+// Turns an English instruction about which CSV rows to keep into a filter the
+// page evaluates locally against every row (see applyImportFilter in
+// index.html) - so the AI only ever sees column names and a few sample
+// values, never the file, and the same filter is exact for every row.
+async function buildImportFilter(prompt: string, columns: { name: string; field: string | null; samples: string[] }[], rowCount: number) {
+  const cols = columns.map((c) =>
+    `- "${c.name}"${c.field ? ` (stored as ${c.field})` : ""}: ${c.samples.length ? c.samples.map((v) => JSON.stringify(v.slice(0, 60))).join(", ") : "(empty in sample)"}`
+  );
+  const full = `A CSV with ${rowCount} rows is being reviewed before import. Each row has a checkbox. The user types, in plain English, which rows to keep or drop. Turn their instruction into a filter on the columns below.
+
+Columns (name, what it maps to, a few sample values):
+${cols.join("\n")}
+
+Output:
+- action: "set" = tick ONLY the rows that match (and untick all others) - the default for "keep only / just / show me rows where ..."; "add" = also tick matching rows, leave the rest as they are ("also include ..."); "remove" = untick matching rows, leave the rest ("remove / clear / untick / exclude / drop rows where ..."); "restrict" = of the rows currently ticked, keep only matching ones ("of those, only ...").
+- groups: conditions combined into groups. Inside a group, "logic" joins its conditions; "groups_logic" joins the groups. Example: (country is France AND title contains "partner") OR (company contains "capital") = two groups, groups_logic "or".
+- Each condition: column = a column name EXACTLY as listed; op as described; for contains/equals/starts_with/ends_with/greater_than/less_than put the text in value (values = []); for in_list / not_in_list put the options in values (value = null); for is_empty / is_not_empty both are empty. Text comparisons ignore case and accents. Use several "contains" conditions joined by "or" for synonyms (e.g. "bank" or "banque" or "insur").
+- If the instruction refers to something no column holds (e.g. "senior" when only titles exist, use title words like partner/director/head/chief/principal/managing), do your best from the columns' text; only if it truly can't be expressed, set "problem" to a short explanation and return no groups.
+- explanation: one plain-English sentence restating exactly what the filter does.
+
+Instruction: ${prompt}`;
+  return await openRouterCall(full, "import_filter", IMPORT_FILTER_SCHEMA, 40000, 45000, false);
+}
+
+const IMPORT_ORG_TYPE_WORDS: Record<string, string> = {
+  "vc": "vc", "venture capital": "vc", "venture": "vc", "vc fund": "vc", "cvc": "cvc", "corporate vc": "cvc", "corporate venture capital": "cvc",
+  "angel": "angel", "business angel": "angel", "angel investor": "angel", "angel network": "angel_network", "family office": "family_office",
+  "syndicate": "investment_syndicate", "investment syndicate": "investment_syndicate", "pe": "pe", "private equity": "pe",
+  "asset manager": "asset_manager", "asset management": "asset_manager", "investment bank": "investment_bank", "bank": "bank",
+  "insurer": "insurer", "insurance": "insurer", "startup": "startup", "enterprise": "enterprise", "corporate": "enterprise",
+  "incubator": "incubator_accelerator", "accelerator": "incubator_accelerator", "university": "university", "association": "association",
+  "legal": "legal", "law firm": "legal", "consulting": "consulting", "audit": "audit_accounting", "accounting": "audit_accounting",
+  "media agency": "media_agency", "exec search": "exec_search", "executive search": "exec_search", "interim": "interim_agency",
+  "secondary": "secondary", "secondaries": "secondary", "group": "group",
+};
+
+function parseImportOrgTypes(raw: string): { types: string[]; unknown: string[] } {
+  const types: string[] = [];
+  const unknown: string[] = [];
+  for (const tok of raw.split(/[,;|/]+/)) {
+    const key = sectorKey(tok);
+    if (!key) continue;
+    const slug = IMPORT_ORG_TYPE_WORDS[key] ?? (ALL_ORG_TYPE_SLUGS.includes(key.replace(/ /g, "_")) ? key.replace(/ /g, "_") : null);
+    if (slug && slug !== "employer") { if (!types.includes(slug)) types.push(slug); } else unknown.push(tok.trim());
+  }
+  return { types, unknown };
+}
+
+function splitImportList(raw: string): string[] {
+  return raw.split(/[,;|]+/).map((v) => v.trim()).filter(Boolean);
+}
+
+// ISO, or day-first d/m/y (European exports), or anything Date can read.
+function parseLooseDate(raw: string): string | null {
+  const t = raw.trim();
+  if (!t) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
+  const dmy = t.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+  if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
+  const d = new Date(`${t} UTC`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
+// Only fills what's EMPTY on the existing record - the import's rule, unlike
+// mergeFields (where a non-blank incoming value overwrites).
+function fillBlankFields(existing: Record<string, any>, incoming: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(incoming)) if (!isBlank(v) && isBlank(existing[k])) out[k] = v;
+  return out;
+}
+
+type ImportOptions = { event?: { name?: string; event_date?: string; location?: string; role?: string } };
+
+// One CSV row -> organization (found or created), person, role, and event
+// attendance, filling blanks only. A row is isolated: any failure is that
+// row's error, never the batch's.
+async function importOneRow(f: Record<string, string>, options: ImportOptions, eventCache: Map<string, string>) {
+  const v = (k: string) => (f[k] ?? "").replace(/\s+/g, " ").trim();
+  const notes: string[] = [];
+  const fullName = v("people.full_name") || [v("people.first_name"), v("people.last_name")].filter(Boolean).join(" ");
+  const orgName = v("organizations.name");
+  if (!fullName && !orgName) return { status: "skipped", message: "no person name or organization name" };
+
+  // organization
+  let org: any = null;
+  let orgCreated = false;
+  if (orgName) {
+    const website = normalizeWebsiteUrl(v("organizations.website_url"));
+    const linkedin = normalizeLinkedinUrl(v("organizations.linkedin_url"));
+    const parsedTypes = parseImportOrgTypes(v("organizations.org_types"));
+    if (parsedTypes.unknown.length) notes.push(`type not recognized: ${parsedTypes.unknown.join(", ")}`);
+    const incoming: Record<string, any> = {
+      website_url: website, linkedin_url: linkedin, hq_country: v("organizations.hq_country") || null,
+      description: v("organizations.description") || null, sectors: cleanSectorList(splitImportList(v("organizations.sectors"))),
+      ticket_size: v("organizations.ticket_size") || null, investment_stages: splitImportList(v("organizations.investment_stages")),
+      investment_regions: splitImportList(v("organizations.investment_regions")), fund_type_raw: v("organizations.fund_type_raw") || null,
+      org_types: parsedTypes.types,
+    };
+    const existing = await findExistingOrganization(orgName, website, linkedin);
+    if (existing) {
+      const patch = fillBlankFields(existing, incoming);
+      org = Object.keys(patch).length
+        ? (await supabaseRequest("PATCH", "organizations", { params: { id: `eq.${existing.id}` }, body: patch, prefer: "return=representation" }))[0]
+        : existing;
+    } else {
+      const body: Record<string, any> = { name: orgName };
+      for (const [k, val] of Object.entries(incoming)) if (!isBlank(val)) body[k] = val;
+      org = (await supabaseRequest("POST", "organizations", { body, prefer: "return=representation" }))[0];
+      orgCreated = true;
+    }
+  }
+
+  // person
+  let person: any = null;
+  let personCreated = false;
+  if (fullName) {
+    const linkedin = normalizeLinkedinUrl(v("people.linkedin_url"));
+    const incoming = { linkedin_url: linkedin, country: v("people.country") || null };
+    const candidates: any[] = await findPeopleByNameOrLinkedin(fullName, linkedin);
+    // A same-named person with a DIFFERENT LinkedIn URL is a different person.
+    let usable = candidates.filter((c) => !(linkedin && c.linkedin_url && c.linkedin_url !== linkedin));
+    const byUrl = linkedin ? usable.find((c) => c.linkedin_url === linkedin) : null;
+    if (!byUrl && usable.length > 1 && org) {
+      const atOrg = await supabaseRequest("GET", "memberships", {
+        params: { organization_id: `eq.${org.id}`, person_id: `in.(${usable.map((c) => c.id).join(",")})`, select: "person_id" },
+      });
+      const ids = new Set((atOrg ?? []).map((m: any) => m.person_id));
+      const narrowed = usable.filter((c) => ids.has(c.id));
+      if (narrowed.length) usable = narrowed;
+    }
+    const match = byUrl ?? (usable.length === 1 ? usable[0] : null);
+    if (!match && usable.length > 1) {
+      return { status: "skipped", message: `${usable.length} existing people are called "${fullName}" - add a LinkedIn URL column to tell them apart` };
+    }
+    if (match) {
+      const patch = fillBlankFields(match, incoming);
+      person = Object.keys(patch).length
+        ? (await supabaseRequest("PATCH", "people", { params: { id: `eq.${match.id}` }, body: patch, prefer: "return=representation" }))[0]
+        : match;
+    } else {
+      person = (await supabaseRequest("POST", "people", {
+        body: { full_name: fullName, ...(linkedin ? { linkedin_url: linkedin } : {}), ...(incoming.country ? { country: incoming.country } : {}) },
+        prefer: "return=representation",
+      }))[0];
+      personCreated = true;
+    }
+  }
+
+  // role: person at organization (other current roles are left alone)
+  let role = "";
+  if (person && org) {
+    const incoming = {
+      title: v("memberships.title") || null, focus: v("memberships.focus") || null,
+      start_date: v("memberships.start_date") || null, end_date: v("memberships.end_date") || null,
+    };
+    const existing = await supabaseRequest("GET", "memberships", {
+      params: { person_id: `eq.${person.id}`, organization_id: `eq.${org.id}`, select: "*" },
+    });
+    if (existing?.length) {
+      const patch = fillBlankFields(existing[0], incoming);
+      if (Object.keys(patch).length) {
+        await supabaseRequest("PATCH", "memberships", { params: { id: `eq.${existing[0].id}` }, body: patch });
+        role = "role updated";
+      } else role = "role already on file";
+    } else {
+      const body: Record<string, any> = { person_id: person.id, organization_id: org.id, is_current: !incoming.end_date };
+      for (const [k, val] of Object.entries(incoming)) if (val) body[k] = val;
+      await supabaseRequest("POST", "memberships", { body });
+      role = "role added";
+    }
+  }
+
+  // event attendance
+  let eventNote = "";
+  const eventName = v("events.name") || (options.event?.name ?? "").trim();
+  if (eventName && person) {
+    const eventDate = parseLooseDate(v("events.event_date") || options.event?.event_date || "");
+    const location = v("events.location") || (options.event?.location ?? "").trim() || null;
+    const cacheKey = `${eventName.toLowerCase()}|${eventDate ?? ""}`;
+    let eventId = eventCache.get(cacheKey);
+    if (!eventId) {
+      const found = await supabaseRequest("GET", "events", {
+        params: { name: `ilike.${orValue(eventName)}`, ...(eventDate ? { event_date: `eq.${eventDate}` } : { event_date: "is.null" }), select: "id,location", limit: "1" },
+      });
+      if (found?.length) {
+        eventId = found[0].id;
+        if (!found[0].location && location) await supabaseRequest("PATCH", "events", { params: { id: `eq.${eventId}` }, body: { location } });
+      } else {
+        eventId = (await supabaseRequest("POST", "events", {
+          body: { name: eventName, ...(eventDate ? { event_date: eventDate } : {}), ...(location ? { location } : {}) }, prefer: "return=representation",
+        }))[0].id as string;
+      }
+      eventCache.set(cacheKey, eventId!);
+    }
+    const attendeeRole = v("event_attendees.role") || (options.event?.role ?? "").trim() || null;
+    const already = await supabaseRequest("GET", "event_attendees", {
+      params: { event_id: `eq.${eventId}`, person_id: `eq.${person.id}`, select: "id,role" },
+    });
+    if (already?.length) {
+      if (!already[0].role && attendeeRole) await supabaseRequest("PATCH", "event_attendees", { params: { id: `eq.${already[0].id}` }, body: { role: attendeeRole } });
+      eventNote = "already attending";
+    } else {
+      await supabaseRequest("POST", "event_attendees", { body: { event_id: eventId, person_id: person.id, ...(attendeeRole ? { role: attendeeRole } : {}) } });
+      eventNote = "added to event";
+    }
+  }
+
+  const parts = [
+    person ? (personCreated ? "person created" : "person matched") : "",
+    org ? (orgCreated ? "organization created" : "organization matched") : "",
+    role, eventNote, ...notes,
+  ].filter(Boolean);
+  return { status: "ok", message: parts.join(" · "), person_id: person?.id ?? null, organization_id: org?.id ?? null };
+}
+
+async function importRows(rows: { index: number; fields: Record<string, string> }[], options: ImportOptions) {
+  const eventCache = new Map<string, string>();
+  const results = [];
+  for (const row of rows.slice(0, 15)) {
+    try {
+      results.push({ index: row.index, ...(await importOneRow(row.fields ?? {}, options ?? {}, eventCache)) });
+    } catch (err) {
+      results.push({ index: row.index, status: "error", message: err instanceof Error ? err.message.slice(0, 300) : String(err) });
+    }
+  }
+  return results;
+}
+
 const NEWS_JSON_SCHEMA = {
   type: "object",
   properties: {
@@ -3680,6 +4022,22 @@ Deno.serve(async (req) => {
 
     if (req.method === "POST" && path === "/research/refine") {
       return json(await refineResearch(await req.json()));
+    }
+
+    if (req.method === "POST" && path === "/import/suggest-mapping") {
+      const body = await req.json();
+      const headers: string[] = (body.headers ?? []).map(String).slice(0, 80);
+      return json({ mappings: await suggestImportMapping(headers, (body.sample_rows ?? []).slice(0, 12)) });
+    }
+    if (req.method === "POST" && path === "/import/filter") {
+      const body = await req.json();
+      const prompt = String(body.prompt ?? "").trim().slice(0, 1500);
+      if (!prompt) return json({ error: "prompt is required" }, 400);
+      return json(await buildImportFilter(prompt, (body.columns ?? []).slice(0, 80), Number(body.row_count) || 0));
+    }
+    if (req.method === "POST" && path === "/import/rows") {
+      const body = await req.json();
+      return json({ results: await importRows(body.rows ?? [], body.options ?? {}) });
     }
 
     if (req.method === "POST" && path === "/research-person") {
