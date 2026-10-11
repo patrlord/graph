@@ -492,6 +492,35 @@ function arrayOverlap(values: string[]): string {
   return `ov.{${values.map(pgListValue).join(",")}}`;
 }
 
+// Sector tags that say nothing - never stored, whoever suggests them (the
+// research prompts, LinkedIn's industry names, a hand edit, an import).
+// Compared by sectorKey, so "High-tech" / "High Tech" / "Digital / Tech" and
+// "digital tech" all hit the same entry. Add to this list to ban more.
+const BANNED_SECTOR_TAGS = [
+  "technology", "tech", "digital", "digital technology", "digital tech", "technology platform",
+  "high tech", "innovation", "emerging technologies", "next generation technologies",
+  "general", "other", "various", "miscellaneous", "unknown", "n a", "services", "solutions", "business",
+  "frontier tech", "enabling tech", "early stage", "growth", "startup",
+];
+function sectorKey(tag: string): string {
+  return tag.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+const BANNED_SECTOR_KEYS = new Set(BANNED_SECTOR_TAGS.map(sectorKey));
+function isBannedSectorTag(tag: string): boolean {
+  return BANNED_SECTOR_KEYS.has(sectorKey(tag));
+}
+// The one place a sector list is normalized on its way in: strings only,
+// trimmed, banned/empty tags dropped, duplicates removed.
+function cleanSectorList(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  const out: string[] = [];
+  for (const t of list) {
+    const tag = typeof t === "string" ? t.trim() : "";
+    if (tag && !isBannedSectorTag(tag) && !out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
+
 function mergeFields(existing: Record<string, any>, newFields: Record<string, any>) {
   const merged: Record<string, any> = {};
   for (const [k, v] of Object.entries(newFields)) {
@@ -674,7 +703,7 @@ async function saveOrganization(payload: any) {
     linkedin_url: linkedinUrl,
     hq_country: orgIn.hq_country || null,
     description: orgIn.description || null,
-    sectors: Array.isArray(orgIn.sectors) ? orgIn.sectors.filter(Boolean) : [],
+    sectors: cleanSectorList(orgIn.sectors),
     // Investor-profile fields sourced from list-style directories, not from
     // OpenRouter research - present here only so a payload that does carry
     // them (a bulk import) round-trips through the normal merge-only-blanks
@@ -1092,7 +1121,7 @@ async function getEstablishedSectorTags(): Promise<string[]> {
     }
   }
   return [...counts.entries()]
-    .filter(([, count]) => count >= 2)
+    .filter(([tag, count]) => count >= 2 && !isBannedSectorTag(tag))
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([tag]) => tag);
 }
@@ -1103,8 +1132,9 @@ async function getEstablishedSectorTags(): Promise<string[]> {
 // cached, so a tag added a moment ago is already available to steer the
 // very next research call, and the list never goes stale.
 function sectorTagInstructions(existingTags: string[]): string {
-  if (!existingTags.length) return `2-6 short sector/industry tags it's associated with (e.g. "Fintech", "AI infrastructure", "Climate tech")`;
-  return `2-6 short sector/industry tags it's associated with. Prefer reusing one of these existing tags if it genuinely fits, rather than inventing new wording for the same concept - only add a new tag when none of these are a good match: ${existingTags.join(", ")}`;
+  const banNote = ` Never use a generic tag that says nothing about the sector (${BANNED_SECTOR_TAGS.join(", ")}) - be specific, or leave it out.`;
+  if (!existingTags.length) return `2-6 short sector/industry tags it's associated with (e.g. "Fintech", "AI infrastructure", "Climate tech").${banNote}`;
+  return `2-6 short sector/industry tags it's associated with. Prefer reusing one of these existing tags if it genuinely fits, rather than inventing new wording for the same concept - only add a new tag when none of these are a good match: ${existingTags.join(", ")}.${banNote}`;
 }
 
 // Same idea as findDuplicatePeopleCandidates (see there for nameFingerprint/
@@ -2081,7 +2111,7 @@ async function suggestSectors(company: Record<string, any>): Promise<string[]> {
   if (!industries.length) return [];
   const loose = (t: string) => foldForMatch(t).replace(/[&/,\-]/g, " ").replace(/\s+/g, " ").trim();
   const established = new Map((await getEstablishedSectorTags()).map((t) => [loose(t), t]));
-  return [...new Set(industries.map((n: string) => established.get(loose(n))).filter(Boolean) as string[])];
+  return cleanSectorList([...new Set(industries.map((n: string) => established.get(loose(n))).filter(Boolean) as string[])]);
 }
 
 async function applyApifyCompanyData(
@@ -3575,8 +3605,9 @@ ${NEVER_GUESS}`;
   if (!linkedinUrl) return { linkedin_url: null, candidates };
 
   const orgFields: Record<string, any> = { linkedin_url: linkedinUrl };
-  if ((!current.sectors || current.sectors.length === 0) && data.observed_industry) {
-    orgFields.sectors = [data.observed_industry];
+  const observedSectors = cleanSectorList([data.observed_industry]);
+  if ((!current.sectors || current.sectors.length === 0) && observedSectors.length) {
+    orgFields.sectors = observedSectors;
   }
   if (!current.hq_country && data.observed_hq) {
     orgFields.hq_country = data.observed_hq;
@@ -3852,6 +3883,7 @@ Deno.serve(async (req) => {
       for (const arrayField of ["sectors", "investment_stages", "investment_regions"]) {
         if (arrayField in fields) fields[arrayField] = Array.isArray(fields[arrayField]) ? fields[arrayField].filter(Boolean) : [];
       }
+      if ("sectors" in fields) fields.sectors = cleanSectorList(fields.sectors);
       if (!Object.keys(fields).length) return json({ error: "no editable fields provided" }, 400);
       const updated = await supabaseRequest("PATCH", "organizations", {
         params: { id: `eq.${orgIdMatch[1]}` },
