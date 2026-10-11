@@ -3144,7 +3144,7 @@ Instruction: ${prompt}`;
 }
 
 const IMPORT_ORG_TYPE_WORDS: Record<string, string> = {
-  "vc": "vc", "venture capital": "vc", "venture": "vc", "vc fund": "vc", "cvc": "cvc", "corporate vc": "cvc", "corporate venture capital": "cvc",
+  "vc": "vc", "venture capital": "vc", "venture": "vc", "vc fund": "vc", "vc firm": "vc", "venture capital firm": "vc", "cvc": "cvc", "corporate vc": "cvc", "corporate venture capital": "cvc",
   "angel": "angel", "business angel": "angel", "angel investor": "angel", "angel network": "angel_network", "family office": "family_office",
   "syndicate": "investment_syndicate", "investment syndicate": "investment_syndicate", "pe": "pe", "private equity": "pe",
   "asset manager": "asset_manager", "asset management": "asset_manager", "investment bank": "investment_bank", "bank": "bank",
@@ -3170,7 +3170,11 @@ function parseImportOrgTypes(raw: string): { types: string[]; unknown: string[] 
 // A cell holding several options separates them with a comma, semicolon,
 // pipe or - in a spreadsheet cell with Alt+Enter - a line break.
 function splitImportList(raw: string): string[] {
-  return raw.split(/[,;|\r\n]+/).map((v) => v.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const tok of raw.split(/[,;|\r\n]+/).map((t) => t.trim()).filter(Boolean)) {
+    if (!out.some((o) => o.toLowerCase() === tok.toLowerCase())) out.push(tok);  // two columns can name the same option
+  }
+  return out;
 }
 
 // ISO, or day-first d/m/y (European exports), or anything Date can read.
@@ -3200,6 +3204,9 @@ type ImportOptions = { event?: { name?: string; event_date?: string; location?: 
 async function importOneRow(f: Record<string, string>, options: ImportOptions, eventCache: Map<string, string>) {
   const v = (k: string) => (f[k] ?? "").replace(/\s+/g, " ").trim();
   const multi = (k: string) => (f[k] ?? "").trim();  // line breaks kept - they separate options
+  // Free text: line breaks kept (that's how several columns mapped to the same
+  // field arrive - joined by a line break), spacing within each line tidied.
+  const text = (k: string) => (f[k] ?? "").split(/\r?\n/).map((l) => l.replace(/[ \t]+/g, " ").trim()).filter(Boolean).join("\n");
   const notes: string[] = [];
   const fullName = v("people.full_name") || [v("people.first_name"), v("people.last_name")].filter(Boolean).join(" ");
   const orgName = v("organizations.name");
@@ -3215,9 +3222,9 @@ async function importOneRow(f: Record<string, string>, options: ImportOptions, e
     if (parsedTypes.unknown.length) notes.push(`type not recognized: ${parsedTypes.unknown.join(", ")}`);
     const incoming: Record<string, any> = {
       website_url: website, linkedin_url: linkedin, hq_country: v("organizations.hq_country") || null,
-      description: v("organizations.description") || null, sectors: cleanSectorList(splitImportList(multi("organizations.sectors"))),
-      ticket_size: v("organizations.ticket_size") || null, investment_stages: splitImportList(multi("organizations.investment_stages")),
-      investment_regions: splitImportList(multi("organizations.investment_regions")), fund_type_raw: v("organizations.fund_type_raw") || null,
+      description: text("organizations.description") || null, sectors: cleanSectorList(splitImportList(multi("organizations.sectors"))),
+      ticket_size: text("organizations.ticket_size") || null, investment_stages: splitImportList(multi("organizations.investment_stages")),
+      investment_regions: splitImportList(multi("organizations.investment_regions")), fund_type_raw: text("organizations.fund_type_raw") || null,
       org_types: parsedTypes.types,
     };
     const existing = await findExistingOrganization(orgName, website, linkedin);
@@ -3274,7 +3281,7 @@ async function importOneRow(f: Record<string, string>, options: ImportOptions, e
   let role = "";
   if (person && org) {
     const incoming = {
-      title: v("memberships.title") || null, focus: v("memberships.focus") || null,
+      title: v("memberships.title") || null, focus: text("memberships.focus") || null,
       start_date: v("memberships.start_date") || null, end_date: v("memberships.end_date") || null,
     };
     const existing = await supabaseRequest("GET", "memberships", {

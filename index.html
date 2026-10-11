@@ -4699,8 +4699,10 @@ function updateImportSummary() {
   const todo = st.selected.reduce((n, v, i) => n + (v && !(st.rowStatus[i] && st.rowStatus[i].status === "ok") ? 1 : 0), 0);
   const mapped = st.mapping.filter(Boolean).length;
   document.getElementById("importCount").textContent = `${st.rows.length} rows`;
+  const shared = new Set(st.mapping.filter((f, i) => f && st.mapping.indexOf(f) !== i)).size;
   document.getElementById("importSummary").textContent =
-    `${ticked} of ${st.rows.length} ticked · ${mapped} of ${st.headers.length} columns matched` + (done ? ` · ${done} imported` : "");
+    `${ticked} of ${st.rows.length} ticked · ${mapped} of ${st.headers.length} columns matched` +
+    (shared ? ` · ${shared} field${shared === 1 ? "" : "s"} fed by several columns (combined)` : "") + (done ? ` · ${done} imported` : "");
   const btn = document.getElementById("importRunBtn");
   btn.textContent = `Import ${todo} row${todo === 1 ? "" : "s"}`;
   btn.disabled = !todo || importState.running;
@@ -4868,9 +4870,18 @@ function undoImportPrompt() {
 
 // ---- the import itself ----
 
+// Two columns mapped to the same field are combined, not first-wins: joined by
+// a line break, which the backend reads as an option separator for the
+// multi-select fields (types, sectors, stages, regions) and keeps as a line
+// break in free text (description...). Identical values aren't repeated.
 function importRowFields(row) {
   const fields = {};
-  importState.mapping.forEach((key, i) => { if (key && row[i] && !fields[key]) fields[key] = row[i]; });
+  importState.mapping.forEach((key, i) => {
+    const val = row[i];
+    if (!key || !val) return;
+    const parts = fields[key] ? fields[key].split("\n") : [];
+    if (!parts.includes(val)) fields[key] = parts.concat(val).join("\n");
+  });
   return fields;
 }
 
