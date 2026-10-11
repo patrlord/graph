@@ -3158,7 +3158,7 @@ const IMPORT_ORG_TYPE_WORDS: Record<string, string> = {
 function parseImportOrgTypes(raw: string): { types: string[]; unknown: string[] } {
   const types: string[] = [];
   const unknown: string[] = [];
-  for (const tok of raw.split(/[,;|/]+/)) {
+  for (const tok of raw.split(/[,;|/\r\n]+/)) {
     const key = sectorKey(tok);
     if (!key) continue;
     const slug = IMPORT_ORG_TYPE_WORDS[key] ?? (ALL_ORG_TYPE_SLUGS.includes(key.replace(/ /g, "_")) ? key.replace(/ /g, "_") : null);
@@ -3167,8 +3167,10 @@ function parseImportOrgTypes(raw: string): { types: string[]; unknown: string[] 
   return { types, unknown };
 }
 
+// A cell holding several options separates them with a comma, semicolon,
+// pipe or - in a spreadsheet cell with Alt+Enter - a line break.
 function splitImportList(raw: string): string[] {
-  return raw.split(/[,;|]+/).map((v) => v.trim()).filter(Boolean);
+  return raw.split(/[,;|\r\n]+/).map((v) => v.trim()).filter(Boolean);
 }
 
 // ISO, or day-first d/m/y (European exports), or anything Date can read.
@@ -3197,6 +3199,7 @@ type ImportOptions = { event?: { name?: string; event_date?: string; location?: 
 // row's error, never the batch's.
 async function importOneRow(f: Record<string, string>, options: ImportOptions, eventCache: Map<string, string>) {
   const v = (k: string) => (f[k] ?? "").replace(/\s+/g, " ").trim();
+  const multi = (k: string) => (f[k] ?? "").trim();  // line breaks kept - they separate options
   const notes: string[] = [];
   const fullName = v("people.full_name") || [v("people.first_name"), v("people.last_name")].filter(Boolean).join(" ");
   const orgName = v("organizations.name");
@@ -3208,13 +3211,13 @@ async function importOneRow(f: Record<string, string>, options: ImportOptions, e
   if (orgName) {
     const website = normalizeWebsiteUrl(v("organizations.website_url"));
     const linkedin = normalizeLinkedinUrl(v("organizations.linkedin_url"));
-    const parsedTypes = parseImportOrgTypes(v("organizations.org_types"));
+    const parsedTypes = parseImportOrgTypes(multi("organizations.org_types"));
     if (parsedTypes.unknown.length) notes.push(`type not recognized: ${parsedTypes.unknown.join(", ")}`);
     const incoming: Record<string, any> = {
       website_url: website, linkedin_url: linkedin, hq_country: v("organizations.hq_country") || null,
-      description: v("organizations.description") || null, sectors: cleanSectorList(splitImportList(v("organizations.sectors"))),
-      ticket_size: v("organizations.ticket_size") || null, investment_stages: splitImportList(v("organizations.investment_stages")),
-      investment_regions: splitImportList(v("organizations.investment_regions")), fund_type_raw: v("organizations.fund_type_raw") || null,
+      description: v("organizations.description") || null, sectors: cleanSectorList(splitImportList(multi("organizations.sectors"))),
+      ticket_size: v("organizations.ticket_size") || null, investment_stages: splitImportList(multi("organizations.investment_stages")),
+      investment_regions: splitImportList(multi("organizations.investment_regions")), fund_type_raw: v("organizations.fund_type_raw") || null,
       org_types: parsedTypes.types,
     };
     const existing = await findExistingOrganization(orgName, website, linkedin);
