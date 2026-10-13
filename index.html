@@ -2578,6 +2578,26 @@ async function enrichSelectedOrg() {
         applyOrgFindResult(org, findData);  // renderOrgDetail below shows the duplicate/name-clash warning banners if set
         showOnScreen();
         if (isCurrent()) updatePeopleHeader();  // in case a rename changed "People at <org>"
+        // The find already saved the full LinkedIn profile (every route does; li_profile_fetched_at
+        // says so), so a second Apify fetch would just repeat it - re-read the saved row instead, so
+        // the pane shows the profile, and skip straight to the end.
+        if (findData.li_profile_fetched_at) {
+          const rowRes = await api(`/organizations/${org.id}`);
+          if (rowRes.ok) {
+            const { people, ...saved } = await rowRes.json();
+            Object.assign(org, saved);
+            showOnScreen();
+            if (isCurrent()) {
+              updatePeopleHeader();
+              status.textContent = findData.name_clash
+                ? `LinkedIn calls this "${findData.name_clash}", but that name is already used by another org, so the name wasn't changed.`
+                : formatFetchedDate(org.li_profile_fetched_at);
+              if (findData.name_clash) status.className = "status-line error";
+            }
+            refreshOrgListDisplay();
+            return;
+          }
+        }
       } else if (findRes.ok && findData.candidates?.length) {
         // Couldn't confidently tell same/similar-named companies apart -
         // nothing saved server-side. Left as a "N options" badge on the

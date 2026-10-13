@@ -178,7 +178,7 @@
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
-//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, name, org_type, sectors, hq_country, duplicate_of, name_clash, candidates }
+//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, name, org_type, sectors, hq_country, li_profile_fetched_at (set when the find also saved the full profile - every route does, the web-search one best-effort), duplicate_of, name_clash, candidates }
 //     (order: li_company_id (below), then a NAME search with the same Apify company actor (input `searches`, ~9s, accepted only if the result's website
 //     or name matches the org's - see findOrgLinkedinByNameSearch), then the slow LLM web search. When the org already has li_company_id - LinkedIn's own numeric id for it, see migration_027 - tries findOrgLinkedinByCompanyId FIRST: resolves it via the
 //     Apify company actor fed https://www.linkedin.com/company/<id> instead of a name search, which has no name-collision risk at all and, on success, also fully
@@ -2233,7 +2233,7 @@ async function saveFoundCompany(orgId: string, org: any, company: Record<string,
   });
   return {
     linkedin_url: updated.linkedin_url, name: updated.name, org_type: updated.org_type, org_types: updated.org_types,
-    sectors: updated.sectors, hq_country: updated.hq_country,
+    sectors: updated.sectors, hq_country: updated.hq_country, li_profile_fetched_at: updated.li_profile_fetched_at ?? null,
     duplicate_of: clash?.[0] ? { id: clash[0].id, name: clash[0].name } : null,
     name_clash: rename.name_clash, candidates: [],
   };
@@ -4198,7 +4198,7 @@ ${NEVER_GUESS}`;
 
   return {
     linkedin_url: final.linkedin_url, name: final.name, org_type: final.org_type, org_types: final.org_types,
-    sectors: final.sectors, hq_country: final.hq_country,
+    sectors: final.sectors, hq_country: final.hq_country, li_profile_fetched_at: final.li_profile_fetched_at ?? null,
     duplicate_of: duplicateOf, name_clash: nameClash, candidates: [],
   };
 }
