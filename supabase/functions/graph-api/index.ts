@@ -515,13 +515,22 @@ const BANNED_SECTOR_KEYS = new Set(BANNED_SECTOR_TAGS.map(sectorKey));
 function isBannedSectorTag(tag: string): boolean {
   return BANNED_SECTOR_KEYS.has(sectorKey(tag));
 }
+// Wordings that are stored as a different, established tag instead (LinkedIn's
+// industry names, mostly) - compared by sectorKey like the ban list.
+const SECTOR_ALIAS_PHRASES_WITH_COMMA = ["Technology, Information and Internet"];  // aliases whose own wording contains a separator
+const SECTOR_ALIASES: Record<string, string> = {
+  [sectorKey("Technology, Information and Internet")]: "Software",
+  [sectorKey("Information Technology")]: "Software",
+};
 // The one place a sector list is normalized on its way in: strings only,
-// trimmed, banned/empty tags dropped, duplicates removed.
+// trimmed, aliased wordings replaced by their established tag, banned/empty
+// tags dropped, duplicates removed.
 function cleanSectorList(list: unknown): string[] {
   if (!Array.isArray(list)) return [];
   const out: string[] = [];
   for (const t of list) {
-    const tag = typeof t === "string" ? t.trim() : "";
+    const raw = typeof t === "string" ? t.trim() : "";
+    const tag = SECTOR_ALIASES[sectorKey(raw)] ?? raw;
     if (tag && !isBannedSectorTag(tag) && !out.includes(tag)) out.push(tag);
   }
   return out;
@@ -3196,12 +3205,188 @@ function fillBlankFields(existing: Record<string, any>, incoming: Record<string,
   return out;
 }
 
+
+// ---- free text in a multi-option column ("We invest in AI software and robotics") ----
+//
+// A column mapped to a multi-option field (sectors, types, stages, regions) may hold prose
+// instead of a clean list. Then the AI picks which of the database's EXISTING options the text
+// indicates, and - for sectors, stages and regions - may add a short NEW tag for an important
+// concept no existing option covers (see pickOptionsFromText for the guard rails); org types are a
+// fixed taxonomy, so those never get new ones.
+
+type ImportOptionKind = "sectors" | "org_types" | "stages" | "regions";
+const IMPORT_OPTION_FIELDS: Record<string, ImportOptionKind> = {
+  "organizations.sectors": "sectors",
+  "organizations.org_types": "org_types",
+  "organizations.investment_stages": "stages",
+  "organizations.investment_regions": "regions",
+};
+const IMPORT_OPTION_NOUN: Record<ImportOptionKind, string> = {
+  sectors: "sector / industry tags", org_types: "organization types", stages: "investment stages", regions: "geographic regions it invests in",
+};
+
+type ImportContext = {
+  optionSets: Map<ImportOptionKind, Promise<string[]>>;
+  picks: Map<string, Promise<{ picked: string[]; created: string[] }>>;
+  limit: <T>(fn: () => Promise<T>) => Promise<T>;
+};
+
+function makeLimiter(n: number) {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (active >= n) await new Promise<void>((r) => waiting.push(r));
+    active++;
+    try { return await fn(); } finally { active--; waiting.shift()?.(); }
+  };
+}
+function newImportContext(): ImportContext {
+  return { optionSets: new Map(), picks: new Map(), limit: makeLimiter(5) };
+}
+
+// Sector tags that describe what KIND of organization it is (the Type field's job) - never offered
+// to the AI as a sector for a sentence like "we invest in ...", which otherwise matched them on the
+// word "invest".
+const TYPE_LIKE_SECTOR_KEYS = new Set([
+  "financial services", "investment management", "venture capital", "private equity", "asset management", "hedge funds",
+  "wealth management", "private debt", "private markets", "alternative investments", "equities", "m a", "real assets", "secondaries",
+  "investment banking", "venture capital and private equity principals", "corporate investment banking", "co investment crowdfunding platform",
+  "banking", "insurance", "capital markets", "investment advice", "gp advisory",
+]);
+
+// The options a kind can take: for org types the fixed taxonomy, otherwise every value currently in use.
+function importOptionSet(ctx: ImportContext, kind: ImportOptionKind): Promise<string[]> {
+  if (!ctx.optionSets.has(kind)) {
+    ctx.optionSets.set(kind, (async () => {
+      if (kind === "org_types") return ORG_TYPES.map(([slug, desc]) => `${slug}: ${desc}`);
+      const column = kind === "sectors" ? "sectors" : kind === "stages" ? "investment_stages" : "investment_regions";
+      const rows = await supabaseRequestAllPages("organizations", { select: column });
+      const counts = new Map<string, number>();
+      for (const r of rows) for (const t of r[column] ?? []) if (t && !(kind === "sectors" && (isBannedSectorTag(t) || TYPE_LIKE_SECTOR_KEYS.has(sectorKey(t))))) counts.set(t, (counts.get(t) ?? 0) + 1);
+      return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t);
+    })());
+  }
+  return ctx.optionSets.get(kind)!;
+}
+
+// Prose = some separated token runs longer than a tag would (more than 4 words).
+function hasProseTokens(raw: string): boolean {
+  return raw.split(/[,;|\r\n]+/).some((t) => t.trim().split(/\s+/).filter(Boolean).length > 4);
+}
+
+const IMPORT_OPTIONS_SCHEMA = {
+  type: "object",
+  properties: {
+    options: { type: "array", items: { type: "string" } },
+    new_options: { type: "array", items: { type: "string" } },
+  },
+  required: ["options", "new_options"],
+  additionalProperties: false,
+};
+
+function pickOptionsFromText(ctx: ImportContext, kind: ImportOptionKind, raw: string): Promise<{ picked: string[]; created: string[] }> {
+  const key = `${kind}|${raw}`;
+  if (!ctx.picks.has(key)) {
+    ctx.picks.set(key, ctx.limit(async () => {
+      const options = await importOptionSet(ctx, kind);
+      if (!options.length && kind === "org_types") return { picked: [], created: [] };
+      const canCreate = kind !== "org_types";
+      const styleHint = kind === "sectors"
+        ? "sector name in the same style as the listed ones (like 'Climate & Energy' or 'Cybersecurity')"
+        : kind === "stages" ? "investment-stage name like 'Seed' or 'Series A'" : "region or country name";
+      const createRule = canCreate
+        ? "- \"new_options\": for every distinct concept the text clearly names that has NO good match in the list. An option is a good match only if it means the same thing or clearly covers that concept - a merely related or broader option (Sports for professional chess, Investment Management for anything about investing, Retail for wine) is NOT a good match: in that case do not pick it, add the concept here instead. Check the whole list first - an option that means the same thing or is a near-synonym must be used, not duplicated. Each new option: 1-3 words, a short generic " + styleHint + ", never a sentence fragment, never a vague word such as technology/digital/services/growth/startup. At most 3."
+  : "- \"new_options\" must be an empty list.";
+      const prompt = `Text from a CSV about an organization: """${raw.slice(0, 1500)}"""
+
+Choose which of the allowed ${IMPORT_OPTION_NOUN[kind]} below this text indicates. Rules:
+- Return options EXACTLY as written in the list (for the organization types, return only the part before the colon). Never invent or reword an option, and never return something not in the list.
+- Include every option the text clearly names or clearly implies - e.g. "Physical AI" implies a robotics option; "AI infrastructure" implies an AI infrastructure option; a specific area implies its general parent when that is in the list - ALWAYS include the broad option when the text is about that area (text about AI software, AI hardware or AI infrastructure includes the general \"AI\" option as well).
+- Do not include loosely related options. At most 8 in "options"; an empty list if nothing fits.
+${createRule}
+
+Allowed options:
+${options.join(" | ")}`;
+      const data = await openRouterCall(prompt, "import_options", IMPORT_OPTIONS_SCHEMA, 30000, 40000, false);
+      const canonical = new Map(options.map((o) => [kind === "org_types" ? o.split(":")[0].toLowerCase() : o.toLowerCase(), kind === "org_types" ? o.split(":")[0] : o]));
+      const out: string[] = [];
+      for (const picked of data.options ?? []) {
+        const c = canonical.get(String(picked).trim().toLowerCase());
+        if (c && !out.includes(c)) out.push(c);
+      }
+      // New tags: kept only if they look like a tag (1-3 short words, no sentence punctuation, not banned) and
+      // aren't just another spelling of an option that already exists - that one is used instead.
+      const created: string[] = [];
+      if (canCreate) {
+        const looseExisting = new Map(options.filter(Boolean).map((o) => [sectorKey(o), o]));
+        for (const raw of data.new_options ?? []) {
+          const tag = String(raw).trim();
+          const words = tag.split(/\s+/).filter(Boolean).length;
+          if (!tag || words > 3 || tag.length > 36 || /[.:;!?]/.test(tag) || (kind === "sectors" && isBannedSectorTag(tag))) continue;
+          const existing = looseExisting.get(sectorKey(tag));
+          if (existing) { if (!out.includes(existing)) out.push(existing); continue; }
+          if (!created.some((c) => sectorKey(c) === sectorKey(tag))) created.push(tag);
+        }
+      }
+      return { picked: out.slice(0, 8), created: created.slice(0, 3) };
+    }).catch(() => ({ picked: [], created: [] as string[] })));
+  }
+  return ctx.picks.get(key)!;
+}
+
+// Cleans one multi-option cell: clean tokens stay as they are; if it has prose, the AI's picks from the
+// existing options are added (and the prose's own words are NOT stored as options).
+async function resolveImportList(ctx: ImportContext, key: string, rawCell: string, notes: string[]): Promise<string[]> {
+  const kind = IMPORT_OPTION_FIELDS[key];
+  // Existing options whose own name contains a comma/semicolon ("Technology, Information and
+  // Internet", "Water, Waste & Remediation") would be cut in two by the separator split - lift them
+  // out of the text first and keep them whole.
+  let raw = rawCell;
+  const wholeOptions: string[] = [];
+  if (kind !== "org_types" && /[,;|]/.test(rawCell)) {
+    const known = await importOptionSet(ctx, kind);
+    const phrases = [...new Set([...known.filter((o) => /[,;|]/.test(o)), ...(kind === "sectors" ? SECTOR_ALIAS_PHRASES_WITH_COMMA : [])])]
+      .sort((a, b) => b.length - a.length);
+    for (const ph of phrases) {
+      const re = new RegExp(ph.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig");
+      if (re.test(raw)) { wholeOptions.push(ph); raw = raw.replace(re, "\n"); }
+    }
+  }
+  const tokens = splitImportList(raw);
+  if (!hasProseTokens(raw)) return [...wholeOptions, ...tokens];
+  const options = await importOptionSet(ctx, kind);
+  // In a prose cell only tokens that ARE an existing option survive as-is; the sentence's other
+  // fragments ("We invest in AI Software") are not options. Org types are all AI-picked.
+  const byLower = new Map(options.map((o) => [o.toLowerCase(), o]));
+  const exactTokens = kind === "org_types" ? [] : tokens.map((t) => byLower.get(t.toLowerCase())).filter(Boolean) as string[];
+  const { picked, created } = await pickOptionsFromText(ctx, kind, rawCell);
+  const out = [...new Set([...wholeOptions, ...exactTokens])];
+  for (const p of [...picked, ...created]) if (!out.some((o) => o.toLowerCase() === p.toLowerCase())) out.push(p);
+  const field = key.split(".")[1];
+  notes.push(
+    (picked.length ? `${field} matched from text: ${picked.join(", ")}` : `${field}: no existing option matched the text`) +
+    (created.length ? ` · new ${field} tag${created.length === 1 ? "" : "s"}: ${created.join(", ")}` : ""),
+  );
+  return out;
+}
+
+// Starts the AI picks for every prose cell in a batch up front, so they run in parallel (5 at a time)
+// instead of one row after another.
+function prefetchImportPicks(ctx: ImportContext, rows: { fields: Record<string, string> }[]) {
+  for (const row of rows) {
+    for (const [key, kind] of Object.entries(IMPORT_OPTION_FIELDS)) {
+      const raw = (row.fields?.[key] ?? "").trim();
+      if (raw && hasProseTokens(raw)) pickOptionsFromText(ctx, kind, raw);
+    }
+  }
+}
+
 type ImportOptions = { event?: { name?: string; event_date?: string; location?: string; role?: string } };
 
 // One CSV row -> organization (found or created), person, role, and event
 // attendance, filling blanks only. A row is isolated: any failure is that
 // row's error, never the batch's.
-async function importOneRow(f: Record<string, string>, options: ImportOptions, eventCache: Map<string, string>) {
+async function importOneRow(f: Record<string, string>, options: ImportOptions, eventCache: Map<string, string>, ctx: ImportContext) {
   const v = (k: string) => (f[k] ?? "").replace(/\s+/g, " ").trim();
   const multi = (k: string) => (f[k] ?? "").trim();  // line breaks kept - they separate options
   // Free text: line breaks kept (that's how several columns mapped to the same
@@ -3218,13 +3403,19 @@ async function importOneRow(f: Record<string, string>, options: ImportOptions, e
   if (orgName) {
     const website = normalizeWebsiteUrl(v("organizations.website_url"));
     const linkedin = normalizeLinkedinUrl(v("organizations.linkedin_url"));
-    const parsedTypes = parseImportOrgTypes(multi("organizations.org_types"));
+    const typesRaw = multi("organizations.org_types");
+    const parsedTypes = hasProseTokens(typesRaw)
+      ? parseImportOrgTypes((await resolveImportList(ctx, "organizations.org_types", typesRaw, notes)).join("\n"))
+      : parseImportOrgTypes(typesRaw);
     if (parsedTypes.unknown.length) notes.push(`type not recognized: ${parsedTypes.unknown.join(", ")}`);
+    const sectorList = await resolveImportList(ctx, "organizations.sectors", multi("organizations.sectors"), notes);
+    const stageList = await resolveImportList(ctx, "organizations.investment_stages", multi("organizations.investment_stages"), notes);
+    const regionList = await resolveImportList(ctx, "organizations.investment_regions", multi("organizations.investment_regions"), notes);
     const incoming: Record<string, any> = {
       website_url: website, linkedin_url: linkedin, hq_country: v("organizations.hq_country") || null,
-      description: text("organizations.description") || null, sectors: cleanSectorList(splitImportList(multi("organizations.sectors"))),
-      ticket_size: text("organizations.ticket_size") || null, investment_stages: splitImportList(multi("organizations.investment_stages")),
-      investment_regions: splitImportList(multi("organizations.investment_regions")), fund_type_raw: text("organizations.fund_type_raw") || null,
+      description: text("organizations.description") || null, sectors: cleanSectorList(sectorList),
+      ticket_size: text("organizations.ticket_size") || null, investment_stages: stageList,
+      investment_regions: regionList, fund_type_raw: text("organizations.fund_type_raw") || null,
       org_types: parsedTypes.types,
     };
     const existing = await findExistingOrganization(orgName, website, linkedin);
@@ -3346,10 +3537,12 @@ async function importOneRow(f: Record<string, string>, options: ImportOptions, e
 
 async function importRows(rows: { index: number; fields: Record<string, string> }[], options: ImportOptions) {
   const eventCache = new Map<string, string>();
+  const ctx = newImportContext();
   const results = [];
+  prefetchImportPicks(ctx, rows.slice(0, 15));
   for (const row of rows.slice(0, 15)) {
     try {
-      results.push({ index: row.index, ...(await importOneRow(row.fields ?? {}, options ?? {}, eventCache)) });
+      results.push({ index: row.index, ...(await importOneRow(row.fields ?? {}, options ?? {}, eventCache, ctx)) });
     } catch (err) {
       results.push({ index: row.index, status: "error", message: err instanceof Error ? err.message.slice(0, 300) : String(err) });
     }
