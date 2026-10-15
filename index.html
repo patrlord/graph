@@ -3205,11 +3205,11 @@ async function mergeDupeGroup(groupIndex) {
     status.className = "status-line error"; status.textContent = "Check at least one record to merge.";
     return;
   }
-  if (!confirm(
+  // Organizations merge on click, no confirmation (the radio + checkboxes already show exactly what
+  // merges into what); a merge is still permanent, so people keep their confirmation.
+  if (!isOrgs && !confirm(
     `Merge ${others.map(itemName).join(", ")} into ${itemName(target)}?\n\n` +
-    (isOrgs
-      ? `Their team members and connections move onto ${itemName(target)}; the others are deleted. This can't be undone.`
-      : `Their roles, connections, and event attendance move onto ${itemName(target)}; the others are deleted. This can't be undone.`) +
+    `Their roles, connections, and event attendance move onto ${itemName(target)}; the others are deleted. This can't be undone.` +
     (excluded.length ? `\n\n${excluded.map(itemName).join(", ")} ${excluded.length > 1 ? "are" : "is"} left unchecked and won't be touched.` : "")
   )) return;
   status.className = "status-line"; status.textContent = "Merging…";
