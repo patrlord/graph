@@ -1775,7 +1775,7 @@ function applyOrgFindResult(org, data) {
   org.li_find_candidates = [];
 }
 
-async function runFindOrgLinkedin(org, btnEl) {
+async function runFindOrgLinkedin(org, btnEl, fastOnly = false) {
   btnEl.disabled = true;
   btnEl.textContent = "Searching…";
   btnEl.title = "";
@@ -1785,6 +1785,7 @@ async function runFindOrgLinkedin(org, btnEl) {
       body: JSON.stringify({
         org_id: org.id, name: org.name,
         website_url: org.website_url || "", country: org.hq_country || "",
+        ...(fastOnly ? { fast_only: true } : {}),
       }),
     });
     const data = await res.json();
@@ -1889,6 +1890,7 @@ async function bulkFindOrgLinkedin(org) {
       body: JSON.stringify({
         org_id: org.id, name: org.name,
         website_url: org.website_url || "", country: org.hq_country || "",
+        fast_only: true,
       }),
     });
     const data = await res.json();
@@ -1931,8 +1933,32 @@ async function bulkFindOrgLinkedin(org) {
 // back with multiple candidates (see runFindOrgLinkedin) - it's just
 // tallied as "needs review" and the batch moves on, since there's no way to
 // ask which one is right mid-loop.
+// Rough per-organization estimates for the confirmation below: one Apify lookup each (about $0.004-0.008;
+// a company-id lookup plus a name search at worst) and about 10 seconds. Find all deliberately never runs the
+// AI web search - that is ~$0.06 a call, and 333 of them cost $19.93 in one run - so an organization the
+// Apify lookups can't confirm is reported "not found"; use its own row's Find button for the full search.
+const FIND_ALL_EST_SECONDS_PER_ORG = 10;
+const FIND_ALL_EST_COST_PER_ORG = 0.006;
+
 async function runFindAllOrgLinkedin(btnEl) {
   if (btnEl.disabled) return;
+  const countParams = buildOrgListParams();
+  countParams.set("missing_linkedin", "true");
+  countParams.set("limit", "1");
+  countParams.set("with_counts", "true");
+  const countRes = await api(`/organizations?${countParams.toString()}`);
+  const missingCount = countRes.ok ? parseInt(countRes.headers.get("X-Total-Count") || "0", 10) : 0;
+  if (!countRes.ok) { alert("Couldn't count how many organizations need a LinkedIn URL - try again."); return; }
+  if (!missingCount) { alert("Every organization matching the current filters already has a LinkedIn URL."); return; }
+  const estSeconds = missingCount * FIND_ALL_EST_SECONDS_PER_ORG;
+  if (!confirm(
+    `Look up LinkedIn URLs for ${missingCount} organization${missingCount === 1 ? "" : "s"}?\n\n` +
+    `Estimated time: ${formatEstimatedDuration(estSeconds)}\n` +
+    `Estimated cost: ~$${(missingCount * FIND_ALL_EST_COST_PER_ORG).toFixed(2)} (Apify lookups only, rough estimate)\n\n` +
+    `This uses the fast Apify lookups only - no AI web search, so it can't run up an OpenRouter bill. ` +
+    `Organizations it can't confirm are left as "not found"; use their own Find button for a full search (about $0.06 each).\n\n` +
+    `It runs in this browser tab, one at a time - keep the tab open.`
+  )) return;
   const originalText = btnEl.textContent;
   btnEl.disabled = true;
   let done = 0, found = 0, needsReview = 0, notFound = 0, failed = 0;
@@ -1965,7 +1991,7 @@ async function runFindAllOrgLinkedin(btnEl) {
     const row = document.querySelector(`#orgList tr[data-id="${org.id}"]`);
     const findBtn = row ? row.querySelector(".find-li-btn") : null;
     if (findBtn) {
-      await runFindOrgLinkedin(org, findBtn);
+      await runFindOrgLinkedin(org, findBtn, true);
       tally(org.linkedin_url ? "found" : (org.li_find_candidates && org.li_find_candidates.length) ? "candidates" : "not_found");
     } else {
       tally(await bulkFindOrgLinkedin(org));

@@ -33,7 +33,7 @@
 //     -> { results: [{index, status: ok|skipped|error, message, person_id, organization_id}] }  (find-or-create org / person / role / event
 //     attendance per row, FILLING BLANKS ONLY - never overwrites; a same-named person with a different LinkedIn URL is a different person)
 //   POST   /research-person     { name?, company_hint?, linkedin_url? } -> { organization, people: [one] }  (same organization fields as /research)
-//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true&countries=France,Germany&org_types=vc,cvc (overlap on org_types[])&sectors=Fintech&investment_regions=Europe
+//   GET    /organizations?include_employers=true&q=term&limit=100&offset=0&starred_only=true&show_hidden=true&jpl_only=true&sort=name&dir=asc&with_counts=true&countries=France,Germany&org_types=vc,cvc (overlap on org_types[])&sectors=Fintech&investment_regions=Europe&missing_linkedin=true
 //     -> [ {id, name, org_type, website_url, linkedin_url, hq_country, country_code, sectors, investment_regions, updated_at, connected_to_user, is_starred, is_hidden, li_profile_fetched_at}, ... ]
 //     (is_starred/is_hidden filter server-side here now (starred_only/show_hidden), same for jpl_only (connected_to_user) - the main org list is
 //     paginated (see limit/offset below) so it can no longer filter client-side against data it hasn't loaded. q searches name or hq_country,
@@ -178,7 +178,7 @@
 //     (saved if found; title only filled if the membership's was blank. If the name as given finds nothing, retries once with
 //     the word order reversed (surname-first sources); a verified match there sets renamed_to. If that corrected name/URL
 //     already belongs to a different existing person, merges into it instead (deletes person_id) and sets merged_into_person_id)
-//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country? } -> { linkedin_url, name, org_type, sectors, hq_country, li_profile_fetched_at (set when the find also saved the full profile - every route does, the web-search one best-effort), duplicate_of, name_clash, candidates }
+//   POST   /organizations/find-linkedin  { org_id, name, website_url?, country?, fast_only? (true: Apify routes only, no AI web search - what the bulk Find all sends) } -> { linkedin_url, name, org_type, sectors, hq_country, li_profile_fetched_at (set when the find also saved the full profile - every route does, the web-search one best-effort), duplicate_of, name_clash, candidates }
 //     (order: li_company_id (below), then a NAME search with the same Apify company actor (input `searches`, ~9s, accepted only if the result's website
 //     or name matches the org's - see findOrgLinkedinByNameSearch), then the slow LLM web search. When the org already has li_company_id - LinkedIn's own numeric id for it, see migration_027 - tries findOrgLinkedinByCompanyId FIRST: resolves it via the
 //     Apify company actor fed https://www.linkedin.com/company/<id> instead of a name search, which has no name-collision risk at all and, on success, also fully
@@ -953,6 +953,7 @@ type ListOrganizationsOptions = {
   sectors?: string[];
   investmentRegions?: string[];
   full?: boolean;  // select=* (every column) instead of the lean list columns - for the pane's download button
+  missingLinkedin?: boolean;  // only orgs with no linkedin_url - counts what the bulk Find all would look up
 };
 
 // Same "one calendar month back from right now" window as the frontend's
@@ -1008,6 +1009,7 @@ async function listOrganizations(opts: ListOrganizationsOptions) {
   if (!opts.includeEmployers) params.or = "(org_type.is.null,org_type.neq.employer)";
   if (opts.starredOnly) params.is_starred = "eq.true";
   if (!opts.showHidden) params.is_hidden = "eq.false";
+  if (opts.missingLinkedin) params.linkedin_url = "is.null";
   // The Country/Type/Sector/Investment Regions column-header filter
   // dropdowns (index.html) - each independently narrows to whichever
   // values the user checked, ANDed with everything else here (so checking
@@ -4091,7 +4093,8 @@ const FIND_ORG_TYPE_LABEL: Record<string, string> = {
 // one plausible candidate and can't confidently tell which is right even
 // with that context, it reports them as `candidates` instead of guessing;
 // the frontend then lets a human pick (or reject all of them).
-async function findOrgLinkedin(orgId: string, name: string, websiteUrl: string, country: string) {
+async function findOrgLinkedin(orgId: string, name: string, websiteUrl: string, country: string, fastOnly = false) {
+  const startedAt = Date.now();
   const rows = await supabaseRequest("GET", "organizations", {
     params: {
       id: `eq.${orgId}`,
@@ -4105,6 +4108,11 @@ async function findOrgLinkedin(orgId: string, name: string, websiteUrl: string, 
 
   const byNameSearch = await findOrgLinkedinByNameSearch(orgId, current, websiteUrl);
   if (byNameSearch) return byNameSearch;
+
+  // The AI web search below costs about $0.06 a call (measured on a real run: $19.93 for 333 of them) -
+  // the bulk "Find all" asks for fast_only, i.e. the Apify routes above and nothing else, so it can't run
+  // up a bill; an org they can't confirm is simply reported as not found.
+  if (fastOnly) return { linkedin_url: null, candidates: [] };
 
   const effectiveWebsite = websiteUrl || current.website_url || "";
   const effectiveCountry = country || current.hq_country || "";
@@ -4138,7 +4146,12 @@ If nothing found looks like a plausible match at all, return null for linkedin_u
 
 ${NEVER_GUESS}`;
 
-  const data = await openRouterCall(prompt, "find_org_linkedin", FIND_ORG_LINKEDIN_SCHEMA);
+  // The search itself takes 44-68s, so the old 45s limit abandoned most of them - and OpenRouter bills a
+  // search that finishes after we've stopped waiting, so the money was spent with no answer. Give it what
+  // the edge function's 150s wall clock allows once the profile fetch below (35s) is reserved.
+  const llmBudgetMs = Math.min(80000, 135000 - (Date.now() - startedAt) - 35000);
+  if (llmBudgetMs < 25000) return { linkedin_url: null, candidates: [] };  // too little time left to finish a search we'd pay for
+  const data = await openRouterCall(prompt, "find_org_linkedin", FIND_ORG_LINKEDIN_SCHEMA, llmBudgetMs, llmBudgetMs);
   const linkedinUrl = normalizeLinkedinUrl(data.linkedin_url);
   const candidates = (data.candidates ?? [])
     .map((c: any) => ({
@@ -4271,6 +4284,7 @@ Deno.serve(async (req) => {
         sectors: parseListParam(url.searchParams.get("sectors")),
         investmentRegions: parseListParam(url.searchParams.get("investment_regions")),
         full: url.searchParams.get("full") === "true",
+        missingLinkedin: url.searchParams.get("missing_linkedin") === "true",
       });
       return json(orgs, 200, {
         ...(totalCount !== undefined ? { "X-Total-Count": String(totalCount) } : {}),
@@ -4369,7 +4383,7 @@ Deno.serve(async (req) => {
       const orgId = (body.org_id ?? "").trim();
       const name = (body.name ?? "").trim();
       if (!orgId || !name) return json({ error: "org_id and name are required" }, 400);
-      return json(await findOrgLinkedin(orgId, name, (body.website_url ?? "").trim(), (body.country ?? "").trim()));
+      return json(await findOrgLinkedin(orgId, name, (body.website_url ?? "").trim(), (body.country ?? "").trim(), body.fast_only === true));
     }
 
     const orgConnectionsMatch = path.match(/^\/organizations\/([^/]+)\/connections$/);
