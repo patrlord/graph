@@ -507,6 +507,7 @@ const BANNED_SECTOR_TAGS = [
   "high tech", "innovation", "emerging technologies", "next generation technologies",
   "general", "other", "various", "miscellaneous", "unknown", "n a", "services", "solutions", "business",
   "frontier tech", "enabling tech", "early stage", "growth", "startup",
+  "geographic focus", "investment", "early stage investing", "late stage investing", "mid stage investing",
 ];
 function sectorKey(tag: string): string {
   return tag.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -522,16 +523,22 @@ const SECTOR_ALIASES: Record<string, string> = {
   [sectorKey("Technology, Information and Internet")]: "Software",
   [sectorKey("Information Technology")]: "Software",
 };
+// A piece of prose rather than a sector: what is left when a sentence such as
+// "We invest in A, B and C." is split at its commas ("We invest in startups.",
+// "and software.", "Pre-Seed through Series A.").
+function looksLikeSentenceFragment(tag: string): boolean {
+  return /^(we|i|and|or|the|our|including|focusing)\s/i.test(tag) || /[.]$/.test(tag) || /\bthrough\b/i.test(tag);
+}
 // The one place a sector list is normalized on its way in: strings only,
 // trimmed, aliased wordings replaced by their established tag, banned/empty
-// tags dropped, duplicates removed.
+// tags and sentence fragments dropped, duplicates removed.
 function cleanSectorList(list: unknown): string[] {
   if (!Array.isArray(list)) return [];
   const out: string[] = [];
   for (const t of list) {
     const raw = typeof t === "string" ? t.trim() : "";
     const tag = SECTOR_ALIASES[sectorKey(raw)] ?? raw;
-    if (tag && !isBannedSectorTag(tag) && !out.includes(tag)) out.push(tag);
+    if (tag && !isBannedSectorTag(tag) && !looksLikeSentenceFragment(tag) && !out.includes(tag)) out.push(tag);
   }
   return out;
 }
